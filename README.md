@@ -1,6 +1,6 @@
 # Personal Agent bootstrap
 
-A local development skeleton for the Blackoutburst personal companion. It contains an original responsive web client, a loopback HTTP server, SQLite metadata/namespace interfaces and explicit adapter boundaries. It does not authenticate a Blackoutburst account, run a model, connect to the Board or implement private conversation storage.
+A local development skeleton for the Blackoutburst personal companion. It contains an original responsive web client, a loopback HTTP server, SQLite metadata/namespace interfaces, an internal provisioning primitive and explicit adapter boundaries. It does not authenticate a Blackoutburst account, run a model, connect to the Board or implement private conversation storage.
 
 The default mode is `unavailable`. An explicit `demo` mode displays synthetic preview data and labels the account and Board adapters `development-double`; provider and runtime remain `unavailable`. Neither mode connects a production service. The preview makes no external service requests and supplies no credentials.
 
@@ -59,7 +59,15 @@ npm run check
 npm test
 ```
 
-`check` runs `node --check` over the server, store, adapters and client script; `test` runs `node --test`. These checks cover the implemented skeleton, not live authentication, two-user isolation, provider eligibility, model execution or deployment acceptance. No `build` command is required.
+`check` runs the configured `node --check` source checks; `test` runs `node --test`. These checks cover the implemented skeleton, not live authentication, two-user isolation, provider eligibility, model execution or deployment acceptance. No `build` command is required.
+
+## Internal provisioning primitive
+
+`src/provisioning.mjs` is an unwired development primitive for companion #5. A trusted internal caller must inject a validator; without one, validation is unavailable. Every provisioning request validates an opaque proof and requires an exact issuer/subject allowlist match before atomically obtaining the same private companion ID from the metadata store.
+
+The retained mapping uses a domain-separated SHA-256 issuer/subject key and a random UUID; it does not store the proof or raw principal tuple. The companion ID is an identifier, not an authentication credential. Invalid retained identity state stops provisioning for review instead of silently replacing the ID.
+
+No HTTP authentication or provisioning route, cookie parser, SSO adapter or real-account connection is added. The development validator used by synthetic tests is not a production identity authority. Concurrency and guard tests exercise the primitive only; they do not qualify a real pilot. Account #23 remains unresolved and companion #5 remains incomplete until the actual central validation contract is integrated and verified.
 
 ## Integration boundaries
 

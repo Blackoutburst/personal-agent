@@ -5,6 +5,15 @@ import { DatabaseSync } from 'node:sqlite';
 const APPLICATION_ID = 0x50414331;
 const SCHEMA_VERSION = 1;
 
+function encodeRecord(namespace, key, value) {
+  if (![namespace, key].every(part => typeof part === 'string' && /^[\w.-]{1,80}$/.test(part))) {
+    throw new Error('Invalid bootstrap namespace/key');
+  }
+  const json = JSON.stringify(value);
+  if (json === undefined || Buffer.byteLength(json) > 16384) throw new Error('Bootstrap value exceeds contract');
+  return json;
+}
+
 function inside(candidate, root) {
   const suffix = relative(root, candidate);
   return suffix === '' || (!suffix.startsWith(`..${sep}`) && suffix !== '..' && !isAbsolute(suffix));
@@ -38,30 +47,45 @@ export class BootstrapStore {
     }
     const db = new DatabaseSync(filename);
     try {
+      db.exec('PRAGMA busy_timeout=5000; BEGIN IMMEDIATE;');
       const appId = db.prepare('PRAGMA application_id').get().application_id;
       const version = db.prepare('PRAGMA user_version').get().user_version;
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
       if (appId === 0 && version === 0 && tables.length === 0) {
-        db.exec(`BEGIN; CREATE TABLE bootstrap_record(namespace TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY(namespace,key)); PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION}; COMMIT;`);
+        db.exec(`CREATE TABLE bootstrap_record(namespace TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY(namespace,key)); PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION};`);
       } else if (appId !== APPLICATION_ID || version !== SCHEMA_VERSION) {
         throw new Error('Unsupported private-store application/schema version');
       }
       db.prepare('SELECT namespace,key,value_json FROM bootstrap_record LIMIT 0').all();
+      db.exec('COMMIT;');
       if (process.platform !== 'win32') chmodSync(filename, 0o600);
       this.db = db;
     } catch (error) {
+      try { db.exec('ROLLBACK;'); } catch { /* The connection may not have entered a transaction. */ }
       db.close();
       throw error;
     }
   }
 
   put(namespace, key, value) {
-    if (![namespace, key].every(part => typeof part === 'string' && /^[\w.-]{1,80}$/.test(part))) {
-      throw new Error('Invalid bootstrap namespace/key');
-    }
-    const json = JSON.stringify(value);
-    if (json === undefined || Buffer.byteLength(json) > 16384) throw new Error('Bootstrap value exceeds contract');
+    if (namespace === 'companion-identity-v1') throw new Error('Companion identities cannot be overwritten');
+    const json = encodeRecord(namespace, key, value);
     this.db.prepare('INSERT INTO bootstrap_record VALUES (?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET value_json=excluded.value_json').run(namespace, key, json);
+  }
+
+  getOrInsert(namespace, key, value) {
+    const json = encodeRecord(namespace, key, value);
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      this.db.prepare('INSERT INTO bootstrap_record VALUES (?,?,?) ON CONFLICT(namespace,key) DO NOTHING').run(namespace, key, json);
+      const row = this.db.prepare('SELECT value_json FROM bootstrap_record WHERE namespace=? AND key=?').get(namespace, key);
+      const result = JSON.parse(row.value_json);
+      this.db.exec('COMMIT;');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK;');
+      throw error;
+    }
   }
 
   get(namespace, key) {

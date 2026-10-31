@@ -3,7 +3,7 @@
 | Component | Selected version / status | Reason and license boundary |
 | --- | --- | --- |
 | Node.js | **24.22.1**, with bundled npm | Aligns with the Node 24.22.1 runtime recorded in [account foundation #22](https://board.blackoutburst.com/?project=d03d401aee77dbf8708b0148a11dcee9&ticket=3e6b7b24b21aaf18d828eb9959442d7d). This is a local development pin, not a deployed companion claim. |
-| Runtime libraries | Node built-ins only: `node:http`, `node:sqlite`, `node:fs`, `node:path`, `node:url` | No external npm runtime dependencies. SQLite usage provides local metadata/namespace scaffolding, not qualified private-user storage. |
+| Runtime libraries | Node built-ins only: `node:http`, `node:sqlite`, `node:fs`, `node:path`, `node:url`, `node:crypto` | No external npm runtime dependencies. Crypto hashing/random UUID generation supports internal identity mapping; SQLite remains development metadata scaffolding, not qualified private-user storage. |
 | Tests | Built-in `node:test`, `node:assert/strict`, `node:os` and the runtime built-ins above | No external test framework or dependency install. |
 | Web client | Original HTML/CSS/JavaScript | Direct static serving; no bundler, generated asset pipeline, downloaded fonts, external scripts or third-party assets. |
 | Board | MCP contract source pinned to `25b35ad276cf9056f0cdd9d81791456a6499c189` | Protocol reference only. No Board executor source is adopted or bundled. |
@@ -15,4 +15,4 @@ Node is MIT licensed and includes third-party components with their own notices.
 
 The license for the original companion product code is **undecided**. This bootstrap does not grant an MIT, Apache or other default open-source license to that code. Choose the product license explicitly before external distribution and review notices for anything introduced later.
 
-Account, provider and private-runtime contracts remain unavailable. There are no live credentials, subscription connection, model calls or external Board requests in the skeleton. Production filesystem ACLs, encryption, tenant access, revocation/deletion and backup handling belong to companion #6 and the relevant upstream contracts; they are not established by SQLite persistence or a loopback bind.
+Account, provider and private-runtime integrations remain unavailable. The internal provisioning primitive accepts only an injected trusted validator and exact issuer/subject allowlist; it supplies no production validator, HTTP/auth route or SSO integration. Its synthetic tests do not complete companion #5 or account #23. There are no live credentials, subscription connection, model calls or external Board requests in the skeleton. Production filesystem ACLs, encryption, tenant access, revocation/deletion and backup handling belong to companion #6 and the relevant upstream contracts; they are not established by SQLite persistence or a loopback bind.
