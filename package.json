@@ -1,0 +1,12 @@
+{
+  "name": "blackoutburst-personal-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.22.1 <25" },
+  "scripts": {
+    "dev": "node server.mjs",
+    "check": "node --check server.mjs && node --check src/store.mjs && node --check src/adapters.mjs && node --check public/app.js",
+    "test": "node --test"
+  }
+}
