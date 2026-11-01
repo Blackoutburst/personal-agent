@@ -1,4 +1,12 @@
+import { createBoardBoundary } from './board-boundary.mjs';
+
 export const BOARD_SOURCE = '25b35ad276cf9056f0cdd9d81791456a6499c189';
+
+// Backend-only construction seam. HTTP modes never provide these trusted dependencies.
+// New outbound operations must be implemented inside the shared boundary, never raw MCP passthrough.
+export function createBoardAdapter(dependencies = {}) {
+  return createBoardBoundary(dependencies);
+}
 
 export function adapterStatus(mode) {
   return {

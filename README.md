@@ -114,3 +114,7 @@ Open `conversation.html` on the local candidate to try the [text-and-links conve
 ## Private goals and permission cards
 
 `goals.html` provides the [private goal workflow and versioned permission cards](docs/GOALS.md): editable goals/plans/milestones, review/pause controls, saved project-text previews and explicit local consent. Account mode revalidates the owner on every API request; demo state is labelled synthetic and separated from real accounts. Lifetime reservations never reset when a card is edited or reconfirmed. Independent Board authority is unavailable by default; no card or browser operation starts dispatch, a provider, spending or a runtime. Candidate deployment and actual end-to-end pilot qualification remain separate.
+
+## Project-only Board boundary
+
+The [shared outbound boundary](docs/BOARD-BOUNDARY.md) constructs only qualified static project-template tickets, messages and generated JSON attachments. Private narrative, goal mappings, resource URLs, credentials, arbitrary tool fields and raw files have no passthrough. Fresh reservation, qualified project provenance and deterministic private inspection are all required; missing providers fail closed. No HTTP mode enables actual Board publication. Owner-scoped transport, durable dispatch recovery and worker-report integration remain separate milestones.
