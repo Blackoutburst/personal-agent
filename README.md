@@ -67,7 +67,15 @@ npm test
 
 The retained mapping uses a domain-separated SHA-256 issuer/subject key and a random UUID; it does not store the proof or raw principal tuple. The companion ID is an identifier, not an authentication credential. Invalid retained identity state stops provisioning for review instead of silently replacing the ID.
 
-No HTTP authentication or provisioning route, cookie parser, SSO adapter or real-account connection is added. The development validator used by synthetic tests is not a production identity authority. Concurrency and guard tests exercise the primitive only; they do not qualify a real pilot. Account #23 remains unresolved and companion #5 remains incomplete until the actual central validation contract is integrated and verified.
+No HTTP authentication or provisioning route, cookie parser or real-account connection is added. The development validator used by synthetic tests is not a production identity authority. Concurrency and guard tests exercise the primitive only; they do not qualify a real pilot. Account #23's source/interface discovery is complete; companion #5 remains incomplete until real account and owner-runtime binding are integrated and verified.
+
+## Internal account validator
+
+`src/account-validator.mjs` supplies an unwired server-side validator for the discovered account contract. Its trusted configuration selects the literal-loopback `/internal/account/session` endpoint and fixed issuer. The input is only a selected central session-cookie value, not an identity assertion or a raw browser header. It forwards that cookie to the account authority, performs fresh validation on every call and returns only the exact issuer/subject tuple. It does not retain a successful principal or expose provider credentials.
+
+The validator disables redirects, bounds its response and timeout, distinguishes an authentication denial from service unavailability and rejects malformed success responses. No server route imports or calls it; default and demo modes keep their existing unavailable/synthetic boundaries. Tests use temporary synthetic local services only. A proposed consumer factory does not establish a live account connection.
+
+The current account service has an uncaught internal-authenticator error path. This validator must deny access on connection loss; that behavior does not repair the account service's failure containment. The owning fix and reviewed deployment remain production release gates, along with real pilot invitation/owner bindings, logout/revocation and private runtime qualification. See the [current contract handoff](https://board.blackoutburst.com/?thread=95868bf09f5e19d5701f0d2cc7ef2d07&message=36d3467c1782acfb7a2d4ddd98aa4cb3).
 
 ## Integration boundaries
 
@@ -75,4 +83,6 @@ Blackoutburst login and the Codex subscription connection are separate contracts
 
 The Board remains responsible for project work. Companion conversations, memories, goals and personality stay in a separate private store. They must not enter Board tickets, messages, attachments, metadata or logs. The future Board adapter consumes MCP contracts; this project does not copy or embed the Board executor.
 
-See [foundation interfaces and upstream owners](docs/FOUNDATIONS.md) and [runtime, dependency and license decisions](docs/DEPENDENCIES.md). This bootstrap selects no hosted subscription route, handles no live credentials and performs no deployment or runtime activation.
+The revised pilot targets two personal Codex runtimes on the existing Blackoutburst home server, which both owners administer through the shared `ubuntu` SSH account. Each runtime still needs its own managed login, credential/state home, saved threads and application binding. Separate directories do not establish isolation from the shared host administrator. Actual runtime registration, application-level cross-user denial and production storage/service boundaries remain unqualified. No commercial plan-sharing form is assumed by default, and no runtime is activated by selecting this direction.
+
+See [foundation interfaces and upstream owners](docs/FOUNDATIONS.md) and [runtime, dependency and license decisions](docs/DEPENDENCIES.md). This bootstrap handles no live credentials and performs no deployment or runtime activation.

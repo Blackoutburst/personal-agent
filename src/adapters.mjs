@@ -2,9 +2,9 @@ export const BOARD_SOURCE = '25b35ad276cf9056f0cdd9d81791456a6499c189';
 
 export function adapterStatus(mode) {
   return {
-    account: { state: mode === 'demo' ? 'development-double' : 'unavailable', reason: 'Central account validation awaits the account-service contract.' },
+    account: { state: mode === 'demo' ? 'development-double' : 'unavailable', reason: 'Platform sign-in is not connected.' },
     board: { state: mode === 'demo' ? 'development-double' : 'unavailable', reason: 'No owner-scoped Board transport is configured; demo data is synthetic.' },
-    provider: { state: 'unavailable', reason: 'Hosted subscription eligibility and personal connection are not qualified.' },
+    provider: { state: 'unavailable', reason: 'A personal Codex connection is not configured.' },
     runtime: { state: 'unavailable', reason: 'Private per-user execution and recovery await orchestration qualification.' }
   };
 }
