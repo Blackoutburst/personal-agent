@@ -1,4 +1,6 @@
-# Proposed account-only staging gate
+# Account-only staging gate
+
+The owner approved account-only staging and the #5 acceptance split on 1 November 2026. Use the reviewed [operator source](../ops/account-preview/README.md) and the exact generated, SHA-pinned bundle/command in Board task #5. That workflow supersedes the manual proposal below, retains private pilot entries across a verified rollback, and keeps all provider/runtime activation outside this action. Source delivery and synthetic tests do not establish a successful installation or real pilot acceptance.
 
 This is a reviewable deployment proposal, not an installation receipt. No Personal Agent service, proxy location, real pilot file or provider/runtime connection has been activated by this source delivery. Account #24's separately authorized production error guard is already deployed.
 
@@ -27,4 +29,4 @@ The candidate's `ops/personal-agent-account.service` and `ops/personal-agent-pre
 
 If staging checks fail, stop the new companion unit and restore the prior unit/enablement snapshot (including the absent-unit baseline for a new installation), then reload systemd. Restore the preview nginx include from its saved copy, checking `nginx -t` before reload. Retain private metadata and the previous source release; do not delete account/session data or rewrite identity mappings. The account service guard deployed under account #24 is independent and stays in place.
 
-Account mode passing synthetic tests qualifies the candidate's implemented guards, not real HTTPS cookie behavior, actual pilot admission, production tenant isolation or personal-runtime ownership. Companion #5 is not complete on this artifact alone. Its runtime proof overlaps downstream #7/#8, which depend indirectly on #5; clarify that dependency/scope split through MCP before calling #5 complete or unlocking dependent work.
+Account mode passing synthetic tests qualifies the candidate's implemented guards, not real HTTPS cookie behavior, actual pilot admission, production tenant isolation or personal-runtime ownership. Companion #5 is not complete on this artifact alone. Under the approved split, runtime ownership/rebinding/credential routing remains with #7 and execution/events/history isolation/recovery with #8. Those obligations were retained, not waived; dependency edges remain unchanged.
