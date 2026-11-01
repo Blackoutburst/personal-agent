@@ -52,7 +52,7 @@ npm run dev
 
 The external directory contains `bootstrap.sqlite`, a versioned local metadata store. Demo mode writes only its synthetic contract fixture in the `development` namespace. The status API's storage `ready` / `local-bootstrap` state means that this local store opened successfully; it does not establish authenticated tenant storage. The store rejects paths resolving inside the checkout, checks its application/schema version and applies owner-only permissions on POSIX. Windows ACL qualification remains open.
 
-Local development uses synthetic data. The account mapping does not qualify production private conversation storage, retention or secret management. Production filesystem ACLs, encryption, revocation and deletion behavior require the separate private-storage qualification in companion #6.
+Local development uses synthetic data. The private-state implementation milestone #6 is complete under its accepted implementation/qualification split. Actual protected deployment, runtime credential/thread isolation and cross-device private-history acceptance remain with #7/#8, #20 and #21. Windows ACL qualification remains open. Local source tests do not prove those external boundaries.
 
 ## Check the skeleton
 
@@ -69,7 +69,7 @@ npm test
 
 The retained mapping uses a domain-separated SHA-256 issuer/subject key and a random UUID; it does not store the proof or raw principal tuple. The companion ID is an identifier, not an authentication credential. Invalid retained identity state stops provisioning for review instead of silently replacing the ID.
 
-Concurrency, HTTP integration and guard tests use synthetic accounts; they do not qualify a real pilot. Companion #5 remains incomplete until real account admission and owner-runtime binding are integrated and verified.
+Concurrency, HTTP integration and guard tests use synthetic accounts. Separately, #5 is complete for account-only acceptance: both invited owners reported admission and non-expiry checks passing, and the owner accepted an isolated exact-source expiry test. An actual pilot session timeout remains unobserved. All actual runtime binding and full-pilot obligations remain in #7/#8 and #21.
 
 ## Internal account validator
 
@@ -77,7 +77,7 @@ Concurrency, HTTP integration and guard tests use synthetic accounts; they do no
 
 The validator disables redirects, bounds its response and timeout, distinguishes an authentication denial from service unavailability and rejects malformed success responses. Tests use temporary synthetic local services only.
 
-The account service's internal-authenticator failure guard was deployed and verified in [account #24](https://board.blackoutburst.com/?thread=9968061425da6965dcc349be308fa289&message=beaa288b997af0bde67e7c51db52274e). Real pilot invitation/owner bindings, logout/revocation and private runtime qualification remain open.
+The account service's internal-authenticator failure guard was deployed and verified in [account #24](https://board.blackoutburst.com/?thread=9968061425da6965dcc349be308fa289&message=beaa288b997af0bde67e7c51db52274e). Account-only invitation, identity stability and logout/relogin are accepted in #5. Provider revocation and actual private runtime qualification remain open.
 
 ## Account-only HTTP candidate
 
@@ -87,11 +87,11 @@ The web button checks the browser's existing platform cookie without collecting 
 
 Private pilot configuration contains only exact central account principals, never names, emails, passwords, cookies or Codex credentials. The schema is `{"principals":[{"issuer":"https://blackoutburst.com","subject":"<central account UUID>"}]}` with one or two distinct principals. Keep the real file and identity values out of source, Board payloads and attachments. On POSIX it must be a current-user-owned regular file with mode `0600`, one link and a current-user-owned mode `0700` parent, outside the checkout, with no symlink components and trusted nonwritable ancestors. Windows CLI account mode fails closed until ACL qualification; local synthetic tests use explicit constructor injection. Detailed file validation lives in `src/pilot-config.mjs`.
 
-No companion proxy/service is installed by this source change. A future HTTPS staging plan must preserve the exact Origin, set a fixed loopback Host, strip a dedicated prefix and redirect its bare prefix to a trailing slash, because assets/API URLs are relative. The service itself binds only to loopback and trusts no forwarded identity or host headers. Provider/runtime paths do not exist. See `docs/ACCOUNT-STAGING.md` for the proposed reviewable deployment and acceptance gate.
+The earlier account-only release `9d57d26` is installed behind the dedicated HTTPS preview prefix, with boot startup disabled. This source candidate has not replaced it. The proxy preserves the exact Origin, sets a fixed loopback Host, strips the dedicated prefix and redirects its bare prefix to a trailing slash, because assets/API URLs are relative. The service binds only to loopback and trusts no forwarded identity or host headers. Provider/runtime paths do not exist. See [account staging and retained installation evidence](docs/ACCOUNT-STAGING.md).
 
 ## Integration boundaries
 
-Blackoutburst login and the Codex subscription connection are separate contracts. The app must eventually derive its companion identity from a validated central account, never a client-supplied account or Board-owner ID. Each user needs a separate qualified provider/runtime boundary. A synthetic preview cannot establish any of these properties.
+Blackoutburst login and the personal Codex connection are separate contracts. Account mode derives companion identity from a validated central account, never a client-supplied account or Board-owner ID. Each user still needs a separate qualified provider/runtime boundary. A synthetic preview cannot establish that external boundary.
 
 The Board remains responsible for project work. Companion conversations, memories, goals and personality stay in a separate private store. They must not enter Board tickets, messages, attachments, metadata or logs. The future Board adapter consumes MCP contracts; this project does not copy or embed the Board executor.
 
@@ -102,3 +102,7 @@ See [foundation interfaces and upstream owners](docs/FOUNDATIONS.md) and [runtim
 ## Private-state implementation
 
 The source now includes an account-mode private ledger/API candidate. See [PRIVATE-STATE.md](docs/PRIVATE-STATE.md) for its authenticated contract, ordering/retry semantics, privacy boundaries and verification limits. The running account preview has not been updated to this candidate; runtime connections remain unavailable.
+
+## Personal runtime binding candidate
+
+[PERSONAL-RUNTIME.md](docs/PERSONAL-RUNTIME.md) pins the versioned per-owner registration, authentication, routing and lifecycle consumer contract. `src/runtime-bindings.mjs` is an unwired backend-only metadata registry with a runtime-authority verifier that defaults unavailable. It fences stale generations and keeps authoritative bindings separate from client-writable private-state records. It adds no HTTP route, provider login, process launcher or model call. Synthetic verification is not actual runtime qualification. The owning orchestration contract, protected homes, owner-controlled native connections and real lifecycle/isolation evidence remain required.
