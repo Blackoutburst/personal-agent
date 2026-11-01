@@ -1,8 +1,8 @@
 # Personal Agent bootstrap
 
-A local candidate for the Blackoutburst personal companion. It contains a responsive web client, a loopback HTTP server, SQLite metadata/namespace interfaces and an account-to-companion integration. Personal Codex, Board access and private conversations remain unavailable.
+A local candidate for the Blackoutburst personal companion. It contains a responsive account-preview client, a loopback HTTP server, account-to-companion integration and a private SQLite ledger/API. Personal Codex, Board access and model-backed conversation remain unavailable.
 
-The default mode is `unavailable`. An explicit `demo` mode displays synthetic preview data and labels the account and Board adapters `development-double`. Neither mode contacts an account authority. Explicit `account` mode enables fresh platform-session checks and invited-user provisioning only; provider and runtime stay unavailable in every mode. The new account candidate has synthetic end-to-end tests; real pilot acceptance and companion deployment are still unqualified.
+The default mode is `unavailable`. An explicit `demo` mode displays synthetic preview data and labels the account and Board adapters `development-double`. Neither mode contacts an account authority. Explicit `account` mode enables fresh platform-session checks, invited-user provisioning and the private-state API; provider and runtime stay unavailable in every mode. The running account-only preview remains pinned to its earlier release. This private-state candidate is not deployed, and a full companion/runtime pilot remains unqualified.
 
 ## Run locally
 
@@ -98,3 +98,7 @@ The Board remains responsible for project work. Companion conversations, memorie
 The revised pilot targets two personal Codex runtimes on the existing Blackoutburst home server, which both owners administer through the shared `ubuntu` SSH account. Each runtime still needs its own managed login, credential/state home, saved threads and application binding. Separate directories do not establish isolation from the shared host administrator. Actual runtime registration, application-level cross-user denial and production storage/service boundaries remain unqualified. No commercial plan-sharing form is assumed by default, and no runtime is activated by selecting this direction.
 
 See [foundation interfaces and upstream owners](docs/FOUNDATIONS.md) and [runtime, dependency and license decisions](docs/DEPENDENCIES.md). This candidate does not collect provider credentials or activate a runtime.
+
+## Private-state implementation
+
+The source now includes an account-mode private ledger/API candidate. See [PRIVATE-STATE.md](docs/PRIVATE-STATE.md) for its authenticated contract, ordering/retry semantics, privacy boundaries and verification limits. The running account preview has not been updated to this candidate; runtime connections remain unavailable.

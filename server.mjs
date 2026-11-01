@@ -5,8 +5,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BootstrapStore } from './src/store.mjs';
 import { adapterStatus, syntheticPreview } from './src/adapters.mjs';
 import { createAccountValidator } from './src/account-validator.mjs';
-import { createAccountHttp } from './src/account-http.mjs';
+import { createAccountAccess, createAccountHttp } from './src/account-http.mjs';
 import { loadPilotSubjects } from './src/pilot-config.mjs';
+import { PrivateStateStore } from './src/private-state.mjs';
+import { createPrivateHttp } from './src/private-http.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STATIC = new Map([
@@ -38,13 +40,15 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     'content-security-policy': "default-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
   };
   let accountHttp;
+  let privateHttp;
   const allowedOrigins = () => new Set(publicOrigin ? [publicOrigin] :
     [`http://127.0.0.1:${server.address().port}`, `http://localhost:${server.address().port}`]);
   const server = createServer({ maxHeaderSize: 16384, requestTimeout: 5000, headersTimeout: 5000 }, async (req, res) => {
     const send = (status, body, type = 'application/json; charset=utf-8') => {
       if (res.destroyed || res.headersSent) return;
+      const encoded = req.method === 'HEAD' ? undefined : (type.startsWith('application/json') ? JSON.stringify(body) : body);
       res.writeHead(status, { ...headers, 'content-type': type });
-      res.end(req.method === 'HEAD' ? undefined : (type.startsWith('application/json') ? JSON.stringify(body) : body));
+      res.end(encoded);
     };
     const fail = (status, code, message) => send(status, { error: { code, message } });
     try {
@@ -58,6 +62,11 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       const path = req.url;
       if (path === '/api/session' && req.method === 'POST' && mode === 'account') {
         const result = await accountHttp(req);
+        if (result.closeConnection) res.setHeader('connection', 'close');
+        return send(result.status, result.body);
+      }
+      if (path === '/api/private/state' && mode === 'account') {
+        const result = await privateHttp(req);
         if (result.closeConnection) res.setHeader('connection', 'close');
         return send(result.status, result.body);
       }
@@ -80,8 +89,12 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     }
   });
   try {
-    if (mode === 'account') accountHttp = createAccountHttp({ store,
-      validateAccount: validateAccount ?? createAccountValidator(), pilotSubjects: admitted, allowedOrigins });
+    if (mode === 'account') {
+      const access = createAccountAccess({ store,
+        validateAccount: validateAccount ?? createAccountValidator(), pilotSubjects: admitted, allowedOrigins });
+      accountHttp = createAccountHttp({ access });
+      privateHttp = createPrivateHttp({ access, state: new PrivateStateStore(store) });
+    }
     await new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(port, '127.0.0.1', resolve);

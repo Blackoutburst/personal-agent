@@ -39,13 +39,13 @@ function selectedSession(request) {
   return selected.length === 1 && /^[A-Za-z0-9_-]{43}$/.test(selected[0]) ? selected[0] : null;
 }
 
-function emptyJsonBody(request) {
-  if (Number(request.headers['content-length']) > 1024) return Promise.resolve(fail('BODY_TOO_LARGE', true));
+function readJsonBody(request, maximum) {
+  if (Number(request.headers['content-length']) > maximum) return Promise.resolve({ failure: fail('BODY_TOO_LARGE', true) });
   return new Promise(resolve => {
     const chunks = [];
     let bytes = 0;
     let settled = false;
-    const deadline = setTimeout(() => finish(fail('REQUEST_TIMEOUT', true)), 3000);
+    const deadline = setTimeout(() => finish({ failure: fail('REQUEST_TIMEOUT', true) }), 3000);
     function finish(result = null) {
       if (settled) return;
       settled = true;
@@ -54,23 +54,23 @@ function emptyJsonBody(request) {
       request.removeListener('end', onEnd);
       request.removeListener('error', onError);
       request.removeListener('aborted', onError);
-      if (result?.closeConnection) {
+      if (result?.failure?.closeConnection) {
         request.pause();
         request.once('error', () => {});
       }
       resolve(result);
     }
-    function onError() { finish(fail('BAD_REQUEST', true)); }
+    function onError() { finish({ failure: fail('BAD_REQUEST', true) }); }
     function onData(chunk) {
       bytes += chunk.length;
-      if (bytes > 1024) return finish(fail('BODY_TOO_LARGE', true));
+      if (bytes > maximum) return finish({ failure: fail('BODY_TOO_LARGE', true) });
       chunks.push(chunk);
     }
     function onEnd() {
       try {
         const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
-        finish(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0 ? null : fail('BAD_REQUEST'));
-      } catch { finish(fail('BAD_REQUEST')); }
+        finish({ value });
+      } catch { finish({ failure: fail('BAD_REQUEST') }); }
     }
     request.on('data', onData);
     request.once('end', onEnd);
@@ -80,38 +80,55 @@ function emptyJsonBody(request) {
 }
 
 // Local candidate boundary; its caller owns routing, host checks and response headers.
-export function createAccountHttp({ store, validateAccount, pilotSubjects, allowedOrigins }) {
+export function createAccountAccess({ store, validateAccount, pilotSubjects, allowedOrigins }) {
+  return {
+    async read(request, maximum = 1024) {
+      if (request.method !== 'POST') return { failure: fail('METHOD_NOT_ALLOWED', true) };
+      let allowed;
+      try { allowed = allowedOrigins(); if (!(allowed instanceof Set)) throw new Error(); }
+      catch { return { failure: fail('ACCOUNT_VALIDATION_UNAVAILABLE', true) }; }
+      const origins = rawValues(request, 'origin');
+      let originValid = false;
+      try {
+        const origin = origins[0];
+        const parsed = new URL(origin);
+        originValid = origins.length === 1 && ['http:', 'https:'].includes(parsed.protocol) && parsed.origin === origin && allowed.has(origin);
+      } catch { /* Missing, null and malformed origins stay denied. */ }
+      if (!originValid || rawValues(request, 'sec-fetch-site').some(value => value.split(',').some(part => part.trim().toLowerCase() === 'cross-site'))) {
+        return { failure: fail('ORIGIN_REJECTED', true) };
+      }
+      const contentTypes = rawValues(request, 'content-type');
+      if (contentTypes.length !== 1 || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?$/i.test(contentTypes[0])) {
+        return { failure: fail('UNSUPPORTED_MEDIA_TYPE', true) };
+      }
+      return readJsonBody(request, maximum);
+    },
+    async authorize(request) {
+      const session = selectedSession(request);
+      if (session === null) return { failure: fail('AUTHENTICATION_REQUIRED') };
+      try {
+        const provision = createCompanionProvisioner({ store, validateAccount, pilotSubjects });
+        const { companionId } = await provision(session);
+        return { companionId };
+      } catch (error) {
+        const known = error instanceof CompanionAccessError && ['AUTHENTICATION_REQUIRED', 'INVITATION_REQUIRED',
+          'ACCOUNT_VALIDATION_UNAVAILABLE', 'COMPANION_STORE_UNAVAILABLE', 'COMPANION_STATE_INVALID'].includes(error.code);
+        return { failure: fail(known ? error.code : 'ACCOUNT_VALIDATION_UNAVAILABLE') };
+      }
+    }
+  };
+}
+
+// Both account and private-state requests use this same transport and admission boundary.
+export function createAccountHttp(options) {
+  const access = options.access ?? createAccountAccess(options);
   return async function accountSession(request) {
-    if (request.method !== 'POST') return fail('METHOD_NOT_ALLOWED', true);
-    let allowed;
-    try { allowed = allowedOrigins(); if (!(allowed instanceof Set)) throw new Error(); }
-    catch { return fail('ACCOUNT_VALIDATION_UNAVAILABLE', true); }
-    const origins = rawValues(request, 'origin');
-    let originValid = false;
-    try {
-      const origin = origins[0];
-      const parsed = new URL(origin);
-      originValid = origins.length === 1 && ['http:', 'https:'].includes(parsed.protocol) && parsed.origin === origin && allowed.has(origin);
-    } catch { /* Missing, null and malformed origins stay denied. */ }
-    if (!originValid || rawValues(request, 'sec-fetch-site').some(value => value.split(',').some(part => part.trim().toLowerCase() === 'cross-site'))) {
-      return fail('ORIGIN_REJECTED', true);
-    }
-    const contentTypes = rawValues(request, 'content-type');
-    if (contentTypes.length !== 1 || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?$/i.test(contentTypes[0])) {
-      return fail('UNSUPPORTED_MEDIA_TYPE', true);
-    }
-    const bodyFailure = await emptyJsonBody(request);
-    if (bodyFailure) return bodyFailure;
-    const session = selectedSession(request);
-    if (session === null) return fail('AUTHENTICATION_REQUIRED');
-    try {
-      const provision = createCompanionProvisioner({ store, validateAccount, pilotSubjects });
-      const { companionId } = await provision(session);
-      return { status: 200, body: { companionId, provider: { state: 'unavailable' }, runtime: { state: 'unavailable' } } };
-    } catch (error) {
-      const known = error instanceof CompanionAccessError && ['AUTHENTICATION_REQUIRED', 'INVITATION_REQUIRED',
-        'ACCOUNT_VALIDATION_UNAVAILABLE', 'COMPANION_STORE_UNAVAILABLE', 'COMPANION_STATE_INVALID'].includes(error.code);
-      return fail(known ? error.code : 'ACCOUNT_VALIDATION_UNAVAILABLE');
-    }
+    const parsed = await access.read(request);
+    if (parsed.failure) return parsed.failure;
+    const value = parsed.value;
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 0) return fail('BAD_REQUEST');
+    const admitted = await access.authorize(request);
+    if (admitted.failure) return admitted.failure;
+    return { status: 200, body: { companionId: admitted.companionId, provider: { state: 'unavailable' }, runtime: { state: 'unavailable' } } };
   };
 }

@@ -62,7 +62,7 @@ test('account mode composes fresh HTTP authority, pilot admission and stable com
   assert.equal(other.headers['cache-control'], 'no-store');
   assert.equal(other.headers['set-cookie'], undefined);
   assert.equal(other.headers['access-control-allow-origin'], undefined);
-  assert.equal(app.store.count(), 2);
+  assert.equal(app.store.db.prepare("SELECT COUNT(*) AS total FROM bootstrap_record WHERE namespace='companion-identity-v1'").get().total, 2);
   assert.equal((await session(app, proofC)).status, 403);
   sessions.delete(proofA);
   assert.equal((await session(app, proofA)).status, 401);
@@ -71,7 +71,7 @@ test('account mode composes fresh HTTP authority, pilot admission and stable com
   const unavailable = await session(app, proofB);
   assert.equal(unavailable.status, 503);
   assert.equal(unavailable.json.companionId, undefined);
-  assert.equal(app.store.count(), 2);
+  assert.equal(app.store.db.prepare("SELECT COUNT(*) AS total FROM bootstrap_record WHERE namespace='companion-identity-v1'").get().total, 2);
   assert.equal(requests, 11);
 });
 

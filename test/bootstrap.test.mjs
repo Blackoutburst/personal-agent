@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync, symlinkSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -131,6 +131,7 @@ test('an absent Windows drive is rejected promptly instead of looping', t => {
 test('unsupported schema fails closed without rewriting existing bytes', t => {
   const dir = workspace(t); const filename = join(dir, 'bootstrap.sqlite');
   const db = new DatabaseSync(filename); db.exec('PRAGMA application_id=1346454321; PRAGMA user_version=99; CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES (\'keep\');'); db.close();
+  if (process.platform !== 'win32') chmodSync(filename, 0o600);
   const original = readFileSync(filename);
   assert.throws(() => new BootstrapStore(dir, ROOT), /Unsupported/);
   assert.deepEqual(readFileSync(filename), original);

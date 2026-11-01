@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, chmodSync, existsSync, statSync, lstatSync } from 'node:fs';
+import { mkdirSync, realpathSync, existsSync, lstatSync, openSync, closeSync } from 'node:fs';
 import { resolve, relative, isAbsolute, sep, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -19,6 +19,36 @@ function inside(candidate, root) {
   return suffix === '' || (!suffix.startsWith(`..${sep}`) && suffix !== '..' && !isAbsolute(suffix));
 }
 
+function present(path) {
+  try { return lstatSync(path); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+}
+
+function directoryChain(path) {
+  for (let selected = path; ; selected = resolve(selected, '..')) {
+    const info = present(selected);
+    if (info) {
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Private data directory cannot use links');
+      if (process.platform !== 'win32') {
+        const stickyRoot = info.uid === 0 && (info.mode & 0o1000);
+        if (![0, process.getuid()].includes(info.uid) || ((info.mode & 0o022) && !stickyRoot)) {
+          throw new Error('Private data ancestor requires trusted ownership and permissions');
+        }
+      }
+    }
+    if (resolve(selected, '..') === selected) break;
+  }
+}
+
+function privateFile(path) {
+  const info = present(path);
+  if (!info) return;
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error('Private database/sidecar must be a regular unshared file');
+  if (process.platform !== 'win32' && (info.uid !== process.getuid() || (info.mode & 0o7777) !== 0o600)) {
+    throw new Error('Private database/sidecar requires private ownership and permissions');
+  }
+}
+
 export class BootstrapStore {
   constructor(dataDir, sourceRoot) {
     if (!dataDir || !isAbsolute(dataDir)) throw new Error('COMPANION_DATA_DIR must be an absolute external path');
@@ -34,17 +64,23 @@ export class BootstrapStore {
     }
     const projected = resolve(realpathSync(ancestor), relative(ancestor, selected));
     if (inside(projected, source)) throw new Error('Private data resolves inside the checkout');
+    directoryChain(selected);
     mkdirSync(selected, { recursive: true, mode: 0o700 });
+    directoryChain(selected);
     const directory = realpathSync(selected);
     if (inside(directory, source)) throw new Error('Private data resolves inside the checkout');
-    if (process.platform !== 'win32' && (statSync(directory).mode & 0o077)) {
+    const directoryInfo = lstatSync(directory);
+    if (process.platform !== 'win32' && (directoryInfo.uid !== process.getuid() || (directoryInfo.mode & 0o7777) !== 0o700)) {
       throw new Error('Private data directory requires owner-only permissions');
     }
     const filename = join(directory, 'bootstrap.sqlite');
-    if (existsSync(filename)) {
-      const info = lstatSync(filename);
-      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error('Private database must be a regular unshared file');
+    if (!present(filename)) {
+      try { closeSync(openSync(filename, 'wx', 0o600)); }
+      catch (error) { if (error.code !== 'EEXIST') throw error; }
     }
+    // Refuse unsafe retained bytes before SQLite can recover or modify them.
+    privateFile(filename);
+    for (const suffix of ['-journal', '-wal', '-shm']) privateFile(filename + suffix);
     const db = new DatabaseSync(filename);
     try {
       db.exec('PRAGMA busy_timeout=5000; BEGIN IMMEDIATE;');
@@ -58,7 +94,6 @@ export class BootstrapStore {
       }
       db.prepare('SELECT namespace,key,value_json FROM bootstrap_record LIMIT 0').all();
       db.exec('COMMIT;');
-      if (process.platform !== 'win32') chmodSync(filename, 0o600);
       this.db = db;
     } catch (error) {
       try { db.exec('ROLLBACK;'); } catch { /* The connection may not have entered a transaction. */ }
