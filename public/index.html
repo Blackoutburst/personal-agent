@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Personal Agent · Local foundation</title>
-  <link rel="stylesheet" href="/styles.css">
-  <script src="/app.js" defer></script>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <div class="shell">
     <aside class="sidebar" aria-label="Project information">
-      <a class="brand" href="/" aria-label="Personal Agent home"><span class="brand-mark" aria-hidden="true"></span><span>Personal Agent<span class="brand-caption">A companion with continuity</span></span></a>
+      <a class="brand" href="./" aria-label="Personal Agent home"><span class="brand-mark" aria-hidden="true"></span><span>Personal Agent<span class="brand-caption">A companion with continuity</span></span></a>
       <p class="sidebar-label">WORKSPACE</p>
       <div class="current-view"><span aria-hidden="true">◈</span> Foundation <span class="view-number">01</span></div>
       <div class="sidebar-note"><span class="small-dot" aria-hidden="true"></span><p>Built one step at a time.<span>Conversation and goals come in a later product slice.</span></p></div>
@@ -25,6 +25,11 @@
         <section class="intro" aria-labelledby="page-title">
           <div><p class="eyebrow">THE FIRST BUILDING BLOCK</p><h1 id="page-title">A steady place to start.</h1><p class="intro-copy">The local foundation for one persistent companion. See what is available, and inspect the integration contract before connecting real services.</p></div>
           <div class="companion-mark" aria-hidden="true"><div class="orbit"></div><div class="companion-core">✦</div><span>Foundation / v1</span></div>
+        </section>
+
+        <section id="account-panel" class="account-panel panel" aria-labelledby="account-title" hidden>
+          <div><p class="eyebrow">YOUR BLACKOUTBURST ACCOUNT</p><h2 id="account-title">One account. Your companion.</h2><p class="section-copy">Use your existing platform sign-in to find your private companion. Personal Codex connects in a later step.</p><p id="account-status" class="account-status" role="status">Check your current platform sign-in to continue.</p><p id="companion-identity" class="companion-identity" hidden></p></div>
+          <div class="account-actions"><button id="account-button" type="button">Check platform sign-in <span aria-hidden="true">↗</span></button><a id="platform-login" href="https://blackoutburst.com/account/" rel="noreferrer">Open Blackoutburst sign-in</a></div>
         </section>
 
         <div class="foundation-layout">
@@ -50,7 +55,7 @@
 
         <section id="preview-result" class="result panel" aria-labelledby="result-title" hidden><div class="section-heading"><div><p class="eyebrow">SYNTHETIC DATA ONLY</p><h2 id="result-title">Contract preview</h2></div><span class="read-only-label">Read only</span></div><p id="preview-message" class="section-copy"></p><pre id="preview-json" tabindex="0" aria-label="Synthetic API contract JSON"></pre></section>
 
-        <footer class="page-footer"><p>This foundation is not connected to real accounts, Board services or a model provider. Chat and goals are a later step.</p><span id="service-version">LOCAL FOUNDATION</span></footer>
+        <footer class="page-footer"><p id="foundation-notice">This foundation is not connected to real accounts, Board services or a model provider. Chat and goals are a later step.</p><span id="service-version">LOCAL FOUNDATION</span></footer>
       </main>
     </div>
   </div>

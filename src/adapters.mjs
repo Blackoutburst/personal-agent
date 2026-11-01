@@ -2,7 +2,8 @@ export const BOARD_SOURCE = '25b35ad276cf9056f0cdd9d81791456a6499c189';
 
 export function adapterStatus(mode) {
   return {
-    account: { state: mode === 'demo' ? 'development-double' : 'unavailable', reason: 'Platform sign-in is not connected.' },
+    account: { state: mode === 'account' ? 'configured' : mode === 'demo' ? 'development-double' : 'unavailable',
+      reason: mode === 'account' ? 'Platform session checks are configured. Verify your current sign-in below.' : 'Platform sign-in is not connected.' },
     board: { state: mode === 'demo' ? 'development-double' : 'unavailable', reason: 'No owner-scoped Board transport is configured; demo data is synthetic.' },
     provider: { state: 'unavailable', reason: 'A personal Codex connection is not configured.' },
     runtime: { state: 'unavailable', reason: 'Private per-user execution and recovery await orchestration qualification.' }

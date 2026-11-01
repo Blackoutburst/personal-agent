@@ -3,9 +3,13 @@
 const previewButton = document.querySelector("#preview-button");
 const previewStatus = document.querySelector("#preview-status");
 const resultPanel = document.querySelector("#preview-result");
+const accountButton = document.querySelector("#account-button");
+const accountStatus = document.querySelector("#account-status");
+const companionIdentity = document.querySelector("#companion-identity");
 const activeRequests = new Set();
+let accountEpoch = 0;
 
-async function getJson(path) {
+async function getJson(path, options = {}) {
   const controller = new AbortController();
   activeRequests.add(controller);
   const timeout = setTimeout(() => controller.abort(), 15000);
@@ -15,6 +19,7 @@ async function getJson(path) {
       credentials: "same-origin",
       cache: "no-store",
       headers: { Accept: "application/json" },
+      ...options,
     });
     const body = await response.json();
     if (!response.ok) throw new Error(body.error?.message || `Local service returned ${response.status}.`);
@@ -38,14 +43,20 @@ function showAdapter(card, adapter) {
 
 async function loadStatus() {
   try {
-    const status = await getJson("/api/status");
+    const status = await getJson("api/status");
     document.querySelectorAll("[data-adapter]").forEach(card => showAdapter(card, status.adapters?.[card.dataset.adapter]));
     const mode = status.service?.mode;
     const isDemo = mode === "demo";
+    const isAccount = mode === "account";
+    document.querySelector("#account-panel").hidden = !isAccount;
     document.querySelector("#demo-badge").hidden = !isDemo;
     document.querySelector("#connection-notice").textContent = isDemo
       ? "Demo mode uses synthetic data. Real service connections remain unavailable."
+      : isAccount ? "Platform session checks are configured. Personal Codex and Board connections are still unavailable."
       : "Local service status. Real connections are not configured in this foundation.";
+    document.querySelector("#foundation-notice").textContent = isAccount
+      ? "Platform sign-in and personal Codex are separate connections. Chat, goals and runtime control come in later steps."
+      : "This foundation is not connected to real accounts, Board services or a model provider. Chat and goals are a later step.";
     document.querySelector("#storage-state").textContent = [status.storage?.state || "unavailable", status.storage?.mode].filter(Boolean).join(" · ");
     document.querySelector("#service-version").textContent = `${status.service?.name || "Personal Agent"} · ${status.service?.version || "local"}`;
     previewButton.disabled = !isDemo;
@@ -66,7 +77,7 @@ previewButton.addEventListener("click", async () => {
   resultPanel.hidden = true;
   document.querySelector("#preview-json").textContent = "";
   try {
-    const preview = await getJson("/api/contract-preview");
+    const preview = await getJson("api/contract-preview");
     if (preview.synthetic !== true) throw new Error("The service did not identify this preview as synthetic. No preview was displayed.");
     document.querySelector("#preview-message").textContent = preview.message || "Synthetic local contract data. Real adapters remain disconnected.";
     document.querySelector("#preview-json").textContent = JSON.stringify(preview, null, 2);
@@ -79,7 +90,47 @@ previewButton.addEventListener("click", async () => {
   }
 });
 
+function clearIdentity() {
+  accountEpoch++;
+  companionIdentity.hidden = true;
+  companionIdentity.textContent = "";
+  accountStatus.textContent = "Check your current platform sign-in to continue.";
+}
+
+accountButton.addEventListener("click", async () => {
+  accountButton.disabled = true;
+  clearIdentity();
+  const requestEpoch = accountEpoch;
+  accountStatus.textContent = "Checking your current platform sign-in…";
+  try {
+    const session = await getJson("api/session", { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" });
+    if (requestEpoch !== accountEpoch || document.visibilityState === "hidden") return;
+    if (typeof session.companionId !== "string" || !/^[0-9a-f-]{36}$/.test(session.companionId)
+      || session.provider?.state !== "unavailable" || session.runtime?.state !== "unavailable") {
+      throw new Error("The account response could not be verified. Please try again.");
+    }
+    companionIdentity.textContent = `Companion ${session.companionId}`;
+    companionIdentity.hidden = false;
+    accountStatus.textContent = "Your invited platform account is verified. Your companion identity is ready; personal Codex is not connected.";
+  } catch (error) {
+    if (requestEpoch !== accountEpoch || document.visibilityState === "hidden") return;
+    clearIdentity();
+    accountStatus.textContent = error.message;
+  } finally {
+    accountButton.disabled = false;
+  }
+});
+
+// Clear a previous display when returning from platform login/logout. This display is never authority.
+window.addEventListener("pageshow", clearIdentity);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    clearIdentity();
+    accountStatus.textContent = "Check your current platform sign-in to continue.";
+  }
+});
 window.addEventListener("pagehide", () => {
+  clearIdentity();
   activeRequests.forEach(controller => controller.abort());
 });
 
