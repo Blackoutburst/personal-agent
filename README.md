@@ -106,3 +106,7 @@ The source now includes an account-mode private ledger/API candidate. See [PRIVA
 ## Personal runtime binding candidate
 
 [PERSONAL-RUNTIME.md](docs/PERSONAL-RUNTIME.md) pins the versioned per-owner registration, authentication, routing and lifecycle consumer contract. `src/runtime-bindings.mjs` is an unwired backend-only metadata registry with a runtime-authority verifier that defaults unavailable. It fences stale generations and keeps authoritative bindings separate from client-writable private-state records. It adds no HTTP route, provider login, process launcher or model call. Synthetic verification is not actual runtime qualification. The owning orchestration contract, protected homes, owner-controlled native connections and real lifecycle/isolation evidence remain required.
+
+## Conversation client candidate
+
+Open `conversation.html` on the local candidate to try the [text-and-links conversation client](docs/CONVERSATION-UI.md). Positive interaction requires explicit `demo` mode and is prominently labelled synthetic replies/no AI. The bounded fixture supports threads, paged incremental replies, reconnect and exact-action retries across two test clients. Account mode freshly checks platform admission but keeps personal Codex and conversation unavailable. No actual runtime/private-history integration or browser acceptance is claimed, and this source has not replaced the deployed account-only preview.

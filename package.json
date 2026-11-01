@@ -6,7 +6,7 @@
   "engines": { "node": ">=24.22.1 <25" },
   "scripts": {
     "dev": "node server.mjs",
-    "check": "node --check server.mjs && node --check src/store.mjs && node --check src/adapters.mjs && node --check src/provisioning.mjs && node --check src/account-validator.mjs && node --check src/account-http.mjs && node --check src/pilot-config.mjs && node --check src/private-state.mjs && node --check src/private-http.mjs && node --check src/runtime-bindings.mjs && node --check public/app.js",
+    "check": "node --check server.mjs && node --check src/store.mjs && node --check src/adapters.mjs && node --check src/provisioning.mjs && node --check src/account-validator.mjs && node --check src/account-http.mjs && node --check src/pilot-config.mjs && node --check src/private-state.mjs && node --check src/private-http.mjs && node --check src/runtime-bindings.mjs && node --check src/conversation-demo.mjs && node --check src/conversation-http.mjs && node --check public/conversation-client.mjs && node --check public/conversation-app.mjs && node --check public/app.js",
     "test": "node --test"
   }
 }

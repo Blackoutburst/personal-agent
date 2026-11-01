@@ -9,13 +9,18 @@ import { createAccountAccess, createAccountHttp } from './src/account-http.mjs';
 import { loadPilotSubjects } from './src/pilot-config.mjs';
 import { PrivateStateStore } from './src/private-state.mjs';
 import { createPrivateHttp } from './src/private-http.mjs';
+import { createConversationHttp } from './src/conversation-http.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STATIC = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
-  ['/styles.css', ['styles.css', 'text/css; charset=utf-8']]
+  ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
+  ['/conversation.html', ['conversation.html', 'text/html; charset=utf-8']],
+  ['/conversation.css', ['conversation.css', 'text/css; charset=utf-8']],
+  ['/conversation-app.mjs', ['conversation-app.mjs', 'text/javascript; charset=utf-8']],
+  ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']]
 ]);
 
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
@@ -41,6 +46,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   };
   let accountHttp;
   let privateHttp;
+  let conversationHttp;
   const allowedOrigins = () => new Set(publicOrigin ? [publicOrigin] :
     [`http://127.0.0.1:${server.address().port}`, `http://localhost:${server.address().port}`]);
   const server = createServer({ maxHeaderSize: 16384, requestTimeout: 5000, headersTimeout: 5000 }, async (req, res) => {
@@ -60,6 +66,11 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       }
       // Exact raw paths only: queries cannot enable demo and traversal is rejected.
       const path = req.url;
+      if (path === '/api/conversation') {
+        const result = await conversationHttp(req);
+        if (result.closeConnection) res.setHeader('connection', 'close');
+        return send(result.status, result.body);
+      }
       if (path === '/api/session' && req.method === 'POST' && mode === 'account') {
         const result = await accountHttp(req);
         if (result.closeConnection) res.setHeader('connection', 'close');
@@ -89,9 +100,11 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     }
   });
   try {
+    const access = createAccountAccess({ store,
+      validateAccount: mode === 'account' ? (validateAccount ?? createAccountValidator()) : null,
+      pilotSubjects: admitted, allowedOrigins });
+    conversationHttp = createConversationHttp({ access, store, mode });
     if (mode === 'account') {
-      const access = createAccountAccess({ store,
-        validateAccount: validateAccount ?? createAccountValidator(), pilotSubjects: admitted, allowedOrigins });
       accountHttp = createAccountHttp({ access });
       privateHttp = createPrivateHttp({ access, state: new PrivateStateStore(store) });
     }
