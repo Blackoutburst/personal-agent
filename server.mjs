@@ -10,6 +10,7 @@ import { loadPilotSubjects } from './src/pilot-config.mjs';
 import { PrivateStateStore } from './src/private-state.mjs';
 import { createPrivateHttp } from './src/private-http.mjs';
 import { createConversationHttp } from './src/conversation-http.mjs';
+import { createGoalsHttp } from './src/goals-http.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STATIC = new Map([
@@ -20,7 +21,11 @@ const STATIC = new Map([
   ['/conversation.html', ['conversation.html', 'text/html; charset=utf-8']],
   ['/conversation.css', ['conversation.css', 'text/css; charset=utf-8']],
   ['/conversation-app.mjs', ['conversation-app.mjs', 'text/javascript; charset=utf-8']],
-  ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']]
+  ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']],
+  ['/goals.html', ['goals.html', 'text/html; charset=utf-8']],
+  ['/goals.css', ['goals.css', 'text/css; charset=utf-8']],
+  ['/goals-app.mjs', ['goals-app.mjs', 'text/javascript; charset=utf-8']],
+  ['/goals-client.mjs', ['goals-client.mjs', 'text/javascript; charset=utf-8']]
 ]);
 
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
@@ -47,6 +52,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let accountHttp;
   let privateHttp;
   let conversationHttp;
+  let goalsHttp;
   const allowedOrigins = () => new Set(publicOrigin ? [publicOrigin] :
     [`http://127.0.0.1:${server.address().port}`, `http://localhost:${server.address().port}`]);
   const server = createServer({ maxHeaderSize: 16384, requestTimeout: 5000, headersTimeout: 5000 }, async (req, res) => {
@@ -66,6 +72,11 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       }
       // Exact raw paths only: queries cannot enable demo and traversal is rejected.
       const path = req.url;
+      if (path === '/api/goals') {
+        const result = await goalsHttp(req);
+        if (result.closeConnection) res.setHeader('connection', 'close');
+        return send(result.status, result.body);
+      }
       if (path === '/api/conversation') {
         const result = await conversationHttp(req);
         if (result.closeConnection) res.setHeader('connection', 'close');
@@ -104,6 +115,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       validateAccount: mode === 'account' ? (validateAccount ?? createAccountValidator()) : null,
       pilotSubjects: admitted, allowedOrigins });
     conversationHttp = createConversationHttp({ access, store, mode });
+    goalsHttp = createGoalsHttp({ access, store, mode });
     if (mode === 'account') {
       accountHttp = createAccountHttp({ access });
       privateHttp = createPrivateHttp({ access, state: new PrivateStateStore(store) });

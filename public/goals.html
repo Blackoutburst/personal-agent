@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Personal Agent · Goals & permissions</title>
+  <link rel="stylesheet" href="goals.css">
+  <script type="module" src="goals-app.mjs"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to goals</a>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Goal navigation">
+      <a class="brand" href="./"><span class="brand-mark" aria-hidden="true"></span><span>Personal Agent<small>A companion with continuity</small></span></a>
+      <div class="sidebar-heading"><span class="eyebrow">YOUR GOALS</span><span id="goal-count">0</span></div>
+      <button id="new-goal" class="secondary" type="button" disabled>＋ New goal</button>
+      <p id="goals-empty" class="muted">Open this workspace to load your goals.</p>
+      <ul id="goal-list" class="goal-list"></ul>
+      <div class="sidebar-bottom"><p>Private plans. Deliberate permissions.</p><a href="conversation.html">Conversation ↗</a><a href="./">Connection foundation ↗</a></div>
+    </aside>
+    <main id="main" class="workspace" tabindex="-1">
+      <header class="page-heading"><div><p class="eyebrow">PERSONAL AGENT / PLANNING</p><h1>Make room for what matters.</h1><p class="subtitle">Keep a private plan, mark your next step, and decide exactly what a future project action may do.</p></div><a class="home-link" href="./">Foundation ↗</a></header>
+      <div id="demo-notice" class="demo-notice" hidden><strong>Demo · synthetic owner and sample data</strong><p>Do not enter private details. No AI planner, Board dispatch or personal Codex runtime is connected.</p></div>
+      <section class="connection-panel" aria-label="Workspace access">
+        <div><strong id="connection-label">Checking service…</strong><p id="connection-note">Open explicitly to load goals. This page clears its private forms when hidden or closed.</p></div>
+        <div class="actions"><button id="open-workspace" type="button" disabled>Open workspace</button><button id="refresh-workspace" class="secondary" type="button" hidden>Refresh</button><button id="retry-action" class="secondary" type="button" hidden>Retry pending action</button><button id="close-workspace" class="secondary" type="button" hidden>Close and clear</button></div>
+      </section>
+      <p id="status" class="status" role="status" aria-live="polite" aria-atomic="true">Checking available mode.</p>
+      <div class="mobile-picker"><label for="goal-select">Goal</label><select id="goal-select" disabled><option value="">Open workspace first</option></select><button id="mobile-new-goal" class="secondary" type="button" disabled>＋ New</button></div>
+      <div class="workspace-heading"><div><p class="eyebrow">PRIVATE GOAL</p><h2 id="selected-title">A place for your next step.</h2><p id="goal-summary" class="muted">No goal loaded.</p></div><button id="discard-edits" class="text-button" type="button" hidden>Discard unsaved edits</button></div>
+
+      <div class="editor-grid">
+        <section class="panel goal-panel" aria-labelledby="goal-heading">
+          <div class="panel-heading"><h3 id="goal-heading">The goal and its plan</h3><span id="goal-state" class="badge">Not loaded</span></div>
+          <p class="section-copy">This is your editable proposal. There is no AI planner or automatic execution.</p>
+          <form id="goal-form">
+            <fieldset id="goal-fields" disabled>
+              <label for="goal-title">Goal title</label><input id="goal-title" maxlength="160" required autocomplete="off">
+              <label for="desired-outcome">Desired outcome</label><textarea id="desired-outcome" rows="3" maxlength="2000" required></textarea>
+              <label for="goal-notes">Private notes</label><textarea id="goal-notes" rows="3" maxlength="4096"></textarea>
+              <label for="goal-plan">Plan</label><textarea id="goal-plan" rows="4" maxlength="4096" placeholder="Write or revise your own proposal…"></textarea>
+              <label for="next-step">Next step</label><textarea id="next-step" rows="2" maxlength="1000"></textarea>
+              <label for="goal-review-at">Next private review (UTC, optional)</label><input id="goal-review-at" type="datetime-local" step="0.001">
+              <div class="milestone-heading"><div><h4>Milestones</h4><p id="milestone-progress" class="muted">0 of 0 complete</p></div><button id="add-milestone" class="secondary" type="button">＋ Add</button></div>
+              <div id="milestone-list" class="milestone-list"></div>
+              <button id="save-goal" class="save-button" type="submit">Save private goal</button>
+            </fieldset>
+          </form>
+          <div class="goal-controls"><button id="pause-goal" class="secondary" type="button" disabled>Pause goal</button><button id="review-goal" class="secondary" type="button" disabled>Mark privately reviewed</button></div>
+          <p id="goal-review-status" class="help">Private goal review does not refresh permission consent. Resuming a goal does not restore an old confirmation.</p>
+        </section>
+
+        <section class="panel permission-panel" aria-labelledby="permission-heading">
+          <div class="panel-heading"><h3 id="permission-heading">Permission card</h3><span id="consent-state" class="badge">No local consent</span></div>
+          <p class="section-copy">One versioned card per goal. Start with no authority and review the exact saved scope before recording local consent.</p>
+          <div class="authority-strip"><strong>Connected execution: unavailable</strong><span>Board and runtime dispatch stay disabled, even after local confirmation.</span></div>
+          <p id="card-lock-note" class="help">Save a private goal before drafting its card.</p>
+          <form id="card-form">
+            <fieldset id="card-fields" disabled>
+              <label for="card-title">Private card label</label><input id="card-title" maxlength="160" required autocomplete="off">
+              <p class="help">Exact allowlists: one literal value per line, up to 20. Project, action and task-type values cannot contain spaces or wildcards.</p>
+              <div class="two-columns"><div><label for="project-ids">Project allowlist</label><textarea id="project-ids" rows="3" required></textarea></div><div><label for="card-actions">Allowed actions</label><textarea id="card-actions" rows="3" required></textarea></div></div>
+              <div class="two-columns"><div><label for="task-types">Task types</label><textarea id="task-types" rows="3" required></textarea></div><div><label for="card-resources">Resources</label><textarea id="card-resources" rows="3" required></textarea></div></div>
+              <p class="help">Resources are exact path or URL references. They are never fetched or resolved here. No wildcards or leading/trailing spaces.</p>
+              <h4>Lifetime reservation limits</h4><p class="help">These totals include all prior reservations across edits and reviews. They are not actual billed spending or observed runtime usage. Zero keeps that budget closed.</p>
+              <div class="two-columns"><div><label for="max-tasks">Task cap</label><input id="max-tasks" type="number" min="0" max="1000000000" step="1" required value="0"></div><div><label for="max-tokens">Token cap</label><input id="max-tokens" type="number" min="0" max="1000000000" step="1" required value="0"></div></div>
+              <div class="two-columns"><div><label for="max-cost">Spending cap in minor units</label><input id="max-cost" type="number" min="0" max="1000000000" step="1" required value="0"></div><div><label for="card-currency">Currency (3 capital letters)</label><input id="card-currency" maxlength="3" pattern="[A-Z]{3}" placeholder="Required for a positive cap" autocomplete="off"></div></div>
+              <p class="help">Use whole minor units, such as cents for USD. Currency stays fixed once a positive cost has been reserved.</p>
+              <div class="two-columns"><div><label for="not-before">Window starts (UTC)</label><input id="not-before" type="datetime-local" step="0.001" required></div><div><label for="expires-at">Window ends (UTC)</label><input id="expires-at" type="datetime-local" step="0.001" required></div></div>
+              <label for="review-days">Review consent every (days)</label><input id="review-days" type="number" min="1" max="365" step="1" required value="7">
+              <label for="require-decision">Actions requiring a fresh decision</label><textarea id="require-decision" rows="2" placeholder="Optional subset of the allowed actions"></textarea>
+              <div class="template-heading"><h4>Static project-only work proposal</h4><p class="help">Write this separately. Your private goal title, notes and plan are never inserted automatically. No project task will be dispatched by this page.</p></div>
+              <label for="template-title">Project work title</label><input id="template-title" maxlength="160" required autocomplete="off">
+              <label for="template-instructions">Project instructions</label><textarea id="template-instructions" rows="4" maxlength="4000" required></textarea>
+              <label for="template-acceptance">Project acceptance criteria</label><textarea id="template-acceptance" rows="3" maxlength="2000" required></textarea>
+              <button id="save-card" class="save-button" type="submit">Save card draft</button>
+            </fieldset>
+          </form>
+          <section id="saved-preview" class="saved-preview" aria-labelledby="preview-heading" hidden>
+            <h4 id="preview-heading" tabindex="-1">Review the exact saved card</h4><p id="preview-version" class="help"></p>
+            <dl id="preview-limits" class="preview-limits"></dl>
+            <div class="project-preview"><h5 id="preview-title"></h5><p class="preview-label">Instructions</p><p id="preview-instructions"></p><p class="preview-label">Acceptance criteria</p><p id="preview-acceptance"></p></div>
+            <label class="check-label" for="confirm-review"><input id="confirm-review" type="checkbox" disabled><span>I reviewed this exact saved scope, limits, time window and project-only proposal.</span></label>
+            <button id="confirm-card" type="button" disabled>Confirm local consent</button>
+          </section>
+          <div id="reservation-summary" class="reservation-summary" hidden></div>
+          <button id="revoke-card" class="danger-button" type="button" disabled>Revoke local consent</button>
+          <p id="consent-note" class="help">Saving edits invalidates the previous confirmation. Pausing or revoking takes effect in local checks immediately. Connected authority remains unavailable.</p>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

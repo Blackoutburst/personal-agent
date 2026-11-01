@@ -1,5 +1,7 @@
 # Private-state candidate
 
+Task #10 adds a separate [authoritative goals and permission-card store](GOALS.md). Generic private-state `goal`, `permission` and other record values remain owner-authored content and never confer execution authority. Confirmation, lifetime reservations and current project/profile checks use the dedicated goal contract; do not promote arbitrary private-state JSON into a trusted permission grant.
+
 Task #6 adds a local, synthetic-qualified private storage/API path on the existing account and SQLite seams. It has not been deployed to the running account preview. The installed preview still uses application release `9d57d26`; pushing this source does not update that root-pinned service. No real personal content or runtime credentials were used to develop or test this candidate.
 
 ## Boundary and storage
