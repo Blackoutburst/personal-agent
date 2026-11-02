@@ -15,3 +15,67 @@ Cancellation persists the schedule/generation fence first, then aborts any known
 The provider's MCP child is a finite stdio adapter. It receives an ephemeral per-owner token and a fixed loopback broker URL from the application constructor. Browser requests revalidate the platform session and same origin; tool requests use their own owner token and never accept an owner, session, path or URL selector. The broker allows only create/list/cancel; settings remain on the authenticated browser path. The scheduler child receives its token through its environment, but the accepted provider adapters serialize that environment map in CLI configuration arguments. Tokens can therefore appear in the provider process arguments; this uses the existing trusted shared-host model and does not claim OS-level owner isolation. Tokens are invalid after application restart. Each JSON-RPC frame and HTTP request is bounded; bounded snapshots fit the 512 KiB response envelope. The bridge follows the MCP 2025-11-25 [stdio transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports), [initialization lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) and [tool contract](https://modelcontextprotocol.io/specification/2025-11-25/server/tools).
 
 The scheduler reuses the accepted task #27 app-MCP callback and owner tool-policy inheritance on current appearance/outfit main85ebbc0. It preserves native workspace instructions, the ordinary streamed feeling path, the current character/outfit UI and profile-triggered session resets. Neither original #27 handoff nor source #50 is rewritten. This PC performs synthetic validation only. Real provider smoke, source integration, publication and deployment remain with Claude · Server; no subscription was used or production service activated during development.
+
+## Optional daily digests and weekly check-ins
+
+Upcoming keeps the existing six-hour check-in option and adds two independent
+owner-controlled routines: a daily digest (off by default, 09:00 local) and a
+weekly check-in (off by default, Monday 09:00 local). Each has an editable local
+time; the weekly option also has an editable weekday. The profile's IANA timezone
+is authoritative. These are earliest delivery times: quiet hours, spacing,
+daily caps, provider availability and cooldown can defer delivery. Preferences
+belong to the authenticated browser owner; model tools cannot enable or change
+them. They do not start a Board poller, send email or browser push, or revive a
+structured goals/permission-card store.
+
+The account API adds optional `settings.dailyDigest` (`enabled`, `localTime`) and
+`settings.weeklyCheckin` (`enabled`, `localTime`, `weekday`) groups. Weekdays are
+ISO 1=Monday through 7=Sunday. Browser `configure.input` accepts partial groups:
+omitted groups and members preserve their stored values. An unchanged older UI
+can still save its three legacy preferences without resetting routines. A new UI
+hides unsupported groups and omits their drafts when an older server does not
+return the complete capability. It does not replay uncertain saves automatically.
+
+Schedules use local calendar periods rather than 24-hour or seven-day UTC
+increments. A nonexistent wall time moves to the first valid local minute after
+the gap; an ambiguous repeated time uses its earlier occurrence. Admission is
+limited to one attempt per routine/local period, even after edits, off/on,
+timezone changes or restart. A weekly period starts Monday, independently of the
+selected delivery weekday. Enabling or editing never requests a historical
+backfill. After downtime the service coalesces to the latest due period; newer
+periods supersede older pending routine output rather than replaying a backlog.
+
+Generation, timezone and cancellation state are checked again before a model
+starts and before private text is delivered. Edits, disabling and supersession
+cancel the matching active/deferred conversation wakes; already delivered
+messages and tool effects cannot be undone. An interrupted or uncertain attempt
+is retained rather than automatically rerun for that period. Prompts ask for a
+brief private digest or check-in from current context and silence when there is
+nothing useful. A neglected goal may be mentioned only when its dates are
+actually known; this is not a backend seven-day milestone tracker. Task #13's
+background Board tool guard remains in force.
+
+### Additive storage and rollback
+
+`scheduler_routine_preferences` and `scheduler_routine_occurrences` are separate,
+identity-bound tables. The four legacy scheduler table shapes, positional
+writers, reminders, six-hour cursors, counters and receipts stay intact. New
+routine UUIDs are mapped to the existing private `watch` kind only in the new
+store/service view; they are never inserted into the legacy occurrence table.
+
+This separation also makes rollback to the accepted pre-routine scheduler safe:
+older code ignores the new tables and cannot admit or publish their IDs. Routine
+work pauses while legacy reminders and old-client preference saves continue.
+Keep the new tables and history for a later upgrade; do not delete or rewrite
+private data to roll source back. The existing one-active-service deployment
+rule still applies: stop/join the current service and native turns before a
+different version opens the same data directory. No overlapping server rollout
+is introduced by this feature.
+
+The compatibility fixture `test/fixtures/scheduler-v1.mjs.txt` is the unchanged
+scheduler from `8981aa6` (SHA256
+`43e38ca38fe0c1f81a247f8a735c9685befda415f0e94b6d60300c848daf908b`).
+Migration tests execute that old reader/writer on synthetic shared data, verify
+old owner/reminder paths and invisible routine IDs, and reopen with the new code.
+No real account, provider, private database or live migration is part of those
+tests. Deployment and real provider/bridge checks remain with Claude.

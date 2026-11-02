@@ -93,7 +93,8 @@ function serviceFor(f, conversations, extra = {}) {
 test('defaults create no spontaneous work and reminder writes are owner-scoped and idempotent', t => {
   const f = fixture(t), before = f.scheduler.list(f.a);
   assert.equal(before.timezone, 'UTC'); assert.equal(before.now, iso(f.now()));
-  assert.deepEqual(before.settings, { enabled: true, quietStart: '22:00', quietEnd: '08:00', heartbeatEnabled: false });
+  assert.deepEqual(before.settings, { enabled: true, quietStart: '22:00', quietEnd: '08:00', heartbeatEnabled: false,
+    dailyDigest: { enabled: false, localTime: '09:00' }, weeklyCheckin: { enabled: false, localTime: '09:00', weekday: 1 } });
   assert.deepEqual(before.items, []); assert.deepEqual(f.scheduler.prepareDue(f.a), []);
   const input = { requestId: 'same-create', text: 'PRIVATE-REMINDER-A', dueAt: '2026-11-02T13:01:00+01:00' };
   const created = f.scheduler.create(f.a, input);

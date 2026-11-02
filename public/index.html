@@ -52,7 +52,19 @@
             <p id="schedule-note" class="schedule-note" role="status"></p>
             <ul id="schedule-list" class="schedule-list"></ul>
             <form id="schedule-settings" class="schedule-settings" hidden>
-              <label class="checkin-option"><input id="schedule-checkins" type="checkbox"> Check in when something matters</label>
+              <div id="schedule-daily" class="schedule-routine" hidden>
+                <label class="checkin-option"><input id="schedule-daily-enabled" type="checkbox"> Daily digest</label>
+                <label class="routine-field">At <input id="schedule-daily-time" type="time" required disabled></label>
+              </div>
+              <div id="schedule-weekly" class="schedule-routine" hidden>
+                <label class="checkin-option"><input id="schedule-weekly-enabled" type="checkbox"> Weekly check-in</label>
+                <label class="routine-field">On <select id="schedule-weekly-day" disabled>
+                  <option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option>
+                  <option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="7">Sunday</option>
+                </select></label>
+                <label class="routine-field">At <input id="schedule-weekly-time" type="time" required disabled></label>
+              </div>
+              <label class="checkin-option"><input id="schedule-checkins" type="checkbox"> Occasional check-ins</label>
               <div class="quiet-times">
                 <label>Quiet from <input id="schedule-quiet-start" type="time" required></label>
                 <label>until <input id="schedule-quiet-end" type="time" required></label>

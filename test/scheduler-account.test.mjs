@@ -243,3 +243,81 @@ test('closing during a synthetic wake stops its process and reopening never repl
   assert.equal(reopened.store.db.prepare("SELECT COUNT(*) AS n FROM conv_wakes WHERE state='interrupted'").get().n, 1);
   assert.equal(reopened.store.db.prepare('SELECT COUNT(*) AS n FROM conv_messages').get().n, 0);
 });
+
+test('routine preferences are opt-in, owner scoped, partial and retained across legacy saves and restart', async t => {
+  const f = fixture(t), app = await f.open(); await ready(f, app);
+  const disabled = { dailyDigest: { enabled: false, localTime: '09:00' },
+    weeklyCheckin: { enabled: false, localTime: '09:00', weekday: 1 } };
+  const current = async (target, proof = A) => {
+    const reply = await schedules(target, { action: 'list' }, proof); assert.equal(reply.status, 200);
+    return { dailyDigest: reply.body.settings.dailyDigest, weeklyCheckin: reply.body.settings.weeklyCheckin };
+  };
+  assert.deepEqual(await current(app), disabled); assert.deepEqual(await current(app, B), disabled);
+  const selected = { dailyDigest: { enabled: true, localTime: '13:00' },
+    weeklyCheckin: { enabled: true, localTime: '13:05', weekday: 1 } };
+  assert.equal((await schedules(app, { action: 'configure', input: selected })).status, 200);
+  assert.deepEqual(await current(app), selected); assert.deepEqual(await current(app, B), disabled);
+  assert.equal((await schedules(app, { action: 'configure', input: {
+    heartbeatEnabled: false, quietStart: '22:00', quietEnd: '08:00'
+  } })).status, 200, 'An unchanged old client sends only the original fields');
+  assert.deepEqual(await current(app), selected);
+  assert.equal((await schedules(app, { action: 'configure', input: { dailyDigest: { localTime: '14:00' } } })).status, 200);
+  const patched = { ...selected, dailyDigest: { enabled: true, localTime: '14:00' } };
+  assert.deepEqual(await current(app), patched);
+  assert.equal((await schedules(app, { action: 'configure', input: { weeklyCheckin: { localTime: '15:00' } } }, B)).status, 200);
+  assert.deepEqual(await current(app), patched, 'The other account changes only its own routine');
+  assert.deepEqual((await current(app, B)).weeklyCheckin, { enabled: false, localTime: '15:00', weekday: 1 });
+  await settle(app); assert.equal(f.calls('blackout').length, 0); assert.equal(f.calls('screamer').length, 0);
+  await f.close(app); const reopened = await f.open();
+  assert.deepEqual(await current(reopened), patched);
+  assert.deepEqual((await current(reopened, B)).weeklyCheckin, { enabled: false, localTime: '15:00', weekday: 1 });
+});
+
+test('routine configuration requires a fresh account and closed same-origin input without side effects', async t => {
+  const f = fixture(t), app = await f.open(); await ready(f, app);
+  const before = (await schedules(app, { action: 'list' })).body.settings;
+  for (const input of [
+    { dailyDigest: null }, { dailyDigest: [] }, { dailyDigest: { enabled: 'true' } },
+    { dailyDigest: { localTime: '24:00' } }, { dailyDigest: { force: true } },
+    { weeklyCheckin: { weekday: 0 } }, { weeklyCheckin: { weekday: 8 } },
+    { weeklyCheckin: { weekday: 1.5 } }, { weeklyCheckin: { localTime: '9:00' } },
+    { weeklyCheckin: { enabled: true, owner: 'another-owner' } }
+  ]) {
+    const reply = await schedules(app, { action: 'configure', input });
+    assert.equal(reply.status, 400); assert.equal(reply.body.error.code, 'SCHEDULER_INVALID_REQUEST');
+  }
+  const body = { action: 'configure', input: { dailyDigest: { enabled: true } } };
+  assert.equal((await schedules(app, body, null)).status, 401);
+  assert.equal((await schedules(app, body, A, { Origin: 'https://attacker.invalid' })).status, 403);
+  assert.equal((await schedules(app, { ...body, companionId: f.ids[A] }, B)).status, 400);
+  f.proofs.delete(A); assert.equal((await schedules(app, body)).status, 401); f.proofs.set(A, PA);
+  assert.deepEqual((await schedules(app, { action: 'list' })).body.settings, before);
+  await settle(app); assert.equal(f.calls('blackout').length, 0); assert.equal(f.calls('screamer').length, 0);
+});
+
+test('daily and weekly routines privately deliver with closed clients once and the model broker cannot enable them', async t => {
+  const f = fixture(t), app = await f.open(); await ready(f, app);
+  const configured = await schedules(app, { action: 'configure', input: {
+    dailyDigest: { enabled: true, localTime: '13:00' },
+    weeklyCheckin: { enabled: true, localTime: '13:05', weekday: 1 }
+  } });
+  assert.equal(configured.status, 200); await settle(app); assert.equal(f.calls('blackout').length, 0);
+  f.clock += HOUR; await settle(app);
+  assert.equal(f.calls('blackout').length, 1); assert.equal(f.calls('screamer').length, 0);
+  assert.match(f.calls('blackout')[0].prompt, /daily|digest/i);
+  const tool = descriptor(f.calls('blackout')[0]);
+  const refused = await fetch(tool.env.COMPANION_SCHEDULER_URL, { method: 'POST', headers: {
+    'Content-Type': 'application/json', Authorization: 'Bearer ' + tool.env.COMPANION_SCHEDULER_TOKEN
+  }, body: JSON.stringify({ action: 'configure', input: { weeklyCheckin: { enabled: false } } }) });
+  assert.equal(refused.status, 400, 'The valid model token cannot mutate any browser-owned preference');
+  assert.equal((await schedules(app, { action: 'list' })).body.settings.weeklyCheckin.enabled, true);
+  f.clock += 5 * MINUTE; await settle(app);
+  assert.equal(f.calls('blackout').length, 2); assert.match(f.calls('blackout')[1].prompt, /weekly|check.in/i);
+  const view = (await chat(app, { action: 'snapshot' })).body;
+  assert.equal(view.messages.length, 2); assert.ok(view.messages.every(item => item.role === 'assistant'));
+  assert.ok(view.messages.every(item => !item.text.includes('action') && !item.text.includes('PRIVATE')));
+  await settle(app); assert.equal(f.calls('blackout').length, 2);
+  await f.close(app); const reopened = await f.open(); await settle(reopened);
+  assert.equal(f.calls('blackout').length, 2, 'Neither admitted local period is replayed after restart');
+  assert.equal(f.calls('screamer').length, 0);
+});
