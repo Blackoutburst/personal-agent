@@ -301,6 +301,31 @@ function startLook() {
     return button;
   }));
   if (first && !$('name').value) $('name').value = 'Pip';
+  $('theme-pick').hidden = first;
+  renderThemePick();
+}
+
+// App theme: System (default), Light or Dark. companion-theme.js applies and stores it.
+function renderThemePick() {
+  const current = window.companionTheme?.get() ?? 'system';
+  for (const button of document.querySelectorAll('[data-theme-choice]')) {
+    const on = button.dataset.themeChoice === current;
+    button.setAttribute('aria-checked', String(on)); button.tabIndex = on ? 0 : -1;
+  }
+}
+function pickTheme(choice) {
+  window.companionTheme?.set(choice); renderThemePick();
+  document.querySelector(`[data-theme-choice="${choice}"]`)?.focus();
+}
+const THEME_ORDER = ['system', 'light', 'dark'];
+for (const button of document.querySelectorAll('[data-theme-choice]')) {
+  button.addEventListener('click', () => pickTheme(button.dataset.themeChoice));
+  button.addEventListener('keydown', event => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    pickTheme(THEME_ORDER[(THEME_ORDER.indexOf(button.dataset.themeChoice) + step + 3) % 3]);
+  });
 }
 function renderLook() {
   if (!draftLook) return;

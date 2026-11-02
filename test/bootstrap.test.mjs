@@ -86,7 +86,7 @@ test('HTTP host/origin, exact routes, methods and static allowlist hold', async 
   assert.equal((await get(app, '/unknown')).status, 404);
   assert.equal((await get(app, '/%2e%2e/server.mjs')).status, 404);
   assert.equal((await get(app, '/bootstrap.sqlite')).status, 404);
-  for (const path of ['/', '/companion.css', '/companion-app.mjs', '/companion-character.mjs']) assert.equal((await get(app, path)).status, 200);
+  for (const path of ['/', '/companion.css', '/companion-app.mjs', '/companion-character.mjs', '/companion-theme.js']) assert.equal((await get(app, path)).status, 200);
   const head = await get(app, '/', { method: 'HEAD' });
   assert.equal(head.status, 200); assert.equal(head.text, '');
 });

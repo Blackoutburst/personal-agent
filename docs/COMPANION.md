@@ -43,7 +43,10 @@ messages for continuity. Everything older lives in the files.
 - **Memories**: USER.md ("About you") and MEMORY.md ("Our memories") grouped by heading, with "Forget"
   on every line (confirmed in place).
 - **Look**: the character (Pip, Mochi, Sprout or Luna), its color and its name. The first visit opens
-  this screen as "Meet your companion".
+  this screen as "Meet your companion". Below it, the app theme: System (the default, follows the device),
+  Light or Dark. It is kept per browser in `localStorage` and applied by `public/companion-theme.js`, a
+  small blocking script in the page head (the page's policy allows no inline script), so a dark page never
+  flashes light. The Android app has the same choice, kept on the phone.
 
 `POST /api/companion` serves it: `get` (profile and agent state), `setProfile` (`name`, `character`,
 `color`, `timezone`), `memory`, `forget` (`file`, `id`). The chat uses `POST /api/conversation`

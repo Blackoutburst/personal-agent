@@ -23,6 +23,7 @@ const STATIC = new Map([
   ['/companion.css', ['companion.css', 'text/css; charset=utf-8']],
   ['/companion-app.mjs', ['companion-app.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-character.mjs', ['companion-character.mjs', 'text/javascript; charset=utf-8']],
+  ['/companion-theme.js', ['companion-theme.js', 'text/javascript; charset=utf-8']],
   ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']],
   // Old address of the chat page: it now redirects to the companion.
   ['/conversation.html', ['conversation.html', 'text/html; charset=utf-8']]

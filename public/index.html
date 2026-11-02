@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#FFF6EE">
   <title>Your companion</title>
+  <script src="companion-theme.js"></script>
   <link rel="stylesheet" href="companion.css">
   <script type="module" src="companion-app.mjs"></script>
 </head>
@@ -73,6 +74,14 @@
             <p id="look-error" class="look-error" role="alert" hidden></p>
             <button id="save-look" class="button primary" type="submit">Save</button>
           </form>
+        </div>
+        <div id="theme-pick" class="theme-pick" hidden>
+          <h2 id="theme-title">App theme</h2>
+          <div class="segmented" role="radiogroup" aria-labelledby="theme-title">
+            <button type="button" role="radio" data-theme-choice="system">System</button>
+            <button type="button" role="radio" data-theme-choice="light">Light</button>
+            <button type="button" role="radio" data-theme-choice="dark">Dark</button>
+          </div>
         </div>
       </section>
     </main>
