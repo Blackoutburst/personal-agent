@@ -6,9 +6,9 @@ After=network.target blackoutburst-platform.service
 Type=simple
 User=ubuntu
 Group=ubuntu
-# Operator replaces SOURCE_RELEASE with the exact reviewed release directory.
-WorkingDirectory=/home/ubuntu/personal-agent/releases/SOURCE_RELEASE
-ExecStart=/opt/blackoutburst-platform-runtime/node-v24.22.1 /home/ubuntu/personal-agent/releases/SOURCE_RELEASE/server.mjs
+# ~/personal-agent/current links to the deployed release in ~/personal-agent/releases/<commit>.
+WorkingDirectory=/home/ubuntu/personal-agent/current
+ExecStart=/opt/blackoutburst-platform-runtime/node-v24.22.1 /home/ubuntu/personal-agent/current/server.mjs
 Environment=COMPANION_MODE=account
 Environment=COMPANION_PORT=4318
 Environment=COMPANION_PUBLIC_ORIGIN=https://blackoutburst.com
