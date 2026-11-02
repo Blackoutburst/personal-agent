@@ -34,15 +34,8 @@ try {
   if (command === 'owners') {
     for (const owner of owners) {
       const companionId = companionIdFor(store, owner);
-      // Status is checked by label so owners who have not opened the web app yet still show up.
-      const adapter = ADAPTERS[owner.provider], { home, workspace } = runner.paths(owner);
-      const status = await new Promise(resolve => {
-        const spec = adapter.statusCommand({ binary: binaries[owner.provider], home });
-        const child = spawn(spec.binary, spec.args, { cwd: workspace, env: { ...process.env, ...spec.env }, stdio: ['ignore', 'pipe', 'ignore'] });
-        let out = ''; child.stdout.on('data', c => out += c);
-        child.on('error', e => resolve(e.code === 'ENOENT' ? 'provider-missing' : 'error'));
-        child.on('close', () => { try { const s = adapter.parseStatus(out); resolve(s.signedIn ? `ready${s.plan ? ` (${s.plan})` : ''}` : 'signed-out'); } catch { resolve('signed-out'); } });
-      });
+      const s = await runner.ownerStatus(owner);
+      const status = s.state === 'ready' && s.plan ? `ready (${s.plan})` : s.state;
       console.log(`${owner.label.padEnd(16)} ${owner.provider.padEnd(7)} ${status.padEnd(20)} ${companionId ? 'web account linked' : 'not signed in to the web app yet'}`);
     }
   } else if (command === 'login') {

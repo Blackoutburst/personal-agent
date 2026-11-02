@@ -26,10 +26,12 @@ export class RunnerError extends Error {
 
 function collect(child) {
   return new Promise(resolve => {
-    let stdout = '';
-    child.stdout.setEncoding('utf8').on('data', chunk => { if (stdout.length < 65536) stdout += chunk; });
-    child.on('error', error => resolve({ code: null, stdout, error }));
-    child.on('close', code => resolve({ code, stdout, error: null }));
+    const out = { stdout: '', stderr: '' };
+    for (const name of ['stdout', 'stderr']) {
+      child[name]?.setEncoding('utf8').on('data', chunk => { if (out[name].length < 65536) out[name] += chunk; });
+    }
+    child.on('error', error => resolve({ code: null, ...out, error }));
+    child.on('close', code => resolve({ code, ...out, error: null }));
   });
 }
 
@@ -61,18 +63,23 @@ export class CompanionRunner {
 
   async status(companionId) {
     const owner = this.ownerFor(companionId);
-    if (!owner) return { state: 'unconfigured' };
+    return owner ? this.ownerStatus(owner) : { state: 'unconfigured' };
+  }
+
+  // Also used by manage.mjs for owners who have not opened the web app yet.
+  async ownerStatus(owner) {
     const cached = this.statusCache.get(owner.label);
     if (cached && Date.now() - cached.at < this.statusTtlMs) return cached.value;
     const adapter = ADAPTERS[owner.provider], { home, workspace } = this.paths(owner);
-    const child = this.#run(adapter.statusCommand({ binary: this.binaries[owner.provider], home }), workspace);
-    child.stdin.end();
+    const spec = adapter.statusCommand({ binary: this.binaries[owner.provider], home });
+    // Codex prints its login status on stderr, Claude on stdout: read both.
+    const child = this.spawn(spec.binary, spec.args, { cwd: workspace, env: { ...process.env, ...spec.env }, stdio: ['ignore', 'pipe', 'pipe'] });
     const result = await collect(child);
     let value;
     if (result.error?.code === 'ENOENT') value = { state: 'provider-missing', provider: owner.provider };
     else {
       let parsed = { signedIn: false, plan: null };
-      try { parsed = adapter.parseStatus(result.stdout); } catch { /* treated as signed out */ }
+      try { parsed = adapter.parseStatus(result.stdout, result.stderr); } catch { /* treated as signed out */ }
       value = { state: parsed.signedIn ? 'ready' : 'signed-out', provider: owner.provider, plan: parsed.plan };
     }
     this.statusCache.set(owner.label, { at: Date.now(), value });

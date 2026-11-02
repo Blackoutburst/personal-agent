@@ -50,7 +50,7 @@ let prompt = ''; process.stdin.on('data', c => prompt += c); process.stdin.on('e
 const FAKE_CODEX = `#!/usr/bin/env node
 const fs = require('node:fs'), path = require('node:path');
 const home = process.env.CODEX_HOME, args = process.argv.slice(2);
-if (args[0] === 'login') { process.stdout.write('Logged in using ChatGPT\\n'); process.exit(0); }
+if (args[0] === 'login') { process.stderr.write('Logged in using ChatGPT\\n'); process.exit(0); }
 let prompt = ''; process.stdin.on('data', c => prompt += c); process.stdin.on('end', () => {
   fs.appendFileSync(path.join(home, 'calls.jsonl'), JSON.stringify({ args, prompt }) + '\\n');
   const out = v => process.stdout.write(JSON.stringify(v) + '\\n');

@@ -20,9 +20,11 @@ export function statusCommand({ binary = 'codex', home }) {
   return { binary, args: ['login', 'status'], env: { CODEX_HOME: home } };
 }
 
-export function parseStatus(stdout) {
-  const signedIn = /logged in/i.test(stdout) && !/not logged in/i.test(stdout);
-  return { signedIn, plan: /chatgpt/i.test(stdout) ? 'chatgpt' : null };
+// `codex login status` prints e.g. "Logged in using ChatGPT" / "Not logged in" on stderr.
+export function parseStatus(stdout, stderr = '') {
+  const text = `${stdout}\n${stderr}`;
+  const signedIn = /logged in/i.test(text) && !/not logged in/i.test(text);
+  return { signedIn, plan: /chatgpt/i.test(text) ? 'chatgpt' : null };
 }
 
 export function loginCommand({ binary = 'codex', home }) {
