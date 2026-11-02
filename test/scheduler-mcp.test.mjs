@@ -286,3 +286,16 @@ test('CLI arguments cannot replace invalid environment configuration or expose i
   assert.equal(Buffer.concat(stdout).toString(), '');
   assert.equal(Buffer.concat(stderr).toString(), 'Scheduler tools are unavailable.\n');
 });
+
+test('tool calls accept the _meta field real clients attach (Claude Code sends a progress token and tool-use id)', async () => {
+  const meta = { 'claudecode/toolUseId': 'toolu_synthetic', progressToken: 2 };
+  const result = await exchange([...handshake(),
+    request('listed', 'tools/list', { _meta: { progressToken: 1 } }),
+    request('called', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: meta }),
+    request('bad-meta', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: 'nope' })]);
+  assert.equal(resultFor(result, 'listed').result.tools.length, 3);
+  assert.equal(resultFor(result, 'called').result.isError, false);
+  assert.equal(resultFor(result, 'bad-meta').error.code, -32602);
+  assert.equal(result.forwards.length, 1);
+  assert.deepEqual(JSON.parse(result.forwards[0].spec.body), { action: 'list' });
+});

@@ -70,7 +70,13 @@ export async function runSchedulerMcp({ input = process.stdin, output = process.
       if (request.method === 'notifications/initialized' && initialized && empty(request.params)) ready = true;
       return;
     }
-    const { id, method, params } = request;
+    const { id, method } = request;
+    // MCP lets clients attach _meta (progress token, client ids) to any request's params; it carries no input.
+    let { params } = request;
+    if (object(params) && Object.hasOwn(params, '_meta')) {
+      if (!object(params._meta)) return error(id ?? null, -32602, 'Invalid request metadata.');
+      const { _meta, ...rest } = params; params = rest;
+    }
     if (!(typeof id === 'string' && id.length <= 100 || Number.isSafeInteger(id))) return error(null, -32600, 'Invalid request ID.');
     const result = value => write({ jsonrpc: '2.0', id, result: value });
     if (method === 'ping' && empty(params)) return result({});

@@ -20,7 +20,7 @@ export function command({ binary = 'codex', home, resume, model, systemPrompt, t
     args.push('-c', `${prefix}.command=${JSON.stringify(server.command)}`,
       '-c', `${prefix}.args=${JSON.stringify(server.args)}`,
       '-c', `${prefix}.enabled_tools=${JSON.stringify(server.allowedTools)}`,
-      '-c', `${prefix}.required=true`, '-c', `${prefix}.default_tools_approval_mode="auto"`);
+      '-c', `${prefix}.required=true`, '-c', `${prefix}.default_tools_approval_mode="approve"`);
     for (const [key, value] of Object.entries(server.env)) args.push('-c', `${prefix}.env.${key}=${JSON.stringify(value)}`);
   }
   // MCP tables deep-merge in 0.166; these overrides do not clear other config layers.
