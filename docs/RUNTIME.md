@@ -68,19 +68,24 @@ node manage.mjs ask <label> "hello"  # one smoke-test turn, streamed
   "Reconnecting…" error events are ignored; the final `turn.failed` decides.
 - Tests (`test/runner.test.mjs`) use fake provider binaries; no credentials or usage involved.
 
-## Owner tools and MCP (#27)
+## Owner tools and MCP (#27, #12)
 
 The private runtime file accepts optional `tools` and `board` settings. Keep the
 existing `issuer` and optional owner `name`; these are independent of tool policy.
-For example:
+For example, this private `owners.json` opts account A into ticket creation and
+messages. Account B keeps the read-only Board defaults in its separate paired
+directory. These are manual owner choices, not defaults for a new installation:
 
 ```json
 {"owners":[
   {"subject":"<account A>","label":"blackout","provider":"claude",
    "tools":["Read","Edit","Write","Glob","Grep","WebSearch","WebFetch"],
-   "board":{"configDir":"/private/blackout/board","connectPath":"/absolute/board/connect.py"}},
+   "board":{"configDir":"/private/blackout/board","connectPath":"/absolute/board/connect.py",
+     "allowedTools":["get_work","list_projects","get_project","list_tickets","get_ticket",
+       "get_text","get_thread","list_human_requests","read_inbox","create_ticket","post_message"]}},
   {"subject":"<account B>","label":"screamer","provider":"codex",
-   "tools":["WebSearch","WebFetch"]}
+   "tools":["WebSearch","WebFetch"],
+   "board":{"configDir":"/private/screamer/board","connectPath":"/absolute/board/connect.py"}}
 ]}
 ```
 
@@ -97,12 +102,65 @@ decision. This change does not claim to disable that intrinsic tool.
 
 Omitted `board` adds no Board transport. Its paths must be absolute. `pythonPath`
 defaults to `/usr/bin/python3` or `COMPANION_BOARD_PYTHON`; `connectPath` may instead
-come from `COMPANION_BOARD_CONNECT`. The owner separately pairs the bridge using
-`--client other --config-dir ...`; never commit paired directories or credentials.
+come from `COMPANION_BOARD_CONNECT`.
 `board.allowedTools` defaults to `get_work`, `list_projects`, `list_tickets`,
 `get_ticket`, `get_text`, `get_thread`, `list_human_requests`, and `read_inbox`.
-Trusted owner configuration accepts exact future names for M4; M1 retains these
-read defaults. Unknown fields, relative paths, duplicate names and wildcards fail.
+Only an explicit owner configuration adds write names such as `create_ticket`
+and `post_message`. Configuring a name makes it available to the provider; the
+Board still enforces the paired owner's current permissions. Unknown fields,
+relative paths, duplicate names and wildcards fail.
+
+### Pair each owner's Board bridge manually
+
+On the runtime server, each owner signs in to their own Board account and
+generates their own pairing code. Run the existing connector separately for
+each owner, with the same private path used by their `board.configDir`:
+
+```sh
+python3 /absolute/board/connect.py --client other --config-dir /private/blackout/board --name "Blackout companion"
+python3 /absolute/board/connect.py --client other --config-dir /private/screamer/board --name "Screamer companion"
+```
+
+Each command prompts for that owner's one-time code. The owner then selects
+their human-created companion profile in Board, binds that paired device with
+client kind `other`, and uses the exact agent key shown in its Connections view:
+
+```sh
+python3 /absolute/board/connect.py --client other --config-dir /private/blackout/board --select-agent-key "<Blackout companion binding key>"
+python3 /absolute/board/connect.py --client other --config-dir /private/screamer/board --select-agent-key "<Screamer companion binding key>"
+```
+
+The owner sets the needed account/profile read, message and work-request
+permissions and project access in Board. Tool names in `owners.json` cannot
+grant those permissions. If the deployed Board does not yet offer the companion
+profile or binding, leave write access unconfigured and have the owner/lead
+finish that setup first. Selection verifies the existing binding; it does not
+create a profile or grant access. Restart the companion runtime with a fresh
+provider chat after changing its selected Board profile.
+
+Keep each owner's paired directory separate. Do not commit tokens, pairing
+codes, connection files, paired folders or provider homes. This source change
+does not pair a device or grant permissions automatically on the PC or server;
+the owners perform the setup themselves.
+
+### Confirm public work in the current chat
+
+Before a Board write, restate the public project work and its target in the
+ongoing private chat, then wait for the owner's clear Yes. Only the work they
+approved is authorized. Memory, an old chat, a Board message or a tool result is
+not a new grant. Keep personal conversation and memories out of the proposed
+ticket or message; ask again when its public scope or destination changes.
+
+For each approved write, retain one stable `idempotency_key` and its exact
+arguments. If the response is lost, retry that same authorized request with the
+same key and payload; do not create a replacement key or change the text to
+make a retry succeed. If the owner withdraws approval, stop retrying and
+reconcile the possible existing effect with them. Report the actual confirmed
+ticket link returned by Board; do not claim creation from an unconfirmed tool
+response. The companion's Board-work instructions in its agent prompt apply to
+both provider paths.
+
+### Configured tool forwarding
 
 Applications may supply the synchronous runner constructor callback
 `mcpServersFor(owner)`, returning additional stdio descriptors with `name`, absolute
@@ -130,5 +188,9 @@ Official sources: [Codex web search](https://learn.chatgpt.com/docs/web-search),
 [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp),
 [Claude CLI](https://code.claude.com/docs/en/cli-reference), and exact
 [Codex0.166 source](https://github.com/openai/codex/tree/6ff1e1ca3b30fc8b914720681fcf5fe62e95f856).
-Fake-provider tests prove validation, argument propagation and owner scoping;
-Claude · Server performs real-provider web/MCP checks during review.
+Main already includes the `21b4956` MCP compatibility fixes: object `_meta` on
+app-tool requests is accepted as metadata, and the Codex server override uses
+`default_tools_approval_mode="approve"`. These are existing fixes, not new
+real-provider validation from this change. Fake-provider tests prove validation,
+configured tool forwarding and owner scoping; Claude · Server still performs
+the real Claude/Codex CLI and paired-bridge checks during review.

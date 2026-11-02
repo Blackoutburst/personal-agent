@@ -16,7 +16,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = ['WebSearch', 'WebFetch'];
 const FILES = ['Read', 'Edit', 'Write', 'Glob', 'Grep'];
 
-function setup(t, provider, { board = true, apps = true, tools, factory } = {}) {
+function setup(t, provider, { board = true, apps = true, tools, factory, boardTools } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pa-tool-runner-'));
   const store = new BootstrapStore(join(dir, 'data'), ROOT);
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -32,7 +32,7 @@ function setup(t, provider, { board = true, apps = true, tools, factory } = {}) 
     tools: tools ?? (provider === 'claude' ? [...FILES, ...WEB] : WEB),
     ...(board ? { board: { configDir: join(dir, label, 'board-config'),
       pythonPath: join(dir, 'board-python'), connectPath: join(dir, 'connect.py'),
-      allowedTools: ['get_work', 'list_projects'] } } : {})
+      allowedTools: boardTools?.[label] ?? ['get_work', 'list_projects'] } } : {})
   })) }));
   const descriptors = Object.fromEntries(owners.map(owner => [owner.label, [{
     name: 'app', command: join(dir, 'app-command'), args: ['--owner', owner.label],
@@ -174,6 +174,42 @@ for (const provider of ['claude', 'codex']) {
     }
     assert.deepEqual(env.calls('alice').map(call => call.prompt), ['fresh-alice', 'resume-alice']);
     assert.deepEqual(env.calls('bob').map(call => call.prompt), ['fresh-bob', 'resume-bob']);
+  });
+
+  test(`${provider}: configured Board writes reach fresh and resumed owner bridges and cannot expand`, async t => {
+    const configured = { alice: ['get_work', 'create_ticket', 'post_message'], bob: ['get_work', 'post_message'] };
+    const writes = { alice: ['create_ticket', 'post_message'], bob: ['post_message'] };
+    const env = setup(t, provider, { apps: false, boardTools: configured }), sessions = {};
+    for (const label of ['alice', 'bob']) {
+      sessions[label] = (await env.runner.turn(env.ids[label], { prompt: `write-fresh-${label}` })).sessionId;
+    }
+    for (const label of ['bob', 'alice']) {
+      const reply = await env.runner.turn(env.ids[label], { prompt: `write-resume-${label}`, resume: sessions[label],
+        allowedTools: writes[label].map(name => `mcp__board__${name}`) });
+      assert.equal(reply.sessionId, sessions[label]);
+    }
+    assert.equal(env.invocations.length, 4);
+    for (const [index, label] of ['alice', 'bob', 'bob', 'alice'].entries()) {
+      const owner = env.owners.find(value => value.label === label), paths = env.runner.paths(owner), invocation = env.invocations[index];
+      const other = env.owners.find(value => value.label !== label);
+      assert.deepEqual(configuredServers(provider, invocation), expectedServers(env, label, {
+        boardTools: index < 2 ? configured[label] : writes[label], appTools: []
+      }));
+      assert.equal(invocation.cwd, paths.workspace);
+      assert.equal(invocation.env[provider === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'], paths.home);
+      assert.ok(!JSON.stringify(invocation.args).includes(other.board.configDir));
+      assertNativePermissions(provider, invocation, index < 2 ? owner.tools : []);
+      if (index >= 2) {
+        if (provider === 'claude') assert.equal(invocation.args[invocation.args.indexOf('--resume') + 1], sessions[label]);
+        else assert.deepEqual(invocation.args.slice(0, 3), ['exec', 'resume', sessions[label]]);
+      }
+    }
+    await assert.rejects(env.runner.turn(env.ids.bob, { prompt: 'cannot borrow another owner write', resume: sessions.bob,
+      allowedTools: ['mcp__board__post_message', 'mcp__board__create_ticket'] }),
+    error => error instanceof RunnerError && error.code === 'TOOL_POLICY_REFUSED');
+    assert.equal(env.invocations.length, 4); assert.equal(env.runner.queues.size, 0);
+    assert.deepEqual(env.calls('alice').map(call => call.prompt), ['write-fresh-alice', 'write-resume-alice']);
+    assert.deepEqual(env.calls('bob').map(call => call.prompt), ['write-fresh-bob', 'write-resume-bob']);
   });
 
   test(`${provider}: omission inherits policy while empty and exact subsets remove tool selections`, async t => {

@@ -79,6 +79,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     return schedulerOwnerTokens.get(companionId);
   };
   let conversations = null;
+  let refreshWorkspaceInstructions = () => {};
   const allowedOrigins = () => new Set(publicOrigin ? [publicOrigin] :
     [`http://127.0.0.1:${server.address().port}`, `http://localhost:${server.address().port}`]);
   const server = createServer({ maxHeaderSize: 16384, requestTimeout: 5000, headersTimeout: 5000 }, async (req, res) => {
@@ -203,6 +204,18 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id) },
         onSettled: event => discord?.settled(event),
         ...conversationOptions });
+      // A native resumed session keeps its old instructions. Refresh only after binding the socket,
+      // before recovery can start a queued turn; a competing process must not reset live sessions.
+      refreshWorkspaceInstructions = () => {
+        for (const owner of owners) {
+          const companionId = companionIdFor(store, owner);
+          if (!companionId) continue;
+          const workspace = workspaceFor(companionId);
+          if (workspace) ensureWorkspace(workspace.dir, workspace.owner, {
+            beforeInstructionsChange: () => conversations.resetSessions(companionId)
+          });
+        }
+      };
       schedulerService = new SchedulerService({ scheduler: schedulerStore, conversations,
         companions: () => owners.map(owner => companionIdFor(store, owner)).filter(id => id && profiles.get(id)),
         ready: companionId => Boolean(runner?.ownerFor(companionId)), ...(schedulerOptions.pollMs ? { pollMs: schedulerOptions.pollMs } : {}) });
@@ -228,6 +241,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       server.listen(port, '127.0.0.1', resolve);
     });
     // A competing process must bind its socket before it can recover another process's turns.
+    refreshWorkspaceInstructions();
     conversations?.recover();
     schedulerService?.start();
     if (discordOptions.connect !== false) discord?.start();
