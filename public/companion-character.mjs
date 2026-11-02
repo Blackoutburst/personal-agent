@@ -77,22 +77,24 @@ function extras(mood, c) {
   return '';
 }
 
-// Illustrated characters are pictures, one per expression, in characters/<id>/. Idle blinks and
-// talking alternates with the open-mouth picture, both by fading a second picture in and out.
-const PORTRAITS = { claude: { blink: true } };
-const FRAME_FOR = { idle: 'idle', listening: 'listening', thinking: 'thinking', talking: 'idle', happy: 'happy', sleepy: 'sleepy' };
+// Illustrated characters: an outfit picture with a face patch drawn over it (same framing), in
+// characters/<id>/outfits and characters/<id>/faces. Idle uses the outfit's own resting face and
+// blinks; talking alternates the resting face with the open-mouth patch.
+const PORTRAITS = { claude: true };
+const FACE_FOR = { idle: null, listening: 'listening', thinking: 'thinking', talking: null, happy: 'happy', sleepy: 'sleepy' };
 
-function portrait(character, mood, label) {
+function portrait(character, mood, label, outfit = 'base') {
   const at = name => `characters/${character}/${name}.webp`;
   const picture = (name, cls = '') => `<image${cls ? ` class="${cls}"` : ''} href="${at(name)}" x="0" y="0" width="200" height="200" preserveAspectRatio="xMidYMid meet"/>`;
-  const overlay = mood === 'talking' ? picture('talk', 'frame-talk') : mood === 'idle' && PORTRAITS[character].blink ? picture('blink', 'frame-blink') : '';
+  const face = FACE_FOR[mood] ? picture(`faces/${FACE_FOR[mood]}`) : '';
+  const overlay = mood === 'talking' ? picture('faces/talk', 'frame-talk') : mood === 'idle' ? picture('faces/blink', 'frame-blink') : '';
   return `<svg class="char char-portrait char-${character} mood-${mood}" viewBox="0 0 200 200" role="img" aria-label="${label}" xmlns="http://www.w3.org/2000/svg">
-  <g class="char-body">${picture(FRAME_FOR[mood])}${overlay}</g>
+  <g class="char-body">${picture(`outfits/${outfit}`)}${face}${overlay}</g>
 </svg>`;
 }
 
-export function renderCharacter({ character = 'pip', color = 'peach', mood = 'idle', title = '' } = {}) {
-  if (Object.hasOwn(PORTRAITS, character)) return portrait(character, MOODS.includes(mood) ? mood : 'idle', title.replace(/[<>&"]/g, ''));
+export function renderCharacter({ character = 'pip', color = 'peach', mood = 'idle', title = '', outfit = 'base' } = {}) {
+  if (Object.hasOwn(PORTRAITS, character)) return portrait(character, MOODS.includes(mood) ? mood : 'idle', title.replace(/[<>&"]/g, ''), /^[a-z-]{1,32}$/.test(outfit) ? outfit : 'base');
   const body = BODIES[character] ?? BODIES.pip, c = COLORS[color] ?? COLORS.peach, m = MOODS.includes(mood) ? mood : 'idle';
   const y = body.face;
   return `<svg class="char char-${character} mood-${m}" viewBox="0 0 200 200" role="img" aria-label="${title.replace(/[<>&"]/g, '')}" xmlns="http://www.w3.org/2000/svg">

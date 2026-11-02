@@ -22,6 +22,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.remember
+import android.graphics.BitmapFactory
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.nativeCanvas
@@ -153,53 +158,61 @@ private fun DrawScope.extras(mood: Mood, c: Palette, pulse: Float) {
     }
 }
 
-/** Illustrated characters: one picture per expression (res/drawable-nodpi/<id>_<frame>.webp). */
-private val PORTRAITS = mapOf(
-    "claude" to mapOf(
-        "idle" to R.drawable.claude_idle, "blink" to R.drawable.claude_blink, "talk" to R.drawable.claude_talk,
-        "listening" to R.drawable.claude_listening, "thinking" to R.drawable.claude_thinking,
-        "happy" to R.drawable.claude_happy, "sleepy" to R.drawable.claude_sleepy,
-    ),
-)
+/** Illustrated characters: an outfit picture with a face patch over it (assets/characters/<id>/). */
+private val PORTRAITS = setOf("claude")
+private val pictures = HashMap<String, ImageBitmap?>()
 
 @Composable
-private fun Portrait(frames: Map<String, Int>, mood: Mood, modifier: Modifier, label: String, still: Boolean) {
+private fun picture(path: String): ImageBitmap? {
+    val context = LocalContext.current
+    return remember(path) {
+        synchronized(pictures) {
+            pictures.getOrPut(path) {
+                runCatching { context.assets.open(path).use { BitmapFactory.decodeStream(it)?.asImageBitmap() } }.getOrNull()
+            }
+        }
+    }
+}
+
+@Composable
+private fun Portrait(character: String, outfit: String, mood: Mood, modifier: Modifier, label: String, still: Boolean) {
     val motion = rememberInfiniteTransition(label = "portrait")
     val breath by motion.animateFloat(0f, 1f, infiniteRepeatable(tween(2000), RepeatMode.Reverse), label = "breath")
-    // 1 while the overlay picture shows: a short blink every 5 s, or the open mouth every other 250 ms.
+    // 1 while the overlay shows: a short blink every 5 s, or the open mouth every other 250 ms.
     val blink by motion.animateFloat(0f, 0f, infiniteRepeatable(keyframes {
         durationMillis = 5000; 0f at 4690; 1f at 4700; 1f at 4850; 0f at 4860
     }), label = "blink")
     val talk by motion.animateFloat(0f, 1f, infiniteRepeatable(keyframes {
         durationMillis = 500; 0f at 249; 1f at 250; 1f at 499
     }), label = "talk")
-    val base = when (mood) {
-        Mood.Listening -> "listening"; Mood.Thinking -> "thinking"; Mood.Happy -> "happy"; Mood.Sleepy -> "sleepy"
-        else -> "idle"
-    }
-    val overlay = when {
+    val face = when {
+        mood == Mood.Listening -> "listening"; mood == Mood.Thinking -> "thinking"
+        mood == Mood.Happy -> "happy"; mood == Mood.Sleepy -> "sleepy"
         still -> null
         mood == Mood.Talking && talk >= .5f -> "talk"
         mood == Mood.Idle && blink >= .5f -> "blink"
         else -> null
     }
-    androidx.compose.foundation.layout.Box(modifier.semantics { if (label.isNotEmpty()) contentDescription = label }) {
-        val lift = if (still) 0f else breath
-        androidx.compose.foundation.Image(
-            androidx.compose.ui.res.painterResource(frames.getValue(overlay ?: base)), null,
-            Modifier.matchParentSize().graphicsLayer {
-                translationY = -lift * 2.dp.toPx()
-                scaleX = 1f + lift * .006f; scaleY = scaleX
-                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(.5f, 1f)
-            },
-        )
+    val root = "characters/$character"
+    val body = picture("$root/outfits/$outfit.webp") ?: picture("$root/outfits/base.webp")
+    val patch = face?.let { picture("$root/faces/$it.webp") }
+    val lift = if (still) 0f else breath
+    Canvas(modifier.semantics { if (label.isNotEmpty()) contentDescription = label }.graphicsLayer {
+        translationY = -lift * 2.dp.toPx()
+        scaleX = 1f + lift * .006f; scaleY = scaleX
+        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(.5f, 1f)
+    }) {
+        val side = size.minDimension.toInt()
+        val at = androidx.compose.ui.unit.IntOffset(((size.width - side) / 2).toInt(), ((size.height - side) / 2).toInt())
+        for (image in listOfNotNull(body, patch)) drawImage(image, dstOffset = at, dstSize = androidx.compose.ui.unit.IntSize(side, side),
+            filterQuality = androidx.compose.ui.graphics.FilterQuality.High)
     }
 }
 
 /** The companion, gently alive: it breathes, blinks, talks and thinks. */
 @Composable
-fun CompanionCharacter(character: String, color: String, mood: Mood, modifier: Modifier = Modifier, label: String = "", still: Boolean = false) {
-    PORTRAITS[character]?.let { return Portrait(it, mood, modifier, label, still) }
+fun CompanionCharacter(character: String, color: String, mood: Mood, modifier: Modifier = Modifier, label: String = "", still: Boolean = false, outfit: String = "base") {
+    if (character in PORTRAITS) return Portrait(character, outfit, mood, modifier, label, still)
     val body = BODIES[character] ?: BODIES.getValue("pip")
     val palette = COLORS[color] ?: COLORS.getValue("peach")
     val motion = rememberInfiniteTransition(label = "character")

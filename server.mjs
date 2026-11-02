@@ -17,7 +17,11 @@ import { Profiles, ensureWorkspace, instructions } from './src/companion.mjs';
 import { createCompanionHttp } from './src/companion-http.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const PORTRAIT_FRAMES = ['idle', 'blink', 'talk', 'listening', 'thinking', 'happy', 'sleepy'];
+// Claude-chan art (docs/COMPANION.md): outfits are whole pictures, faces are patches drawn over them.
+const PORTRAIT_FACES = ['blink', 'talk', 'listening', 'thinking', 'happy', 'sleepy', 'laugh', 'wink', 'surprised', 'sad', 'worried',
+  'teary-smile', 'embarrassed', 'pout', 'proud', 'excited', 'confused', 'determined', 'tender', 'love', 'focused'];
+const PORTRAIT_OUTFITS = ['base', 'cozy-home', 'pajamas', 'rain', 'sunny', 'snow', 'windy', 'spring', 'summer', 'autumn', 'winter',
+  'halloween', 'christmas', 'party', 'new-year', 'lunar-new-year', 'valentine', 'easter', 'summer-festival', 'birthday'];
 const STATIC = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
@@ -28,8 +32,9 @@ const STATIC = new Map([
   ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']],
   // Old address of the chat page: it now redirects to the companion.
   ['/conversation.html', ['conversation.html', 'text/html; charset=utf-8']],
-  // Illustrated characters: one picture per expression.
-  ...PORTRAIT_FRAMES.map(frame => [`/characters/claude/${frame}.webp`, [`characters/claude/${frame}.webp`, 'image/webp']])
+  // Illustrated characters.
+  ...PORTRAIT_FACES.map(face => `faces/${face}`).concat(PORTRAIT_OUTFITS.map(outfit => `outfits/${outfit}`))
+    .map(name => [`/characters/claude/${name}.webp`, [`characters/claude/${name}.webp`, 'image/webp']])
 ]);
 
 // runtimeFile / runtimeDir: the per-owner agent runtime (docs/RUNTIME.md). Without them, account
