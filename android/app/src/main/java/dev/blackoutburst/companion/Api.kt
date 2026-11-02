@@ -40,6 +40,15 @@ import kotlinx.serialization.json.put
 @Serializable data class EventPage(val threadId: String, val events: List<Event>, val cursor: String, val lastSeq: Long, val hasMore: Boolean)
 @Serializable data class AppSession(val token: String, val cookie: String, val expiresAt: Long, val user: AppUser? = null)
 @Serializable data class AppUser(val username: String? = null)
+@Serializable data class DiscordBot(val name: String, val inviteUrl: String)
+@Serializable data class DiscordPairing(val code: String, val expiresAt: Long)
+@Serializable data class DiscordUser(val name: String)
+/** The owner's Discord bot link (docs/DISCORD.md). The token never comes back from the server. */
+@Serializable data class DiscordStatus(
+    val linked: Boolean, val state: String? = null, val problem: String? = null, val bot: DiscordBot? = null,
+    val pairing: DiscordPairing? = null, val user: DiscordUser? = null,
+)
+@Serializable data class DiscordReply(val discord: DiscordStatus)
 
 /** code: the server's error code (e.g. AUTHENTICATION_REQUIRED), or NETWORK when nothing came back. */
 class ApiException(val code: String, val status: Int = 0) : IOException(code) {
@@ -64,6 +73,11 @@ class Api(private val session: () -> Session?) {
     suspend fun forget(file: String, id: String): Memories = call("api/companion", buildJsonObject {
         put("action", "forget"); put("file", file); put("id", id)
     })
+
+    suspend fun discord(): DiscordStatus = call<DiscordReply>("api/companion", buildJsonObject { put("action", "discord") }).discord
+    suspend fun discordLink(token: String): DiscordStatus =
+        call<DiscordReply>("api/companion", buildJsonObject { put("action", "discordLink"); put("token", token) }).discord
+    suspend fun discordUnlink(): DiscordStatus = call<DiscordReply>("api/companion", buildJsonObject { put("action", "discordUnlink") }).discord
 
     suspend fun snapshot(threadId: String? = null): Snapshot = call("api/conversation", buildJsonObject {
         put("action", "snapshot"); threadId?.let { put("threadId", it) }

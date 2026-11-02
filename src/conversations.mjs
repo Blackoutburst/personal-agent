@@ -87,7 +87,7 @@ function titleFrom(text) {
 }
 
 export class Conversations {
-  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy;
+  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled;
   #queues = new Map(); #active = new Map(); #closing = false;
 
   // runner: a CompanionRunner (or null when no runtime is configured).
@@ -96,9 +96,9 @@ export class Conversations {
   // session: when to start a new provider session (continuity then comes from the companion's files).
   // Omitted tools inherit owner policy; [] is an explicit turn-level narrowing.
   constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools,
-    session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 }, wakePolicy = {} }) {
+    session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 }, wakePolicy = {}, onSettled = () => {} }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
-    this.#session = session; this.#allowedTools = allowedTools;
+    this.#session = session; this.#allowedTools = allowedTools; this.#onSettled = onSettled;
     this.#wakePolicy = { beforeStart: () => true, canDeliver: () => true, ...wakePolicy };
     if (['beforeStart', 'canDeliver'].some(key => typeof this.#wakePolicy[key] !== 'function')) throw invalid();
     this.#db.exec(SCHEMA);
@@ -157,17 +157,7 @@ export class Conversations {
       if (this.#db.prepare('SELECT 1 FROM conv_requests WHERE companion_id=? AND request_id=?').get(companionId, requestId)) {
         throw new ConversationError('CONFLICT', 409);
       }
-      let mapping = this.#db.prepare('SELECT thread_id FROM conv_ongoing WHERE companion_id=?').get(companionId);
-      if (!mapping) {
-        let thread = this.#db.prepare('SELECT id FROM conv_threads WHERE companion_id=? ORDER BY updated_at DESC,id LIMIT 1').get(companionId);
-        if (!thread) {
-          thread = { id: randomUUID() };
-          this.#db.prepare('INSERT INTO conv_threads(id,companion_id,title,created_at,updated_at) VALUES(?,?,?,?,?)')
-            .run(thread.id, companionId, 'Companion', this.#now(), this.#now());
-        }
-        this.#db.prepare('INSERT INTO conv_ongoing VALUES(?,?)').run(companionId, thread.id);
-        mapping = { thread_id: thread.id };
-      }
+      const mapping = { thread_id: this.#ongoing(companionId) };
       this.#thread(companionId, mapping.thread_id);
       this.#db.prepare(`INSERT INTO conv_wakes(companion_id,id,request_id,thread_id,kind,prompt,fingerprint,
         state,attempt_token,result_text,message_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'queued',NULL,NULL,NULL,?,?)`)
@@ -176,6 +166,33 @@ export class Conversations {
     });
     if (['queued', 'waiting_delivery'].includes(wake.state)) this.#enqueue(companionId, wake.thread_id, wake.request_id, wake.id);
     return this.#wakeResult(wake);
+  }
+
+  // The owner's one ongoing chat (the thread the apps open by default), created when there is none yet.
+  ongoingThread(companionId) {
+    if (typeof companionId !== 'string' || !UUID.test(companionId)) throw invalid();
+    return this.#tx(() => this.#ongoing(companionId));
+  }
+  #ongoing(companionId) {
+    const mapping = this.#db.prepare('SELECT thread_id FROM conv_ongoing WHERE companion_id=?').get(companionId);
+    if (mapping) return mapping.thread_id;
+    let thread = this.#db.prepare('SELECT id FROM conv_threads WHERE companion_id=? ORDER BY updated_at DESC,id LIMIT 1').get(companionId);
+    if (!thread) {
+      thread = { id: randomUUID() };
+      this.#db.prepare('INSERT INTO conv_threads(id,companion_id,title,created_at,updated_at) VALUES(?,?,?,?,?)')
+        .run(thread.id, companionId, 'Companion', this.#now(), this.#now());
+    }
+    this.#db.prepare('INSERT INTO conv_ongoing VALUES(?,?)').run(companionId, thread.id);
+    return thread.id;
+  }
+
+  // Tells the onSettled listener (e.g. the Discord bridge) how a turn ended; listener errors never affect turns.
+  #settled(event) { try { this.#onSettled(event); } catch { /* listener problem only */ } }
+  #notifyWake(companionId, id) {
+    const wake = this.#wake(companionId, id);
+    if (wake?.state !== 'message' || !wake.message_id) return;
+    const message = this.#db.prepare('SELECT text FROM conv_messages WHERE id=?').get(wake.message_id);
+    this.#settled({ companionId, threadId: wake.thread_id, requestId: wake.request_id, state: 'complete', text: message?.text ?? '', proactive: true });
   }
 
   proactiveResult(companionId, id) { return this.#wakeResult(this.#wake(companionId, id)); }
@@ -356,13 +373,18 @@ export class Conversations {
   }
 
   #finish(turn, state, error = null) {
-    this.#tx(() => {
+    const changed = this.#tx(() => {
       const current = this.#db.prepare('SELECT state FROM conv_turns WHERE thread_id=? AND request_id=?').get(turn.thread_id, turn.request_id);
-      if (!['queued', 'running'].includes(current?.state)) return;
+      if (!['queued', 'running'].includes(current?.state)) return false;
       this.#db.prepare('UPDATE conv_turns SET state=?, error=?, updated_at=? WHERE thread_id=? AND request_id=?')
         .run(state, error ? JSON.stringify(error) : null, this.#now(), turn.thread_id, turn.request_id);
       this.#append(turn.thread_id, { type: 'turn', requestId: turn.request_id, state, ...(error ? { error } : {}) });
+      return true;
     });
+    if (!changed) return;
+    const row = this.#db.prepare(`SELECT m.text FROM conv_turns t JOIN conv_messages m ON m.id=t.assistant_message_id
+      WHERE t.thread_id=? AND t.request_id=?`).get(turn.thread_id, turn.request_id);
+    this.#settled({ companionId: turn.companion_id, threadId: turn.thread_id, requestId: turn.request_id, state, text: row?.text ?? '', proactive: false });
   }
 
   #endWake(wake, state) {
@@ -403,6 +425,7 @@ export class Conversations {
         const current = this.#wake(companionId, id);
         if (current?.state === 'waiting_delivery') this.#deliverWake(current);
       });
+      this.#notifyWake(companionId, id);
       return;
     }
     const wake = this.#tx(() => {
@@ -467,6 +490,7 @@ export class Conversations {
           this.#append(thread.id, { type: 'turn', requestId: wake.request_id, state: 'complete' });
         } else this.#deliverWake({ ...current, result_text: decision.text, result_feeling: split.feeling });
       });
+      this.#notifyWake(companionId, id);
     } catch (error) {
       this.#endWake(wake, this.#closing ? 'interrupted' : controller.signal.aborted ? 'cancelled' : 'error');
     } finally { this.#active.delete(key); }

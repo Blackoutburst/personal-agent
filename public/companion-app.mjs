@@ -324,6 +324,8 @@ function startLook() {
   }));
   $('theme-pick').hidden = first;
   renderThemePick();
+  $('discord-pick').hidden = first;
+  if (!first) loadDiscord();
 }
 
 // App theme: System (default), Light or Dark. companion-theme.js applies and stores it.
@@ -438,6 +440,65 @@ $('look-form').addEventListener('submit', async event => {
   } finally { $('save-look').disabled = false; }
 });
 $('name').addEventListener('input', () => { if (draftLook) draftLook.name = $('name').value; $('look-error').hidden = true; });
+
+// ---------- Discord (docs/DISCORD.md): the owner's own bot, for chatting in Discord DMs ----------
+
+let discord = null, discordBusy = false, discordError = '', discordTimer = null;
+const DISCORD_ERRORS = { INVALID_TOKEN: 'That token didn’t work. Copy it again from your bot’s page (Bot → Reset Token).',
+  BOT_IN_USE: 'This bot is already linked to another companion. Create a new bot for this one.' };
+async function loadDiscord() {
+  clearTimeout(discordTimer);
+  try { discord = (await api({ action: 'discord' })).discord; } catch { discord = discord ?? null; }
+  renderDiscord();
+  // While waiting for the pairing message, check again every few seconds.
+  if (view === 'look' && discord?.linked && !discord.user && document.visibilityState !== 'hidden') discordTimer = setTimeout(loadDiscord, 4000);
+}
+async function discordAction(body) {
+  discordBusy = true; discordError = ''; renderDiscord();
+  try { discord = (await api(body)).discord; }
+  catch (error) { discordError = DISCORD_ERRORS[error.message] ?? 'Discord couldn’t be reached. Try again in a moment.'; }
+  discordBusy = false; renderDiscord();
+  if (discord?.linked && !discord.user) { clearTimeout(discordTimer); discordTimer = setTimeout(loadDiscord, 4000); }
+}
+function el(tag, props = {}, ...children) { const node = Object.assign(document.createElement(tag), props); node.append(...children); return node; }
+function renderDiscord() {
+  const body = $('discord-body'), name = companionName();
+  if (!discord) { body.replaceChildren(el('p', { textContent: 'Loading…' })); return; }
+  const nodes = [];
+  if (!discord.linked) {
+    const link = el('a', { href: 'https://discord.com/developers/applications', target: '_blank', rel: 'noopener', textContent: 'Discord Developer Portal' });
+    nodes.push(el('p', {}, `Talk to ${name} in Discord direct messages. Reminders arrive there too.`),
+      el('ol', {}, el('li', {}, 'Open the ', link, ' and create a New Application.'),
+        el('li', {}, 'In ', el('strong', { textContent: 'Bot' }), ', press ', el('strong', { textContent: 'Reset Token' }), ' and copy the token.'),
+        el('li', {}, 'Paste it here. It stays on the server and is never shown again.')));
+    const input = el('input', { id: 'discord-token', type: 'password', autocomplete: 'off', spellcheck: false, placeholder: 'Bot token', required: true });
+    input.setAttribute('aria-label', 'Discord bot token');
+    const form = el('form', {}, input, el('button', { className: 'button primary', type: 'submit', disabled: discordBusy, textContent: discordBusy ? 'Connecting…' : 'Connect' }));
+    form.addEventListener('submit', event => { event.preventDefault(); if (input.value.trim()) discordAction({ action: 'discordLink', token: input.value.trim() }); });
+    nodes.push(form);
+  } else {
+    const state = discord.state === 'online' ? 'Online' : discord.state === 'error' ? 'Not connected' : 'Connecting…';
+    const badge = el('span', { className: 'status', textContent: state }); badge.dataset.state = discord.state;
+    nodes.push(el('p', {}, 'Bot ', el('strong', { textContent: discord.bot.name }), ' · ', badge));
+    if (discord.problem) {
+      nodes.push(el('p', { className: 'error', textContent: discord.problem === 'DISALLOWED_INTENTS'
+        ? 'Discord refused the connection settings for this bot.' : 'Discord no longer accepts this bot’s token. Disconnect, then connect again with a new token.' }));
+    } else if (discord.user) {
+      nodes.push(el('p', {}, 'Linked to ', el('strong', { textContent: discord.user.name }), `. Send ${name} a direct message in Discord to chat; reminders arrive there too.`));
+    } else if (discord.pairing) {
+      nodes.push(el('ol', {},
+        el('li', {}, el('a', { href: discord.bot.inviteUrl, target: '_blank', rel: 'noopener', textContent: 'Add the bot to a server' }), ' you’re in (your own server is fine).'),
+        el('li', {}, 'Send the bot this code in a direct message:')),
+      el('p', {}, el('span', { className: 'code', textContent: discord.pairing.code })),
+      el('p', { textContent: 'Waiting for your message… The code works for an hour.' }));
+    }
+    const off = el('button', { className: 'button', type: 'button', disabled: discordBusy, textContent: 'Disconnect' });
+    off.addEventListener('click', () => { if (confirm(`Disconnect ${discord.bot.name} from ${name}?`)) discordAction({ action: 'discordUnlink' }); });
+    nodes.push(el('div', { className: 'actions' }, off));
+  }
+  if (discordError) nodes.push(el('p', { className: 'error', role: 'alert', textContent: discordError }));
+  body.replaceChildren(...nodes);
+}
 
 window.addEventListener('hashchange', () => { if (view !== 'loading' && view !== 'gate') route(); });
 // Her outfit follows the time of day: check again every 10 minutes and when the page comes back.

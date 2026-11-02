@@ -217,3 +217,22 @@ legend { font-weight: 700; margin-bottom: 10px; }
   display: flex; flex-direction: column; align-items: center; gap: 2px; font-weight: 700; font-size: 12px; color: var(--ink); }
 .pick-outfit button .pic { width: 64px; height: 64px; display: block; }
 .pick-outfit button[aria-pressed="true"] { border-color: var(--body); background: var(--card); }
+
+/* Connections: Discord (docs/DISCORD.md) */
+.connection { margin-top: 28px; max-width: 560px; }
+.connection h2 { font-size: 18px; margin: 0 0 10px; }
+.connection p, .connection li { color: var(--soft); line-height: 1.5; margin: 0 0 8px; }
+.connection ol { padding-left: 20px; margin: 0 0 12px; }
+.connection strong { color: var(--ink); }
+.connection form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 4px 0 8px; }
+.connection input { flex: 1 1 240px; border: 0; border-radius: 16px; padding: 12px 16px; font: inherit; background: var(--card); color: var(--ink);
+  box-shadow: 0 2px 10px rgba(120,80,90,.08); outline: none; }
+.connection input:focus { box-shadow: 0 0 0 3px var(--light), 0 2px 10px rgba(120,80,90,.08); }
+.connection .code { font: 700 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; color: var(--ink);
+  background: var(--card); border: 1px dashed var(--line); border-radius: 12px; padding: 8px 14px; display: inline-block; user-select: all; }
+.connection .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.connection .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: var(--ink); }
+.connection .status::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: var(--soft); }
+.connection .status[data-state="online"]::before { background: #3fb950; }
+.connection .status[data-state="error"]::before { background: var(--danger); }
+.connection .error { color: var(--danger); }

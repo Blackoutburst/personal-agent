@@ -18,6 +18,7 @@ import { Profiles, ensureWorkspace, instructions } from './src/companion.mjs';
 import { createCompanionHttp } from './src/companion-http.mjs';
 import { SchedulerStore, SchedulerService } from './src/scheduler.mjs';
 import { createSchedulerHttp, schedulerOperation } from './src/scheduler-http.mjs';
+import { DiscordLinks, DiscordBridge } from './src/discord.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 // Claude-chan art (docs/COMPANION.md): outfits are whole pictures, faces are patches drawn over them.
@@ -44,7 +45,7 @@ const STATIC = new Map([
 // runtimeFile / runtimeDir: the per-owner agent runtime (docs/RUNTIME.md). Without them, account
 // mode still serves conversations but every reply reports that no agent is configured.
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {} } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -69,7 +70,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let conversationHttp;
   let agentsConfigured = false;
   let companionHttp;
-  let schedulerHttp, schedulerService, schedulerStore;
+  let schedulerHttp, schedulerService, schedulerStore, discord = null;
   const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
   const tokenFor = companionId => {
     if (!schedulerOwnerTokens.has(companionId)) {
@@ -200,13 +201,18 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       conversations = new Conversations({ store, runner, systemPrompt, wakePolicy: {
         beforeStart: (companionId, id) => Boolean(runner?.ownerFor(companionId)) && schedulerStore.startInTransaction(companionId, id),
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id) },
+        onSettled: event => discord?.settled(event),
         ...conversationOptions });
       schedulerService = new SchedulerService({ scheduler: schedulerStore, conversations,
         companions: () => owners.map(owner => companionIdFor(store, owner)).filter(id => id && profiles.get(id)),
         ready: companionId => Boolean(runner?.ownerFor(companionId)), ...(schedulerOptions.pollMs ? { pollMs: schedulerOptions.pollMs } : {}) });
       schedulerHttp = createSchedulerHttp({ access, scheduler: schedulerService });
+      // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
+      discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, ...discordOptions,
+        log: message => console.error(message) });
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
+        discord,
         onForget: companionId => conversations.resetSessions(companionId),
         // Claude reads the look every turn; Codex keeps its first instructions, so it starts afresh.
         onLook: companionId => conversations.resetSessions(companionId) });
@@ -224,7 +230,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     // A competing process must bind its socket before it can recover another process's turns.
     conversations?.recover();
     schedulerService?.start();
+    if (discordOptions.connect !== false) discord?.start();
   } catch (error) {
+    discord?.stop();
     await schedulerService?.stop();
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await conversations?.shutdown();
@@ -232,8 +240,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   }
   return {
     server, store, url: `http://127.0.0.1:${server.address().port}`,
-    conversations, scheduler: schedulerService,
+    conversations, scheduler: schedulerService, discord,
     async close() {
+      discord?.stop();
       await schedulerService?.stop();
       await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       // Running replies end as interrupted; nothing writes to a closed store.

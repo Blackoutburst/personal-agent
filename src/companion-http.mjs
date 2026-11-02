@@ -2,13 +2,15 @@
 // (view and forget). Account mode only; every request revalidates the platform session.
 import { CompanionError, readMemory, forgetMemory, ensureWorkspace } from './companion.mjs';
 import { outfitFor } from './wardrobe.mjs';
+import { DiscordError } from './discord.mjs';
 
 const fail = (status, code, message) => ({ status, body: { error: { code, message } } });
 
 // profiles: Profiles. workspaceFor(companionId) -> {dir, owner} or null when no agent is configured.
 // onForget(companionId): called after a memory was removed (starts a new agent session).
 // onLook(companionId): called when the name or look changed, so the agent's next session knows.
-export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, onForget = () => {}, onLook = () => {}, now = () => new Date() }) {
+// discord: the DiscordBridge (docs/DISCORD.md), or null when connections are unavailable.
+export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null }) {
   return async function companion(request) {
     const parsed = await access.read(request, 4096);
     if (parsed.failure) return parsed.failure;
@@ -47,11 +49,24 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
           if (removed) onForget(companionId);
           return { status: 200, body: { removed, files: readMemory(workspace.dir) } };
         }
+        case 'discord': {
+          if (!only(['action']) || !discord) break;
+          return { status: 200, body: { discord: discord.status(companionId) } };
+        }
+        case 'discordLink': {
+          if (!only(['action', 'token']) || !discord) break;
+          return { status: 200, body: { discord: await discord.link(companionId, payload.token) } };
+        }
+        case 'discordUnlink': {
+          if (!only(['action']) || !discord) break;
+          return { status: 200, body: { discord: discord.unlink(companionId) } };
+        }
         default: break;
       }
       return fail(400, 'INVALID_REQUEST', 'Invalid request.');
     } catch (error) {
       if (error instanceof CompanionError) return fail(error.status, error.code, 'Invalid request.');
+      if (error instanceof DiscordError) return fail(error.status, error.code, 'Discord could not be linked.');
       return fail(503, 'UNAVAILABLE', 'Your companion is unavailable right now.');
     }
   };

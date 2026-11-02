@@ -1,6 +1,13 @@
 package dev.blackoutburst.companion
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.material3.AlertDialog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -372,7 +379,89 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
         if (!first) {
             Spacer(Modifier.height(32.dp))
             ThemePicker(model)
+            Spacer(Modifier.height(32.dp))
+            DiscordSection(model, state, profile?.name ?: shownName)
         }
+    }
+}
+
+// Discord (docs/DISCORD.md): the owner links their own bot, then pairs by sending it a code in a DM.
+@Composable
+private fun DiscordSection(model: CompanionModel, state: UiState, name: String) {
+    val discord = state.discord
+    val uri = LocalUriHandler.current
+    val clipboard = LocalClipboardManager.current
+    var token by rememberSaveable { mutableStateOf("") }
+    var confirmOff by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { model.loadDiscord() }
+    // While waiting for the pairing message, check again every few seconds.
+    LaunchedEffect(discord?.linked, discord?.user, discord?.pairing?.code) {
+        while (discord?.linked == true && discord.user == null && discord.problem == null) { delay(4000); model.loadDiscord() }
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Text("Discord", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Ink)
+        Spacer(Modifier.height(8.dp))
+        when {
+            discord == null -> Text("Loading…", color = Soft)
+            !discord.linked -> {
+                Text("Talk to $name in Discord direct messages. Reminders arrive there too.", color = Soft, fontSize = 15.sp)
+                Spacer(Modifier.height(8.dp))
+                Text("1. Open the Discord Developer Portal and create a New Application.", color = Soft, fontSize = 15.sp)
+                TextButton({ uri.openUri("https://discord.com/developers/applications") }) { Text("Open the Developer Portal", color = Color(0xFFD9764A)) }
+                Text("2. In Bot, press Reset Token and copy the token.", color = Soft, fontSize = 15.sp)
+                Text("3. Paste it here. It stays on the server and is never shown again.", color = Soft, fontSize = 15.sp)
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(token, { token = it.trim() }, Modifier.fillMaxWidth(), label = { Text("Bot token") }, singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(18.dp),
+                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
+                    colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Card, unfocusedContainerColor = Card))
+                Spacer(Modifier.height(10.dp))
+                Pill(if (state.discordBusy) "Connecting…" else "Connect", enabled = !state.discordBusy && token.isNotBlank()) {
+                    model.linkDiscord(token); token = ""
+                }
+            }
+            else -> {
+                val bot = discord.bot
+                val online = when (discord.state) { "online" -> "Online"; "error" -> "Not connected"; else -> "Connecting…" }
+                val dot = when (discord.state) { "online" -> Color(0xFF3FB950); "error" -> Danger; else -> Soft }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Bot ${bot?.name ?: ""} · ", color = Ink, fontSize = 15.sp)
+                    Box(Modifier.size(9.dp).clip(CircleShape).background(dot))
+                    Text(" $online", color = Ink, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(6.dp))
+                when {
+                    discord.problem != null -> Text(if (discord.problem == "DISALLOWED_INTENTS") "Discord refused the connection settings for this bot."
+                        else "Discord no longer accepts this bot’s token. Disconnect, then connect again with a new token.", color = Danger, fontSize = 15.sp)
+                    discord.user != null -> Text("Linked to ${discord.user.name}. Send $name a direct message in Discord to chat; reminders arrive there too.",
+                        color = Soft, fontSize = 15.sp)
+                    discord.pairing != null -> {
+                        Text("1. Add the bot to a server you’re in (your own server is fine).", color = Soft, fontSize = 15.sp)
+                        if (bot != null) TextButton({ uri.openUri(bot.inviteUrl) }) { Text("Add the bot to a server", color = Color(0xFFD9764A)) }
+                        Text("2. Send the bot this code in a direct message:", color = Soft, fontSize = 15.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(discord.pairing.code, Modifier.clip(RoundedCornerShape(12.dp)).background(Card).border(1.dp, Line, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 14.dp, vertical = 8.dp), color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace, letterSpacing = 2.sp)
+                            TextButton({ clipboard.setText(AnnotatedString(discord.pairing.code)) }) { Text("Copy", color = Color(0xFFD9764A)) }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text("Waiting for your message… The code works for an hour.", color = Soft, fontSize = 14.sp)
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                TextButton({ confirmOff = true }, enabled = !state.discordBusy) { Text("Disconnect", color = Ink, fontWeight = FontWeight.Bold) }
+            }
+        }
+        state.discordError?.let { Text(it, color = Danger, fontSize = 15.sp, modifier = Modifier.padding(top = 8.dp)) }
+    }
+    if (confirmOff) {
+        AlertDialog(onDismissRequest = { confirmOff = false },
+            title = { Text("Disconnect Discord?") },
+            text = { Text("$name will stop answering in Discord. You can link a bot again any time.") },
+            confirmButton = { TextButton({ confirmOff = false; model.unlinkDiscord() }) { Text("Disconnect") } },
+            dismissButton = { TextButton({ confirmOff = false }) { Text("Cancel") } })
     }
 }
 

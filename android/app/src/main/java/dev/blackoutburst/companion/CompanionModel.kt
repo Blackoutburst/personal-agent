@@ -39,6 +39,9 @@ data class UiState(
     val memories: List<MemoryFile>? = null,
     val memoriesFailed: Boolean = false,
     val saving: Boolean = false,
+    val discord: DiscordStatus? = null,
+    val discordBusy: Boolean = false,
+    val discordError: String? = null,
 ) {
     val name get() = profile?.name ?: "Your companion"
     val replying get() = turn?.state == "streaming" || waitingFor != null
@@ -153,6 +156,33 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 done()
             }
             _state.update { it.copy(saving = false) }
+        }
+    }
+
+    // ---- Discord (docs/DISCORD.md) ----
+
+    fun loadDiscord() {
+        viewModelScope.launch { guarded { val status = api.discord(); _state.update { it.copy(discord = status) } } }
+    }
+
+    fun linkDiscord(token: String) = discordCall { api.discordLink(token.trim()) }
+    fun unlinkDiscord() = discordCall { api.discordUnlink() }
+
+    private fun discordCall(block: suspend () -> DiscordStatus) {
+        _state.update { it.copy(discordBusy = true, discordError = null) }
+        viewModelScope.launch {
+            try {
+                val status = block()
+                _state.update { it.copy(discord = status, discordBusy = false) }
+            } catch (error: ApiException) {
+                if (error.signedOut) { signedOut(); return@launch }
+                val message = when (error.code) {
+                    "INVALID_TOKEN" -> "That token didn’t work. Copy it again from your bot’s page (Bot → Reset Token)."
+                    "BOT_IN_USE" -> "This bot is already linked to another companion. Create a new bot for this one."
+                    else -> "Discord couldn’t be reached. Try again in a moment."
+                }
+                _state.update { it.copy(discordBusy = false, discordError = message) }
+            }
         }
     }
 
