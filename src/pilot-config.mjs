@@ -3,7 +3,7 @@ import { resolve, relative, isAbsolute, dirname, sep } from 'node:path';
 import { principalKey } from './provisioning.mjs';
 
 const MAX_BYTES = 16 * 1024;
-const ISSUER = 'https://blackoutburst.com';
+export const ISSUER = 'https://blackoutburst.com';
 
 function invalidConfig() {
   const error = new Error('Private pilot configuration is unavailable or invalid.');

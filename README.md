@@ -108,7 +108,7 @@ The source now includes an account-mode private ledger/API candidate. See [PRIVA
 
 ## Personal runtime binding candidate
 
-[PERSONAL-RUNTIME.md](docs/PERSONAL-RUNTIME.md) pins the versioned per-owner registration, authentication, routing and lifecycle consumer contract. `src/runtime-bindings.mjs` is an unwired backend-only metadata registry with a runtime-authority verifier that defaults unavailable. It fences stale generations and keeps authoritative bindings separate from client-writable private-state records. It adds no HTTP route, provider login, process launcher or model call. Synthetic verification is not actual runtime qualification. The owning orchestration contract, protected homes, owner-controlled native connections and real lifecycle/isolation evidence remain required.
+[RUNTIME.md](docs/RUNTIME.md): each owner's own Claude Code or Codex agent on the server (`src/runner.mjs`, provider adapters in `src/providers/`, admin tool `manage.mjs`).
 
 ## Conversation client candidate
 
