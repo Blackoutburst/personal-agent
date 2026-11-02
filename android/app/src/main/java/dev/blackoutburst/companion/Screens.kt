@@ -79,12 +79,15 @@ import kotlinx.coroutines.delay
 data class Tones(
     val top: Color, val bottom: Color, val ink: Color, val soft: Color, val line: Color,
     val card: Color, val mine: Color, val danger: Color, val dark: Boolean,
+    /** The companion's chat bubble: lighter than cards in dark mode so it stands out from the background. */
+    val bubble: Color = card, val bubbleLine: Color = Color.Transparent,
 )
 
 val LightTones = Tones(Color(0xFFFFF6EE), Color(0xFFFDEFF3), Color(0xFF3A2E39), Color(0xFF8A7A86), Color(0xFFF1E4E0),
     Color.White, Color(0xFFFFE3D3), Color(0xFFC0504D), dark = false)
 val DarkTones = Tones(Color(0xFF231B22), Color(0xFF2C2029), Color(0xFFF6ECEF), Color(0xFFB8A7B2), Color(0xFF4A3C47),
-    Color(0xFF362A33), Color(0xFF5B3F37), Color(0xFFFF8A80), dark = true)
+    Color(0xFF362A33), Color(0xFF5B3F37), Color(0xFFFF8A80), dark = true,
+    bubble = Color(0xFF4D3D48), bubbleLine = Color(0xFF5E4C58))
 
 private val LocalTones = staticCompositionLocalOf { LightTones }
 private val Cream: Color @Composable get() = LocalTones.current.top
@@ -253,11 +256,13 @@ private fun note(state: UiState): String? {
 @Composable
 private fun Bubble(message: Message) {
     val mine = message.role == "user"
+    val bubbleShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = if (mine) 20.dp else 6.dp, bottomEnd = if (mine) 6.dp else 20.dp)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
         Text(message.text,
             Modifier.widthIn(max = 320.dp)
-                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = if (mine) 20.dp else 6.dp, bottomEnd = if (mine) 6.dp else 20.dp))
-                .background(if (mine) Mine else Card)
+                .clip(bubbleShape)
+                .background(if (mine) Mine else LocalTones.current.bubble)
+                .border(1.dp, if (mine) Color.Transparent else LocalTones.current.bubbleLine, bubbleShape)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             color = Ink, fontSize = 17.sp, lineHeight = 23.sp)
     }

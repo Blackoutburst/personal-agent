@@ -11,7 +11,7 @@
   color-scheme: light;
 }
 :root[data-theme="dark"] {
-  --bg: #231B22; --bg2: #2C2029; --card: #362A33; --ink: #F6ECEF; --soft: #B8A7B2; --line: #4A3C47;
+  --bg: #231B22; --bg2: #2C2029; --card: #362A33; --bubble: #4D3D48; --bubble-line: #5E4C58; --ink: #F6ECEF; --soft: #B8A7B2; --line: #4A3C47;
   --glass: rgba(54,42,51,.72); --glow: color-mix(in srgb, var(--shade) 22%, transparent); --placeholder: #8C7C87;
   --muted: #45373F; --muted-ink: #7E6E79; --note-bg: #4A3D22; --note-ink: #F5DFA6;
   --danger: #FF9AA5; --danger-bg: #4A2A31; --yes-bg: #7A2F3B; --yes-ink: #FFE3E7;
@@ -19,7 +19,7 @@
 }
 /* Before the theme script runs (or without it), follow the device. */
 @media (prefers-color-scheme: dark) { :root:not([data-theme]) {
-  --bg: #231B22; --bg2: #2C2029; --card: #362A33; --ink: #F6ECEF; --soft: #B8A7B2; --line: #4A3C47;
+  --bg: #231B22; --bg2: #2C2029; --card: #362A33; --bubble: #4D3D48; --bubble-line: #5E4C58; --ink: #F6ECEF; --soft: #B8A7B2; --line: #4A3C47;
   --glass: rgba(54,42,51,.72); --glow: color-mix(in srgb, var(--shade) 22%, transparent); --placeholder: #8C7C87;
   --muted: #45373F; --muted-ink: #7E6E79; --note-bg: #4A3D22; --note-ink: #F5DFA6;
   --danger: #FF9AA5; --danger-bg: #4A2A31; --yes-bg: #7A2F3B; --yes-ink: #FFE3E7;
@@ -77,7 +77,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .welcome { text-align: center; color: var(--soft); padding: 40px 20px; line-height: 1.6; font-size: 16px; }
 .messages { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .bubble { max-width: min(78%, 560px); padding: 11px 16px; border-radius: 22px; line-height: 1.5; font-size: 15.5px; white-space: pre-wrap; overflow-wrap: anywhere; animation: pop .18s ease-out; }
-.bubble.companion { align-self: flex-start; background: var(--card); border-bottom-left-radius: 8px; box-shadow: 0 2px 8px rgba(120,80,90,.07); }
+.bubble.companion { align-self: flex-start; background: var(--bubble, var(--card)); border: 1px solid var(--bubble-line, transparent); border-bottom-left-radius: 8px; box-shadow: 0 2px 8px rgba(120,80,90,.07); }
 .bubble.user { align-self: flex-end; background: var(--body); color: var(--on-body); border-bottom-right-radius: 8px; }
 .messages li + li.user, .messages li + li.companion { margin-top: 0; }
 .messages li.user + li.companion, .messages li.companion + li.user { margin-top: 10px; }
