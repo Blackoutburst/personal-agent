@@ -236,3 +236,4 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .connection .status[data-state="online"]::before { background: #3fb950; }
 .connection .status[data-state="error"]::before { background: var(--danger); }
 .connection .error { color: var(--danger); }
+.connection input.secret { -webkit-text-security: disc; text-security: disc; }

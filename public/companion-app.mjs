@@ -331,17 +331,17 @@ function startLook() {
 // App theme: System (default), Light or Dark. companion-theme.js applies and stores it.
 function renderThemePick() {
   const current = window.companionTheme?.get() ?? 'system';
-  for (const button of document.querySelectorAll('[data-theme-choice]')) {
+  for (const button of document.querySelectorAll('button[data-theme-choice]')) {
     const on = button.dataset.themeChoice === current;
     button.setAttribute('aria-checked', String(on)); button.tabIndex = on ? 0 : -1;
   }
 }
 function pickTheme(choice) {
   window.companionTheme?.set(choice); renderThemePick();
-  document.querySelector(`[data-theme-choice="${choice}"]`)?.focus();
+  document.querySelector(`button[data-theme-choice="${choice}"]`)?.focus();
 }
 const THEME_ORDER = ['system', 'light', 'dark'];
-for (const button of document.querySelectorAll('[data-theme-choice]')) {
+for (const button of document.querySelectorAll('button[data-theme-choice]')) {
   button.addEventListener('click', () => pickTheme(button.dataset.themeChoice));
   button.addEventListener('keydown', event => {
     const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
@@ -471,8 +471,10 @@ function renderDiscord() {
       el('ol', {}, el('li', {}, 'Open the ', link, ' and create a New Application.'),
         el('li', {}, 'In ', el('strong', { textContent: 'Bot' }), ', press ', el('strong', { textContent: 'Reset Token' }), ' and copy the token.'),
         el('li', {}, 'Paste it here. It stays on the server and is never shown again.')));
-    const input = el('input', { id: 'discord-token', type: 'password', autocomplete: 'off', spellcheck: false, placeholder: 'Bot token', required: true });
+    // A masked text field, not type=password: password managers would otherwise pair it with the Name field as a login.
+    const input = el('input', { id: 'discord-token', type: 'text', className: 'secret', autocomplete: 'off', spellcheck: false, placeholder: 'Bot token', required: true });
     input.setAttribute('aria-label', 'Discord bot token');
+    for (const flag of ['data-1p-ignore', 'data-lpignore', 'data-bwignore', 'data-form-type']) input.setAttribute(flag, flag === 'data-form-type' ? 'other' : 'true');
     const form = el('form', {}, input, el('button', { className: 'button primary', type: 'submit', disabled: discordBusy, textContent: discordBusy ? 'Connecting…' : 'Connect' }));
     form.addEventListener('submit', event => { event.preventDefault(); if (input.value.trim()) discordAction({ action: 'discordLink', token: input.value.trim() }); });
     nodes.push(form);
