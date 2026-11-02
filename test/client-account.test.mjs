@@ -143,3 +143,19 @@ test('demo and unavailable modes keep the account panel hidden and perform no ac
     assertCleared(c);
   }
 });
+
+test('a configured agent shows its readiness and unknown agent states are rejected', async () => {
+  const cases = [
+    [{ provider: { state: 'claude' }, runtime: { state: 'ready' } }, /ready and answers with your own Claude/],
+    [{ provider: { state: 'codex' }, runtime: { state: 'signed-out' } }, /Codex account is not signed in/],
+    [{ provider: { state: 'unavailable' }, runtime: { state: 'unconfigured' } }, /No personal agent is configured/],
+    [{ provider: { state: 'claude' }, runtime: { state: 'forged' } }, /could not be verified/],
+    [{ provider: { state: 'other' }, runtime: { state: 'ready' } }, /could not be verified/]
+  ];
+  for (const [fields, expected] of cases) {
+    const c = await client();
+    const check = c.click(); c.settle(0, { companionId: ID, ...fields }); await check;
+    assert.match(c.element('account-status').textContent, expected);
+    assert.equal(c.element('companion-identity').hidden, !/account is verified/.test(c.element('account-status').textContent));
+  }
+});

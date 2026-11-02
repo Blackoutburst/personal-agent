@@ -8,13 +8,17 @@ export function createBoardAdapter(dependencies = {}) {
   return createBoardBoundary(dependencies);
 }
 
-export function adapterStatus(mode) {
+// agents: whether per-owner agents (runtime file) are configured in account mode.
+export function adapterStatus(mode, { agents = false } = {}) {
+  const live = mode === 'account' && agents;
   return {
     account: { state: mode === 'account' ? 'configured' : mode === 'demo' ? 'development-double' : 'unavailable',
       reason: mode === 'account' ? 'Platform session checks are configured. Verify your current sign-in below.' : 'Platform sign-in is not connected.' },
     board: { state: mode === 'demo' ? 'development-double' : 'unavailable', reason: 'No owner-scoped Board transport is configured; demo data is synthetic.' },
-    provider: { state: 'unavailable', reason: 'A personal Codex connection is not configured.' },
-    runtime: { state: 'unavailable', reason: 'Private per-user execution and recovery await orchestration qualification.' }
+    provider: live ? { state: 'configured', reason: 'Each owner’s own Claude or Codex subscription answers, on this server.' }
+      : { state: 'unavailable', reason: 'No personal agent is configured.' },
+    runtime: live ? { state: 'configured', reason: 'Replies run on the server, keep going when the page is closed and never re-run after a restart.' }
+      : { state: 'unavailable', reason: 'Conversations need a configured personal agent.' }
   };
 }
 

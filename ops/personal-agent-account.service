@@ -1,5 +1,5 @@
 [Unit]
-Description=Personal Agent account-only preview
+Description=Personal Agent web companion
 After=network.target blackoutburst-platform.service
 
 [Service]
@@ -14,6 +14,11 @@ Environment=COMPANION_PORT=4318
 Environment=COMPANION_PUBLIC_ORIGIN=https://blackoutburst.com
 Environment=COMPANION_DATA_DIR=/home/ubuntu/personal-agent-data
 Environment=COMPANION_PILOT_FILE=/home/ubuntu/personal-agent-config/pilot.json
+# Per-owner agents (RUNTIME.md). Owners map platform accounts to Claude or Codex; no secrets.
+Environment=COMPANION_RUNTIME_FILE=/home/ubuntu/.config/personal-agent/owners.json
+Environment=COMPANION_RUNTIME_DIR=/home/ubuntu/personal-agent-data/runtimes
+# claude lives in ~/.local/bin; codex is a Node script found through nvm's node.
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v24.9.0/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=3
 UMask=0077
@@ -23,6 +28,7 @@ ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/ubuntu/personal-agent-data
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Stop marks running replies INTERRUPTED and ends the agent processes.
 TimeoutStopSec=15
 
 [Install]

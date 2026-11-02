@@ -58,6 +58,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let accountHttp;
   let privateHttp;
   let conversationHttp;
+  let agentsConfigured = false;
   let goalsHttp;
   let conversations = null;
   const allowedOrigins = () => new Set(publicOrigin ? [publicOrigin] :
@@ -102,7 +103,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       if (!['GET', 'HEAD'].includes(req.method)) return fail(405, 'METHOD_NOT_ALLOWED', 'Method not available.');
       if (path === '/api/status') return send(200, {
         service: { name: 'Personal Agent', mode, version: '0.1.0' },
-        adapters: adapterStatus(mode), storage: { state: 'ready', mode: 'local-bootstrap' }
+        adapters: adapterStatus(mode, { agents: agentsConfigured }), storage: { state: 'ready', mode: 'local-bootstrap' }
       });
       if (path === '/api/contract-preview') {
         if (mode !== 'demo') return fail(503, 'FOUNDATIONS_UNAVAILABLE', 'Explicit demo mode is required for the synthetic preview.');
@@ -127,6 +128,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       if (owners.length) {
         if (!runtimeDir) throw new Error('COMPANION_RUNTIME_DIR is required with COMPANION_RUNTIME_FILE');
         runner = new CompanionRunner({ store, owners, runtimeDir, binaries, ...runnerOptions });
+        agentsConfigured = true;
       }
       conversations = new Conversations({ store, runner,
         systemPrompt: companionId => personaFor(runner?.ownerFor(companionId)), ...conversationOptions });

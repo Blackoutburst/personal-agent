@@ -33,6 +33,14 @@ async function getJson(path, options = {}) {
   }
 }
 
+const RUNTIME_MESSAGES = {
+  ready: name => `Your companion is ready and answers with your own ${name}. Open the conversation to talk to it.`,
+  "signed-out": name => `Your ${name} account is not signed in on the server yet. Ask the admin to sign it in.`,
+  "provider-missing": name => `The ${name} program is not installed on the server. Ask the admin.`,
+  unconfigured: () => "No personal agent is configured for your account yet. Ask the admin to add you.",
+  unavailable: () => "No personal agent is connected to this service yet."
+};
+
 function showAdapter(card, adapter) {
   const state = typeof adapter?.state === "string" ? adapter.state : "unavailable";
   const label = card.querySelector(".state");
@@ -52,10 +60,10 @@ async function loadStatus() {
     document.querySelector("#demo-badge").hidden = !isDemo;
     document.querySelector("#connection-notice").textContent = isDemo
       ? "Demo mode uses synthetic data. Real service connections remain unavailable."
-      : isAccount ? "Platform session checks are configured. Personal Codex and Board connections are still unavailable."
+      : isAccount ? "Platform sign-in is required. Board connections are not available yet."
       : "Local service status. Real connections are not configured in this foundation.";
     document.querySelector("#foundation-notice").textContent = isAccount
-      ? "Platform sign-in and personal Codex are separate connections. Chat, goals and runtime control come in later steps."
+      ? "Your companion answers with your own Claude or Codex subscription. Memory, tools and proactive messages come in later steps."
       : "This foundation is not connected to real accounts, Board services or a model provider. Chat and goals are a later step.";
     document.querySelector("#storage-state").textContent = [status.storage?.state || "unavailable", status.storage?.mode].filter(Boolean).join(" · ");
     document.querySelector("#service-version").textContent = `${status.service?.name || "Personal Agent"} · ${status.service?.version || "local"}`;
@@ -105,13 +113,14 @@ accountButton.addEventListener("click", async () => {
   try {
     const session = await getJson("api/session", { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" });
     if (requestEpoch !== accountEpoch || document.visibilityState === "hidden") return;
+    const runtime = session.runtime?.state, provider = session.provider?.state;
     if (typeof session.companionId !== "string" || !/^[0-9a-f-]{36}$/.test(session.companionId)
-      || session.provider?.state !== "unavailable" || session.runtime?.state !== "unavailable") {
+      || !Object.hasOwn(RUNTIME_MESSAGES, runtime) || !["claude", "codex", "unavailable"].includes(provider)) {
       throw new Error("The account response could not be verified. Please try again.");
     }
     companionIdentity.textContent = `Companion ${session.companionId}`;
     companionIdentity.hidden = false;
-    accountStatus.textContent = "Your invited platform account is verified. Your companion identity is ready; personal Codex is not connected.";
+    accountStatus.textContent = "Your invited platform account is verified. " + RUNTIME_MESSAGES[runtime](provider === "codex" ? "Codex" : "Claude");
   } catch (error) {
     if (requestEpoch !== accountEpoch || document.visibilityState === "hidden") return;
     clearIdentity();
