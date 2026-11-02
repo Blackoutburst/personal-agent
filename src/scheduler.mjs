@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { latestRoutineSlot } from './routines.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/, HASH = /^[a-f0-9]{64}$/, CLOCK = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const PERIOD = 6 * 3600000, GRACE = 24 * 3600000;
 const TERMINAL = new Set(['message', 'silent', 'cancelled', 'interrupted', 'error', 'missed']);
+const ROUTINES = ['dailyDigest', 'weeklyCheckin'];
 const CODES = new Set(['INVALID_REQUEST', 'NOT_FOUND', 'CONFLICT', 'CAPACITY', 'UNAVAILABLE', 'IDENTITY_CHANGED']);
 export class SchedulerError extends Error {
   constructor(code = 'UNAVAILABLE') {
@@ -54,7 +56,16 @@ CREATE TABLE IF NOT EXISTS scheduler_occurrences(id TEXT PRIMARY KEY,companion_i
  fingerprint TEXT NOT NULL,kind TEXT NOT NULL,prompt TEXT NOT NULL,job_id TEXT,generation INTEGER NOT NULL,due_at INTEGER NOT NULL,
  state TEXT NOT NULL,admitted_at INTEGER,UNIQUE(companion_id,slot_key));
 CREATE TABLE IF NOT EXISTS scheduler_days(companion_id TEXT NOT NULL,local_day TEXT NOT NULL,turns INTEGER NOT NULL,
- PRIMARY KEY(companion_id,local_day));`;
+ PRIMARY KEY(companion_id,local_day));
+CREATE TABLE IF NOT EXISTS scheduler_routine_preferences(companion_id TEXT NOT NULL,routine TEXT NOT NULL,
+ identity_key TEXT NOT NULL,enabled INTEGER NOT NULL,local_time TEXT NOT NULL,weekday INTEGER NOT NULL,
+ generation INTEGER NOT NULL,timezone TEXT NOT NULL,boundary_at INTEGER NOT NULL,PRIMARY KEY(companion_id,routine));
+CREATE TABLE IF NOT EXISTS scheduler_routine_occurrences(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,
+ routine TEXT NOT NULL,period TEXT NOT NULL,generation INTEGER NOT NULL,timezone TEXT NOT NULL,fingerprint TEXT NOT NULL,
+ prompt TEXT NOT NULL,due_at INTEGER NOT NULL,state TEXT NOT NULL,admitted_at INTEGER,cancel_pending INTEGER NOT NULL,
+ UNIQUE(companion_id,routine,generation,period));
+CREATE UNIQUE INDEX IF NOT EXISTS scheduler_routine_attempt ON scheduler_routine_occurrences(companion_id,routine,period)
+ WHERE admitted_at IS NOT NULL;`;
 
 export class SchedulerStore {
   #db; #timezone; #now; #spacing; #cap;
@@ -107,13 +118,91 @@ export class SchedulerStore {
     const start = number(settings.quiet_start), end = number(settings.quiet_end);
     return start === end ? false : start < end ? minute >= start && minute < end : minute >= start || minute < end;
   }
+  #routines(companionId, settings) {
+    const rows = this.#db.prepare('SELECT * FROM scheduler_routine_preferences WHERE companion_id=?').all(companionId);
+    const result = new Map();
+    for (const row of rows) {
+      requireSchedule(settings && row.identity_key === settings.identity_key && ROUTINES.includes(row.routine) &&
+        [0, 1].includes(row.enabled) && CLOCK.test(row.local_time) && integer(row.weekday, 1, 7) &&
+        (row.routine !== 'dailyDigest' || row.weekday === 1) && integer(row.generation, 1) && integer(row.boundary_at)
+        && typeof row.timezone === 'string', 'UNAVAILABLE');
+      try { new Intl.DateTimeFormat('en', { timeZone: row.timezone }).format(0); } catch { throw new SchedulerError('UNAVAILABLE'); }
+      result.set(row.routine, row);
+    }
+    return result;
+  }
+  #cancelRoutine(companionId, routine) {
+    this.#db.prepare("UPDATE scheduler_routine_occurrences SET state='cancelled',cancel_pending=1 WHERE companion_id=? AND routine=? AND state IN ('queued','admitted')")
+      .run(companionId, routine);
+  }
+  #configureRoutines(companionId, settings, patch, now) {
+    const current = this.#routines(companionId, settings), zone = this.#zone(companionId);
+    for (const routine of ROUTINES) {
+      const prior = current.get(routine), value = patch[routine] ?? {};
+      const enabled = value.enabled ?? !!prior?.enabled, localTime = value.localTime ?? prior?.local_time ?? '09:00';
+      const weekday = value.weekday ?? prior?.weekday ?? 1;
+      const changed = prior ? enabled !== !!prior.enabled || localTime !== prior.local_time || weekday !== prior.weekday || zone !== prior.timezone
+        : enabled || localTime !== '09:00' || weekday !== 1;
+      if (!changed) continue;
+      const generation = (prior?.generation ?? 0) + 1; requireSchedule(integer(generation, 1), 'UNAVAILABLE');
+      this.#cancelRoutine(companionId, routine);
+      this.#db.prepare(`INSERT INTO scheduler_routine_preferences
+        (companion_id,routine,identity_key,enabled,local_time,weekday,generation,timezone,boundary_at) VALUES(?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(companion_id,routine) DO UPDATE SET enabled=excluded.enabled,local_time=excluded.local_time,
+        weekday=excluded.weekday,generation=excluded.generation,timezone=excluded.timezone,boundary_at=excluded.boundary_at`)
+        .run(companionId, routine, settings.identity_key, Number(enabled), localTime, weekday, generation, zone, now);
+    }
+  }
+  #routineRow(row) {
+    if (!row) return null;
+    requireSchedule(UUID.test(row.id) && ROUTINES.includes(row.routine) && /^\d{4}-\d{2}-\d{2}$/.test(row.period)
+      && integer(row.generation, 1) && typeof row.timezone === 'string' && integer(row.due_at)
+      && ['queued', 'admitted', ...TERMINAL].includes(row.state) && (row.admitted_at === null || integer(row.admitted_at))
+      && [0, 1].includes(row.cancel_pending) && text(row.prompt) === row.prompt
+      && row.fingerprint === digest({ routine: row.routine, period: row.period, generation: row.generation,
+        timezone: row.timezone, dueAt: row.due_at, prompt: row.prompt }), 'UNAVAILABLE');
+    return { ...row, kind: 'watch', job_id: null };
+  }
+  #lookup(companionId, id) {
+    const prior = this.#db.prepare('SELECT * FROM scheduler_occurrences WHERE id=? AND companion_id=?').get(id, companionId);
+    const routine = this.#routineRow(this.#db.prepare('SELECT * FROM scheduler_routine_occurrences WHERE id=? AND companion_id=?').get(id, companionId));
+    requireSchedule(!prior || !routine, 'UNAVAILABLE'); return prior ?? routine;
+  }
+  #prepareRoutines(companionId, settings, now) {
+    this.#configureRoutines(companionId, settings, {}, now);
+    for (const [routine, preference] of this.#routines(companionId, settings)) {
+      if (!preference.enabled) continue;
+      const slot = latestRoutineSlot({ now, timeZone: preference.timezone, routine,
+        localTime: preference.local_time, weekday: preference.weekday });
+      this.#db.prepare("UPDATE scheduler_routine_occurrences SET state='cancelled',cancel_pending=1 WHERE companion_id=? AND routine=? AND state IN ('queued','admitted') AND (generation!=? OR timezone!=? OR period<?)")
+        .run(companionId, routine, preference.generation, preference.timezone, slot.period);
+      if (this.#db.prepare("SELECT 1 FROM scheduler_routine_occurrences WHERE companion_id=? AND routine=? AND state IN ('queued','admitted') AND period>? LIMIT 1")
+        .get(companionId, routine, slot.period)) continue;
+      if (slot.dueAt < preference.boundary_at || this.#db.prepare('SELECT 1 FROM scheduler_routine_occurrences WHERE companion_id=? AND routine=? AND period=? AND admitted_at IS NOT NULL')
+        .get(companionId, routine, slot.period)) continue;
+      const prompt = routine === 'dailyDigest'
+        ? `Prepare a concise private daily digest for ${slot.localDate} from current context: useful updates, pending questions and next steps. Remain silent if there is nothing useful. Never invent progress or write to the Board.`
+        : `Prepare a concise private weekly check-in for the local week of ${slot.period} from current context. Reflect gently on progress and next steps; a clearly dated neglected goal may be mentioned kindly. Do not invent seven-day milestone history. Remain silent if there is nothing useful. Never write to the Board.`;
+      const fingerprint = digest({ routine, period: slot.period, generation: preference.generation, timezone: preference.timezone, dueAt: slot.dueAt, prompt });
+      const prior = this.#db.prepare('SELECT * FROM scheduler_routine_occurrences WHERE companion_id=? AND routine=? AND generation=? AND period=?')
+        .get(companionId, routine, preference.generation, slot.period);
+      if (prior) { requireSchedule(this.#routineRow(prior).fingerprint === fingerprint, 'CONFLICT'); continue; }
+      this.#db.prepare(`INSERT INTO scheduler_routine_occurrences
+        (id,companion_id,routine,period,generation,timezone,fingerprint,prompt,due_at,state,admitted_at,cancel_pending)
+        VALUES(?,?,?,?,?,?,?,?,?,'queued',NULL,0)`)
+        .run(randomUUID(), companionId, routine, slot.period, preference.generation, preference.timezone, fingerprint, prompt, slot.dueAt);
+    }
+  }
   #snapshot(companionId) {
     const settings = this.#owner(companionId), time = this.#time();
+    const routines = this.#routines(companionId, settings);
     const jobs = this.#db.prepare(`SELECT * FROM scheduler_jobs WHERE companion_id=? AND (state='active' OR id IN (
       SELECT id FROM scheduler_jobs WHERE companion_id=? AND state!='active' ORDER BY rowid DESC LIMIT 10))
       ORDER BY due_at,id`).all(companionId, companionId);
     return { now: iso(time), timezone: this.#zone(companionId), settings: { enabled: !!settings.enabled,
-      quietStart: settings.quiet_start, quietEnd: settings.quiet_end, heartbeatEnabled: !!settings.heartbeat_enabled },
+      quietStart: settings.quiet_start, quietEnd: settings.quiet_end, heartbeatEnabled: !!settings.heartbeat_enabled,
+      dailyDigest: { enabled: !!routines.get('dailyDigest')?.enabled, localTime: routines.get('dailyDigest')?.local_time ?? '09:00' },
+      weeklyCheckin: { enabled: !!routines.get('weeklyCheckin')?.enabled, localTime: routines.get('weeklyCheckin')?.local_time ?? '09:00', weekday: routines.get('weeklyCheckin')?.weekday ?? 1 } },
     items: jobs.map(reminder) };
   }
   create(companionId, input) {
@@ -147,11 +236,19 @@ export class SchedulerStore {
     });
   }
   configure(companionId, input) {
-    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled']);
+    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', ...ROUTINES]);
     for (const key of ['enabled', 'heartbeatEnabled']) if (Object.hasOwn(value, key)) requireSchedule(typeof value[key] === 'boolean');
     for (const key of ['quietStart', 'quietEnd']) if (Object.hasOwn(value, key)) requireSchedule(typeof value[key] === 'string' && CLOCK.test(value[key]));
+    for (const routine of ROUTINES) if (Object.hasOwn(value, routine)) {
+      const selected = shape(value[routine], [], routine === 'dailyDigest' ? ['enabled', 'localTime'] : ['enabled', 'localTime', 'weekday']);
+      if (Object.hasOwn(selected, 'enabled')) requireSchedule(typeof selected.enabled === 'boolean');
+      if (Object.hasOwn(selected, 'localTime')) requireSchedule(typeof selected.localTime === 'string' && CLOCK.test(selected.localTime));
+      if (Object.hasOwn(selected, 'weekday')) requireSchedule(integer(selected.weekday, 1, 7));
+      value[routine] = selected;
+    }
     return this.#tx(() => {
       const settings = this.#owner(companionId), changed = value.heartbeatEnabled !== undefined && value.heartbeatEnabled !== !!settings.heartbeat_enabled;
+      this.#configureRoutines(companionId, settings, value, this.#time());
       if (changed) this.#db.prepare("UPDATE scheduler_occurrences SET state='cancelled' WHERE companion_id=? AND kind='heartbeat' AND state='queued'").run(companionId);
       this.#db.prepare(`UPDATE scheduler_settings SET enabled=?,quiet_start=?,quiet_end=?,heartbeat_enabled=?,
         heartbeat_generation=?,heartbeat_next_at=? WHERE companion_id=?`).run(
@@ -204,16 +301,28 @@ export class SchedulerStore {
         }
         this.#db.prepare('UPDATE scheduler_settings SET heartbeat_next_at=? WHERE companion_id=?').run(settings.heartbeat_next_at + count * PERIOD, companionId);
       }
+      this.#prepareRoutines(companionId, settings, now);
       return this.#pending(companionId);
     });
   }
   #pending(companionId) {
-    return this.#db.prepare("SELECT * FROM scheduler_occurrences WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250")
-      .all(companionId).map(occurrence);
+    const legacy = this.#db.prepare("SELECT * FROM scheduler_occurrences WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250").all(companionId);
+    const routines = this.#db.prepare("SELECT * FROM scheduler_routine_occurrences WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250")
+      .all(companionId).map(row => this.#routineRow(row));
+    return [...legacy, ...routines].sort((a, b) => a.due_at - b.due_at || a.id.localeCompare(b.id)).slice(0, 250).map(occurrence);
   }
   pending(companionId) { return this.#tx(() => { this.#owner(companionId); return this.#pending(companionId); }); }
   #eligible(companionId, row, settings, time) {
     if (!row || !settings?.enabled || TERMINAL.has(row.state) || this.#quiet(companionId, settings, time)) return false;
+    if (row.routine) {
+      const preference = this.#routines(companionId, settings).get(row.routine), zone = this.#zone(companionId);
+      if (!preference?.enabled || preference.generation !== row.generation || preference.timezone !== zone || row.timezone !== zone
+        || row.due_at < preference.boundary_at || row.due_at > time) return false;
+      const slot = latestRoutineSlot({ now: time, timeZone: zone, routine: row.routine, localTime: preference.local_time, weekday: preference.weekday });
+      if (slot.period !== row.period || slot.dueAt !== row.due_at) return false;
+      return row.admitted_at !== null || !this.#db.prepare('SELECT 1 FROM scheduler_routine_occurrences WHERE companion_id=? AND routine=? AND period=? AND admitted_at IS NOT NULL')
+        .get(companionId, row.routine, row.period);
+    }
     if (row.kind === 'heartbeat') return !!settings.heartbeat_enabled && row.generation === settings.heartbeat_generation;
     if (row.job_id) {
       const job = this.#db.prepare('SELECT * FROM scheduler_jobs WHERE id=? AND companion_id=?').get(row.job_id, companionId);
@@ -224,7 +333,7 @@ export class SchedulerStore {
   // Called inside Conversations' transaction. These methods must never open a nested transaction.
   startInTransaction(companionId, id) {
     const settings = this.#owner(companionId, false), now = this.#time();
-    const row = this.#db.prepare('SELECT * FROM scheduler_occurrences WHERE id=? AND companion_id=?').get(id, companionId);
+    const row = this.#lookup(companionId, id);
     if (!this.#eligible(companionId, row, settings, now)) return false;
     if (row.admitted_at !== null) return true;
     if (now < settings.cooldown_until || settings.last_started_at !== null && now - settings.last_started_at < this.#spacing) return false;
@@ -233,11 +342,11 @@ export class SchedulerStore {
     if (count >= this.#cap) return false;
     this.#db.prepare(`INSERT INTO scheduler_days VALUES(?,?,1) ON CONFLICT(companion_id,local_day) DO UPDATE SET turns=turns+1`).run(companionId, day);
     this.#db.prepare('UPDATE scheduler_settings SET last_started_at=? WHERE companion_id=?').run(now, companionId);
-    this.#db.prepare("UPDATE scheduler_occurrences SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
+    this.#db.prepare("UPDATE " + (row.routine ? 'scheduler_routine_occurrences' : 'scheduler_occurrences') + " SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
     return true;
   }
   canDeliver(companionId, id) {
-    const settings = this.#owner(companionId, false), row = this.#db.prepare('SELECT * FROM scheduler_occurrences WHERE id=? AND companion_id=?').get(id, companionId);
+    const settings = this.#owner(companionId, false), row = this.#lookup(companionId, id);
     return this.#eligible(companionId, row, settings, this.#time());
   }
   finishOccurrence(companionId, id, state, metadata = {}) {
@@ -246,10 +355,10 @@ export class SchedulerStore {
     const extra = shape(metadata, [], ['resetsAt']);
     return this.#tx(() => {
       this.#owner(companionId);
-      const row = this.#db.prepare('SELECT * FROM scheduler_occurrences WHERE id=? AND companion_id=?').get(id, companionId);
+      const row = this.#lookup(companionId, id);
       requireSchedule(row, 'NOT_FOUND');
       if (!TERMINAL.has(row.state)) {
-        this.#db.prepare('UPDATE scheduler_occurrences SET state=? WHERE id=?').run(state, id);
+        this.#db.prepare('UPDATE ' + (row.routine ? 'scheduler_routine_occurrences' : 'scheduler_occurrences') + ' SET state=? WHERE id=?').run(state, id);
         if (row.job_id) this.#db.prepare("UPDATE scheduler_jobs SET state=?,version=version+1 WHERE id=? AND state='active' AND generation=?")
           .run(state === 'message' || state === 'silent' ? 'complete' : state, row.job_id, row.generation);
       }
@@ -259,6 +368,15 @@ export class SchedulerStore {
       }
       return occurrence(row);
     });
+  }
+  routineCancellations(companionId) {
+    this.#owner(companionId, false);
+    return this.#db.prepare("SELECT id FROM scheduler_routine_occurrences WHERE companion_id=? AND state='cancelled' AND cancel_pending=1 ORDER BY due_at,id LIMIT 250")
+      .all(companionId).map(row => row.id);
+  }
+  acknowledgeRoutineCancellation(companionId, id) {
+    this.#owner(companionId, false);
+    this.#db.prepare("UPDATE scheduler_routine_occurrences SET cancel_pending=0 WHERE companion_id=? AND id=? AND state='cancelled'").run(companionId, id);
   }
 }
 
@@ -285,6 +403,7 @@ export class SchedulerService {
       if (this.#stopped) break;
       try {
         this.#scheduler.prepareDue(companionId);
+        this.#cancelRoutineWakes(companionId);
         for (const wake of this.#scheduler.pending(companionId)) {
           if (this.#stopped) break;
           let result = await this.#conversations.proactiveResult(companionId, wake.id);
@@ -305,13 +424,24 @@ export class SchedulerService {
       } catch { /* One unavailable owner never blocks the other owner or leaks private errors. */ }
     }
   }
+  #cancelRoutineWakes(companionId) {
+    for (const id of this.#scheduler.routineCancellations(companionId)) {
+      try {
+        const result = this.#conversations.cancelProactive(companionId, id);
+        if (result && typeof result.then === 'function') Promise.resolve(result)
+          .then(() => this.#scheduler.acknowledgeRoutineCancellation(companionId, id)).catch(() => {});
+        else this.#scheduler.acknowledgeRoutineCancellation(companionId, id);
+      } catch { /* The durable cancellation flag remains for the next tick. */ }
+    }
+  }
   #kick() { if (this.#timer && !this.#stopped) void this.tick().catch(() => {}); }
   create(companionId, input) { const result = this.#scheduler.create(companionId, input); this.#kick(); return result; }
   list(companionId) { return this.#scheduler.list(companionId); }
   configure(companionId, input) {
-    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled']);
+    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', ...ROUTINES]);
     const prior = value.heartbeatEnabled === false ? this.#scheduler.pending(companionId).filter(wake => wake.kind === 'heartbeat') : [];
     const result = this.#scheduler.configure(companionId, value);
+    this.#cancelRoutineWakes(companionId);
     for (const wake of prior) {
       try { Promise.resolve(this.#conversations.cancelProactive(companionId, wake.id)).catch(() => {}); }
       catch { /* The generation fence already prevents delivery; a later tick observes completion. */ }

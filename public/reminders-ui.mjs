@@ -2,6 +2,40 @@
 export function createRemindersUI({ document, fetchImpl = fetch }) {
   const $ = id => document.getElementById(id);
   let schedules = null, generation = 0, busy = false, message = null, dirty = false, editVersion = 0;
+  const routines = [
+    { key: 'dailyDigest', row: 'schedule-daily', fields: { enabled: 'schedule-daily-enabled', localTime: 'schedule-daily-time' } },
+    { key: 'weeklyCheckin', row: 'schedule-weekly', fields: { enabled: 'schedule-weekly-enabled', localTime: 'schedule-weekly-time', weekday: 'schedule-weekly-day' } }
+  ];
+  const supported = new Set(), routineEdits = new Map(routines.map(routine => [routine.key, new Map()]));
+  function validRoutine(value, weekly) {
+    return value && typeof value === 'object' && !Array.isArray(value) && typeof value.enabled === 'boolean'
+      && typeof value.localTime === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value.localTime)
+      && (!weekly || Number.isInteger(value.weekday) && value.weekday >= 1 && value.weekday <= 7);
+  }
+  function clearRoutine(routine) {
+    supported.delete(routine.key); routineEdits.get(routine.key).clear();
+    if ($(routine.row)) $(routine.row).hidden = true;
+    for (const [field, id] of Object.entries(routine.fields)) {
+      const input = $(id); if (!input) continue;
+      if (field === 'enabled') input.checked = false; else input.value = '';
+      input.disabled = true;
+    }
+  }
+  function renderRoutines() {
+    for (const routine of routines) {
+      const value = schedules?.settings?.[routine.key], edits = routineEdits.get(routine.key);
+      if (!$(routine.row) || !Object.values(routine.fields).every(id => $(id)) || !validRoutine(value, routine.key === 'weeklyCheckin')) {
+        clearRoutine(routine); continue;
+      }
+      supported.add(routine.key); $(routine.row).hidden = false;
+      for (const [field, id] of Object.entries(routine.fields)) {
+        if (!edits.has(field)) {
+          if (field === 'enabled') $(id).checked = value.enabled; else $(id).value = String(value[field]);
+        }
+        $(id).disabled = field !== 'enabled' && !$(routine.fields.enabled).checked;
+      }
+    }
+  }
 
   async function request(body) {
     const response = await fetchImpl('api/schedules', { method: 'POST', credentials: 'same-origin', cache: 'no-store',
@@ -16,6 +50,7 @@ export function createRemindersUI({ document, fetchImpl = fetch }) {
     $('schedule-note').textContent = 'Sign in to see your reminders.';
     $('schedule-checkins').checked = false; $('schedule-quiet-start').value = ''; $('schedule-quiet-end').value = '';
     $('schedule-zone').textContent = ''; $('schedule-save').disabled = true; $('schedule-settings').hidden = true;
+    routines.forEach(clearRoutine);
     $('upcoming').open = false;
   }
   function render() {
@@ -48,7 +83,8 @@ export function createRemindersUI({ document, fetchImpl = fetch }) {
       $('schedule-quiet-start').value = schedules.settings.quietStart;
       $('schedule-quiet-end').value = schedules.settings.quietEnd;
     }
-    $('schedule-zone').textContent = `Your timezone: ${schedules.timezone}. Optional check-ins run at most every six hours, outside quiet time, and stay silent when there is no useful update.`;
+    renderRoutines();
+    $('schedule-zone').textContent = `Your timezone: ${schedules.timezone}. Daily and weekly times use this zone. Quiet hours can delay delivery. Occasional check-ins run at most every six hours and stay silent without a useful update.`;
     $('schedule-save').disabled = busy;
   }
   async function refresh() {
@@ -65,12 +101,20 @@ export function createRemindersUI({ document, fetchImpl = fetch }) {
   async function change(body) {
     if (busy) return;
     busy = true; message = null;
-    const current = ++generation, edited = editVersion; render();
+    const current = ++generation, edited = editVersion;
+    const sentRoutineEdits = routines.map(routine => [routine.key, new Map(Object.keys(body.input?.[routine.key] ?? {})
+      .map(field => [field, routineEdits.get(routine.key).get(field)]))]);
+    render();
     try {
       const next = await request(body);
       if (current === generation) {
         schedules = next;
-        if (body.action === 'configure' && edited === editVersion) dirty = false;
+        if (body.action === 'configure') {
+          if (edited === editVersion) dirty = false;
+          for (const [key, sent] of sentRoutineEdits) for (const [field, token] of sent) {
+            if (routineEdits.get(key).get(field) === token) routineEdits.get(key).delete(field);
+          }
+        }
         $('announce').textContent = body.action === 'cancel' ? 'Reminder cancelled.' : 'Reminder preferences saved.';
       }
     } catch {
@@ -87,10 +131,22 @@ export function createRemindersUI({ document, fetchImpl = fetch }) {
   for (const id of ['schedule-checkins', 'schedule-quiet-start', 'schedule-quiet-end']) {
     $(id).addEventListener('input', () => { dirty = true; editVersion++; });
   }
+  for (const routine of routines) for (const [field, id] of Object.entries(routine.fields)) {
+    $(id)?.addEventListener('input', () => {
+      if (!supported.has(routine.key)) return;
+      routineEdits.get(routine.key).set(field, ++editVersion); renderRoutines();
+    });
+  }
   $('schedule-settings').addEventListener('submit', event => {
     event.preventDefault();
-    return change({ action: 'configure', input: { heartbeatEnabled: $('schedule-checkins').checked,
-      quietStart: $('schedule-quiet-start').value, quietEnd: $('schedule-quiet-end').value } });
+    const input = { heartbeatEnabled: $('schedule-checkins').checked,
+      quietStart: $('schedule-quiet-start').value, quietEnd: $('schedule-quiet-end').value };
+    for (const routine of routines) {
+      if (!supported.has(routine.key) || !routineEdits.get(routine.key).size) continue;
+      input[routine.key] = Object.fromEntries([...routineEdits.get(routine.key).keys()].map(field => [field,
+        field === 'enabled' ? $(routine.fields[field]).checked : field === 'weekday' ? Number($(routine.fields[field]).value) : $(routine.fields[field]).value]));
+    }
+    return change({ action: 'configure', input });
   });
   return Object.freeze({ clear, refresh, refreshIfOpen: () => $('upcoming').open && !busy ? refresh() : Promise.resolve() });
 }

@@ -201,7 +201,11 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .checkin-option { display: flex; gap: 8px; align-items: center; }
 .quiet-times { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
 .quiet-times label { display: grid; gap: 4px; font-size: 12px; }
-.quiet-times input { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); padding: 7px; border-radius: 8px; }
+.quiet-times input, .schedule-routine input[type="time"], .schedule-routine select { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); padding: 7px; border-radius: 8px; max-width: 100%; }
+.schedule-routine { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.schedule-routine .checkin-option { flex: 1 1 150px; }
+.routine-field { display: grid; gap: 4px; font-size: 12px; min-width: 0; }
+.schedule-routine :disabled { opacity: .6; }
 /* App theme picker (Look) */
 .theme-pick { margin-top: 28px; }
 .theme-pick h2 { font-size: 18px; margin: 0 0 10px; }
