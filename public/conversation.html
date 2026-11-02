@@ -16,7 +16,7 @@
       <div class="sidebar-heading"><p class="eyebrow">CONVERSATIONS</p><span id="thread-count">0</span></div>
       <p id="thread-empty" class="sidebar-empty">Open the demo to see synthetic threads.</p>
       <ul id="thread-list" class="thread-list" aria-label="Demo threads"></ul>
-      <div class="sidebar-footer"><span class="small-dot" aria-hidden="true"></span><p>Personal Codex is not connected.<span>This page currently offers a synthetic demo only.</span></p></div>
+      <div class="sidebar-footer"><span class="small-dot" aria-hidden="true"></span><p><span id="sidebar-status" class="sidebar-status">Personal agent is not connected.</span><span id="sidebar-detail">This page currently offers a synthetic demo only.</span></p></div>
       <a class="foundation-link" href="./">↖ Connection foundation</a>
       <a class="foundation-link" href="goals.html">Goals and permission cards ↗</a>
     </aside>
@@ -30,14 +30,13 @@
 
       <div id="demo-notice" class="demo-notice" hidden>
         <strong>Demo · synthetic replies, no AI</strong>
-        <p>Do not enter private details. This demo is not connected to personal Codex, Board or a model.</p>
+        <p>Do not enter private details. This demo is not connected to a personal agent, Board or a model.</p>
       </div>
 
       <section class="connection-panel" aria-labelledby="connection-heading">
         <div><h2 id="connection-heading">A conversation starts with a connection.</h2><p id="connection-description">Checking which mode this service supports…</p></div>
         <div class="connection-actions">
           <button id="open-button" type="button" disabled>Open demo</button>
-          <button id="account-button" type="button" hidden>Check platform sign-in</button>
           <button id="close-button" class="secondary" type="button" hidden>Close and clear</button>
           <a id="account-login" href="https://blackoutburst.com/account/" rel="noreferrer" hidden>Platform sign-in ↗</a>
         </div>
@@ -46,25 +45,25 @@
       <section class="conversation" aria-labelledby="thread-heading">
         <header class="thread-header">
           <div class="thread-title"><span class="thread-symbol" aria-hidden="true">◈</span><h2 id="thread-heading">Your conversation space</h2></div>
-          <button id="new-thread-button" class="secondary" type="button" disabled><span aria-hidden="true">＋</span> New thread</button>
+          <button id="new-thread-button" class="secondary" type="button" disabled><span aria-hidden="true">＋</span> New conversation</button>
         </header>
-        <div class="mobile-thread-picker"><label for="thread-select">Demo thread</label><select id="thread-select" disabled><option value="">Open the demo first</option></select></div>
+        <div class="mobile-thread-picker"><label for="thread-select">Conversation</label><select id="thread-select" disabled><option value="">Not open yet</option></select></div>
 
         <div id="history-pane" class="history-pane" tabindex="0" aria-label="Conversation history" aria-busy="false">
           <div id="empty-state" class="empty-state">
             <div class="companion-orb" aria-hidden="true">✦</div>
             <h3 id="empty-heading">A little room to think.</h3>
-            <p id="empty-description">Open the synthetic demo to try threads, messages and links. Personal Codex is not connected.</p>
+            <p id="empty-description">Checking which mode this service supports…</p>
             <span class="empty-caption">TEXT + LINKS · NO UPLOADS</span>
           </div>
           <ol id="message-list" class="message-list" aria-label="Messages"></ol>
         </div>
 
-        <div class="turn-row"><p id="turn-status">No active turn.</p><button id="retry-button" class="text-button" type="button" hidden>Retry pending action</button></div>
+        <div class="turn-row"><p id="turn-status">No active reply.</p><span class="turn-actions"><button id="stop-button" class="text-button" type="button" hidden>■ Stop reply</button><button id="retry-button" class="text-button" type="button" hidden>Retry pending action</button></span></div>
         <form id="composer-form" class="composer-form">
           <label for="composer">Your message</label>
-          <div class="composer-box"><textarea id="composer" name="message" rows="3" maxlength="1000" placeholder="Open the demo to write a synthetic message…" aria-describedby="composer-help character-count" disabled></textarea><button id="send-button" type="submit" disabled>Send <span aria-hidden="true">↑</span></button></div>
-          <div class="composer-details"><p id="composer-help">Enter for a new line · Ctrl/⌘ + Enter to send. Links open only when selected.</p><span id="character-count">0 / 1,000</span></div>
+          <div class="composer-box"><textarea id="composer" name="message" rows="3" maxlength="8000" placeholder="Not open yet…" aria-describedby="composer-help character-count" disabled></textarea><button id="send-button" type="submit" disabled>Send <span aria-hidden="true">↑</span></button></div>
+          <div class="composer-details"><p id="composer-help">Enter for a new line · Ctrl/⌘ + Enter to send. Links open only when selected.</p><span id="character-count">0 / 8,000</span></div>
         </form>
       </section>
       <p id="announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>

@@ -51,7 +51,7 @@ test('conversation development fixture requires explicit demo mode and persists 
   assert.ok(!JSON.stringify(denied.body).includes(request.text));
 });
 
-test('account conversation freshly checks admission but cannot expose fixtures or activate a runtime', async t => {
+test('account conversation freshly checks admission and never exposes fixtures or forged runtimes', async t => {
   const principal = { issuer: 'https://synthetic.invalid', subject: 'synthetic-owner' };
   let admitted = true, validations = 0;
   const f = await fixture(t, { pilotSubjects: [principal], validateAccount: async () => { validations++; return admitted ? principal : null; } });
@@ -61,13 +61,17 @@ test('account conversation freshly checks admission but cannot expose fixtures o
   assert.equal(validations, 0);
   for (let index = 0; index < 2; index++) {
     const result = await post(app, { action: 'submit', runtimeId: 'forged-other-owner', mode: 'demo' }, cookie);
-    assert.equal(result.status, 503); assert.equal(result.body.error.code, 'CONVERSATION_UNAVAILABLE');
+    assert.equal(result.status, 400); assert.equal(result.body.error.code, 'INVALID_REQUEST');
     assert.equal(result.body.synthetic, undefined);
   }
   assert.equal(validations, 2);
+  const snapshot = await post(app, { action: 'snapshot' }, cookie);
+  assert.equal(snapshot.status, 200); assert.notEqual(snapshot.body.synthetic, true);
+  assert.notEqual(snapshot.body.runtime.state, 'development-double');
+  assert.equal(validations, 3);
   admitted = false;
   const expired = await post(app, { action: 'snapshot' }, cookie);
-  assert.equal(expired.status, 401); assert.equal(validations, 3);
+  assert.equal(expired.status, 401); assert.equal(validations, 4);
   assert.equal(expired.headers.get('cache-control'), 'no-store');
   assert.equal(app.store.db.prepare("SELECT count(*) total FROM bootstrap_record WHERE namespace='development-conversation-v1'").get().total, 0);
 });

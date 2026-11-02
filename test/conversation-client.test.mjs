@@ -133,7 +133,7 @@ test('clear aborts a pending snapshot and late callbacks cannot restore private 
   f.intercept = (action, payload, options, normal) => { signal = options.signal; const result = normal(); return wait.promise.then(() => result); };
   const opening = f.client.open(); f.client.setDraft('private draft');
   f.client.clear(); assert.ok(signal.aborted); wait.resolve(); await opening;
-  assert.deepEqual(f.client.getState(), { synthetic: false, runtime: null, threads: [], threadId: null, messages: [], cursor: null,
+  assert.deepEqual(f.client.getState(), { opened: false, synthetic: false, runtime: null, threads: [], threadId: null, messages: [], cursor: null,
     lastSeq: 0, hasMore: false, turn: null, connection: 'disconnected', pending: null, draft: '', error: null });
   assert.equal(f.calls.length, 1);
 });
@@ -191,7 +191,7 @@ test('same-epoch 401/403 after completed events still clears every private displ
     assert.equal(f.client.getState().pending, null); assert.equal(f.client.getState().messages.length, 2);
     f.client.setDraft('another private draft');
     wait.reject(new ConversationError('ACCESS_DENIED', status)); await sending;
-    assert.deepEqual(f.client.getState(), { synthetic: false, runtime: null, threads: [], threadId: null, messages: [], cursor: null,
+    assert.deepEqual(f.client.getState(), { opened: false, synthetic: false, runtime: null, threads: [], threadId: null, messages: [], cursor: null,
       lastSeq: 0, hasMore: false, turn: null, connection: 'denied', pending: null, draft: '', error: 'ACCESS_DENIED' });
   }
 });
@@ -236,9 +236,9 @@ test('subscribers receive independent copies and drafts stay bounded and in memo
   assert.equal(f.client.getState().threads.length, 0); await ready(f);
   const copy = f.client.getState(); copy.messages.push({ text: 'injected' }); assert.equal(f.client.getState().messages.length, 0);
   f.client.setDraft('memory-only');
-  for (const bad of ['x'.repeat(1001), '\ud800', '\u0000']) assert.throws(() => f.client.setDraft(bad), error => error.code === 'INVALID_REQUEST');
+  for (const bad of ['x'.repeat(8001), '\ud800', '\u0000']) assert.throws(() => f.client.setDraft(bad), error => error.code === 'INVALID_REQUEST');
   await denied(() => f.client.send(' '.repeat(3)), 'INVALID_REQUEST');
-  await denied(() => f.client.send('x'.repeat(1001)), 'INVALID_REQUEST');
+  await denied(() => f.client.send('x'.repeat(8001)), 'INVALID_REQUEST');
   const before = calls; unsubscribe(); f.client.clear(); assert.equal(calls, before); assert.equal(f.client.getState().draft, '');
   assert.equal(f.calls.filter(call => call.action === 'submit').length, 0);
 });
@@ -261,8 +261,8 @@ test('transport uses only the fixed same-origin route and never reflects server 
 
 test('transport rejects oversized, malformed and redirected responses and propagates cancellation safely', async () => {
   const variants = [
-    () => new Response('{}', { headers: { 'content-type': 'application/json', 'content-length': '262145' } }),
-    () => new Response('x'.repeat(262145), { headers: { 'content-type': 'application/json' } }),
+    () => new Response('{}', { headers: { 'content-type': 'application/json', 'content-length': '16777217' } }),
+    () => new Response('x'.repeat(16777217), { headers: { 'content-type': 'application/json' } }),
     () => new Response(new Uint8Array([0xff]), { headers: { 'content-type': 'application/json' } }),
     () => new Response('not-json', { headers: { 'content-type': 'application/json' } }),
     () => new Response('{}', { headers: { 'content-type': 'text/html' } }),

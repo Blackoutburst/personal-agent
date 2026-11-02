@@ -1,36 +1,85 @@
-# Conversation UI v1 candidate
+# Conversation (web, ticket #8)
 
-This source adds `conversation.html`, a responsive text-and-links client, and a pinned synthetic conversation service for task #9 development. It is **not a model-backed conversation service or qualified private-runtime integration**. The deployed account-only preview remains `9d57d26`; this candidate is not deployed. Actual private owner admission, runtime/assistant provenance, provider execution and full cross-device pilot proof remain with #7/#8, orchestration #66 and #21.
+`/conversation.html` is the web conversation with your own companion. It has two modes:
 
-Open `/conversation.html` on a local candidate server. Default mode is unavailable. Account mode can freshly check the existing platform session but keeps messaging disabled. Every account-mode conversation API request revalidates admission and returns unavailable; no synthetic history or personal runtime can be selected through request fields. Access denial returns401/403 and clears client state. Positive conversation responses exist only in explicit `COMPANION_MODE=demo` and are permanently marked `version:1, synthetic:true`; the page prominently says synthetic replies, no AI. Use sample text only. The fixture is shared synthetic development data, not a private tenant or personal companion.
+- **Account mode** (`COMPANION_MODE=account`): real conversations. Every request revalidates
+  the platform session and routes the account only to its own companion, which answers through
+  that owner's own Claude or Codex (see RUNTIME.md). Conversations are kept on the server, so
+  every device of the same owner sees the same threads.
+- **Demo mode** (`COMPANION_MODE=demo`): a synthetic fixture for UI development. Replies are
+  canned, marked `synthetic:true` and labelled "no AI" on the page.
 
-## Client and transport
+Default mode is unavailable.
 
-`public/conversation-client.mjs` supplies a browser-compatible model with `open`, `select`, `create`, `setDraft`, `send`, `retry`, `poll`, `clear`/`disconnect`, `getState` and `subscribe`. `createConversationTransport` posts JSON to the fixed relative `api/conversation` path with same-origin credentials/no-store. The public preview prefix is preserved. No API key, provider auth, Board call, localStorage, notification request, link fetch or tool execution is supplied.
+## Protocol
 
-| Action | Request fields beyond `action` | Positive synthetic response fields beyond version/marker |
+`POST api/conversation` with a JSON body. Same-origin only; the body limit is 64 KiB in account
+mode (16 KiB otherwise). Responses carry `version:1` and `synthetic` (`false` in account mode).
+
+| Action | Request fields beyond `action` | Response fields |
 | --- | --- | --- |
-| `snapshot` | Optional `threadId` | `threads`, selected `threadId` (nullable), full committed `messages`, decimal-string `cursor`, runtime state `development-double` |
+| `snapshot` | optional `threadId` | `threads`, selected `threadId` (nullable), the latest 60 `messages`, `cursor`, `runtime:{state, provider?}`, `turn` when a reply is open |
 | `createThread` | `requestId`, `title` | `thread:{id,title}` |
-| `submit` | `requestId`, `threadId`, `text` | `accepted:{requestId,threadId,messageId}`; never an event cursor |
-| `events` | `threadId`, `cursor` | `threadId`, `events`, next `cursor`, head `lastSeq`, `hasMore` |
+| `submit` | `requestId`, `threadId`, `text` | `accepted:{requestId,threadId,messageId}` |
+| `events` | `threadId`, `cursor` | `events`, next `cursor`, `lastSeq`, `hasMore` (100 events per page) |
+| `cancel` | `requestId`, `threadId` | `cancel:{requestId,threadId,state}`: `stopping`, `cancelled` (was queued) or the final state |
 
-Per-thread event sequences are contiguous. `message` events contain the full accumulated message text and upsert by ID, so repeated pages/deltas cannot append duplicates. `turn` events carry request ID and streaming/complete/error state. The client advances its cursor only after applying a validated page. Gaps trigger a snapshot reconciliation; thread switches and clear/access loss use abort/epoch guards so stale callbacks cannot repopulate old content.
+`runtime.state` is `ready`, `signed-out`, `unconfigured` or `provider-missing`
+(`development-double` in demo mode).
 
-Uncertain create/send operations keep their exact request ID and payload for explicit retry. Retry reconciles the same action; a changed payload sharing an ID conflicts. No reload/hide/reopen automatically resends private input. Draft/pending state is memory-only. Hiding/leaving the page or denied access wipes messages, draft and pending state; reopening explicitly obtains a fresh snapshot. A service error with an uncertain action retains its retry identifier until explicit close/hide or reconciliation. Visible open demos poll selected threads while idle, with faster catch-up during an active synthetic turn.
+Events per thread are contiguous:
 
-Messages are rendered with text nodes. Only explicit http/https links without embedded credentials become clickable anchors; they open only on user selection with no-referrer/noopener. Link content grants no permissions. Composer input is limited to1000JavaScriptcharacters/4096UTF8bytes; thread titles to80UTF8bytes. Keyboard labels, focus states, mobile thread selection and a concise live status are provided. No uploads, voice, browser push, email or external notifications are implemented.
+- `message` holds the full current text of a message (the client upserts by id);
+- `noop` is an earlier event of a message whose newer text appears later in the same page;
+- `turn` holds `requestId` and `state`: `streaming`, `complete`, `error` or `cancelled`. On
+  `error` it adds `error:{code, message, resetsAt?}`. `resetsAt` is ISO 8601. Codes include
+  `NOT_SIGNED_IN`, `USAGE_LIMIT`, `NO_RUNTIME`, `PROVIDER_MISSING`, `PROVIDER_ERROR`, `TIMEOUT`
+  and `INTERRUPTED`.
 
-## Fixture and HTTP boundary
+`submit` is idempotent by `requestId`: a retry returns the same answer, while a different
+payload under the same id is `CONFLICT` (409). A second submit while a reply is still open is
+`BUSY` (409). A new thread titled "New conversation" takes its title from its first message.
 
-`src/conversation-demo.mjs` is a deliberately bounded **development fixture**, instantiated lazily only on an admitted same-origin demo API request. It stores one synthetic JSON record, commits paired messages and idempotency receipts atomically, and reconstructs deterministic events on restart. Each canned turn supplies five events, delivered three per page to exercise incremental rendering/replay. It performs no inference, asynchronous agent execution, account validation or network call. All replies explicitly identify their synthetic origin.
+## Server (`src/conversations.mjs`)
 
-The fixture allows at most five threads and12KiB serialized state. Capacity errors preserve every committed message; this limit is not a production product quota. It never deletes/truncates history to make space. The private companion ledger is not repurposed as trusted assistant output. The fixture's shared data and generated stream are not proof of real account isolation, provider session continuity or durable runtime event ownership.
+Replies run on the server, independent of any browser. Closing the page does not stop them.
+Turns are queued per companion, so each owner's agent answers one message at a time.
 
-`src/conversation-http.mjs` reuses the existing exact-Origin, POST, JSON media type,16KiB body and3second read guards. Missing or cross-site origins are denied. Default/account modes cannot access a retained fixture. Account mode additionally performs fresh central validation before returning the fixed unavailable status. Errors are fixed and no-store; native provider/runtime routes remain absent.
+- The assistant message is created on the first text and updated every 400 ms while streaming.
+- Each thread keeps its provider session id, so later messages resume the same agent session.
+- Stop aborts the agent process and keeps what was written so far.
+- A crash or restart never re-runs a reply silently. A reply that was running is marked
+  `INTERRUPTED`; a queued one runs after restart. A graceful stop marks running replies
+  `INTERRUPTED` and keeps queued ones.
+- No model turn is ever started without a user message.
 
-## Verification boundary
+Limits (`LIMITS`): 8,000 characters per user message, 100,000 per reply, 80 per title and
+200 threads per owner.
 
-Node tests cover source/client/service contracts, real local HTTP integration between two synthetic clients, lost acknowledgment after commit, retry/replay without duplicates, restart persistence, gap recovery, late callback denial/clear, malformed/capacity/corrupt-state rejection, and separation from account mode. These are synthetic development proofs. They do not establish actual desktop/mobile interaction, real private history across devices, runtime eligibility, owner homes or provider lifecycle. Browser automation is disabled in this workspace and must not be bypassed. Actual browser layout/keyboard review remains required before claiming that acceptance passed; the owner can review a concrete loopback-only synthetic demo through MCP.
+## Client (`public/conversation-client.mjs`, `public/conversation-app.mjs`)
 
-Adapt this client boundary to the owning qualified private conversation/runtime protocol when delivered. Never silently turn a synthetic service into a real account connection or treat client-written role labels as runtime/assistant provenance. Keep private conversations, memories and details outside every Board payload and source artifact.
+The client model provides `open`, `select`, `create`, `send`, `retry`, `cancel`, `refresh`,
+`poll`, `setDraft`, `clear` and `subscribe`. It validates every response strictly, recovers
+from event gaps with a snapshot, and keeps an uncertain send's request id for an explicit
+retry. It never resends on its own.
+
+In account mode the page opens the conversations on load. It polls every 0.5 s during a reply
+and every 2.5 s otherwise, and reloads the snapshot when a reply ends (for the new title) and
+when the page becomes visible again. Hiding the page only pauses polling. When the platform
+session ends, the page clears its display and offers the sign-in link.
+
+The demo still clears everything when the page is hidden.
+
+Messages are rendered as text nodes. Only http/https links without credentials become links,
+opened with `noopener` and no referrer. There are no uploads, voice or push notifications yet.
+
+## Tests
+
+- `test/conversation-account.test.mjs` runs the account mode end to end with fake `claude`
+  programs: streaming, resume, owner isolation, idempotency, stop, errors, restart and
+  shutdown. It also drives the browser client model against the real server.
+- `test/conversation-client.test.mjs`, `test/conversation-http.test.mjs` and
+  `test/conversation-integration.test.mjs` cover the client contract, the HTTP boundary and the
+  demo fixture.
+
+No real accounts, conversations or provider usage enter the tests.

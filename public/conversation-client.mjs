@@ -1,5 +1,10 @@
 const ID = /^[A-Za-z0-9._:-]{1,128}$/, REQUEST_ID = /^[A-Za-z0-9._-]{1,80}$/;
-const LIMIT = 262144;
+const LIMIT = 16777216;
+// Mirrors src/conversations.mjs LIMITS.
+export const USER_CHARS = 8000, USER_BYTES = 32768;
+const ASSISTANT_CHARS = 100000, ASSISTANT_BYTES = 400000;
+const RUNTIME_STATES = ['ready', 'signed-out', 'unconfigured', 'provider-missing'], PROVIDERS = ['claude', 'codex'];
+const TURN_STATES = ['streaming', 'complete', 'error', 'cancelled'];
 const MESSAGES = {
   INVALID_REQUEST: 'Check the conversation input.', BUSY: 'Resolve the pending request first.', NOT_READY: 'Open the development conversation first.',
   ACCESS_DENIED: 'Access was denied. Open again after checking your session.', UNAVAILABLE: 'The conversation service is unavailable.',
@@ -55,13 +60,14 @@ function cursor(value, code = 'INVALID_RESPONSE') {
 }
 function request(action, payload) {
   const selected = plain(payload, action === 'snapshot' ? [] : action === 'createThread' ? ['requestId', 'title'] :
-    action === 'submit' ? ['requestId', 'threadId', 'text'] : action === 'events' ? ['threadId', 'cursor'] : ['invalid-action'],
+    action === 'submit' ? ['requestId', 'threadId', 'text'] : action === 'events' ? ['threadId', 'cursor'] :
+    action === 'cancel' ? ['requestId', 'threadId'] : ['invalid-action'],
   action === 'snapshot' ? ['threadId'] : [], 'INVALID_REQUEST');
-  check(['snapshot', 'createThread', 'submit', 'events'].includes(action), 'INVALID_REQUEST');
+  check(['snapshot', 'createThread', 'submit', 'events', 'cancel'].includes(action), 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'threadId')) identifier(selected.threadId, false, 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'requestId')) identifier(selected.requestId, true, 'INVALID_REQUEST');
   if (action === 'createThread') text(selected.title, 80, 80, false, 'INVALID_REQUEST');
-  if (action === 'submit') text(selected.text, 1000, 4096, false, 'INVALID_REQUEST');
+  if (action === 'submit') text(selected.text, USER_CHARS, USER_BYTES, false, 'INVALID_REQUEST');
   if (action === 'events') cursor(selected.cursor, 'INVALID_REQUEST');
   return { action, ...selected };
 }
@@ -106,7 +112,7 @@ export function createConversationTransport({ fetchImpl = globalThis.fetch } = {
 }
 function envelope(value, required, optional = []) {
   const selected = plain(value, ['version', 'synthetic', ...required], optional);
-  check(selected.version === 1 && selected.synthetic === true); return selected;
+  check(selected.version === 1 && typeof selected.synthetic === 'boolean'); return selected;
 }
 function thread(value) {
   const selected = plain(value, ['id', 'title']);
@@ -117,32 +123,48 @@ function message(value, threadId) {
   check(selected.threadId === threadId, 'RESYNC_REQUIRED');
   check(selected.role === 'user' || selected.role === 'assistant');
   return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: selected.role,
-    text: text(selected.text, selected.role === 'user' ? 1000 : 16384, selected.role === 'user' ? 4096 : 65536, selected.role === 'assistant'),
+    text: text(selected.text, selected.role === 'user' ? USER_CHARS : ASSISTANT_CHARS, selected.role === 'user' ? USER_BYTES : ASSISTANT_BYTES, selected.role === 'assistant'),
     ...(Object.hasOwn(selected, 'requestId') ? { requestId: identifier(selected.requestId, true) } : {}) };
 }
 function snapshot(value, requested) {
-  const selected = envelope(value, ['threads', 'threadId', 'messages', 'cursor', 'runtime']);
-  const threads = array(selected.threads, 100).map(thread); check(new Set(threads.map(item => item.id)).size === threads.length);
+  const selected = envelope(value, ['threads', 'threadId', 'messages', 'cursor', 'runtime'], ['turn']);
+  const threads = array(selected.threads, 200).map(thread); check(new Set(threads.map(item => item.id)).size === threads.length);
   const sourceMessages = array(selected.messages, 500);
-  const runtime = plain(selected.runtime, ['state']); check(runtime.state === 'development-double');
+  const runtime = plain(selected.runtime, ['state'], ['provider']);
+  if (selected.synthetic) check(runtime.state === 'development-double' && !Object.hasOwn(runtime, 'provider'));
+  else check(RUNTIME_STATES.includes(runtime.state) && (!Object.hasOwn(runtime, 'provider') || PROVIDERS.includes(runtime.provider)));
+  let turn = null;
+  if (Object.hasOwn(selected, 'turn')) {
+    check(!selected.synthetic && selected.threadId !== null);
+    const open = plain(selected.turn, ['requestId', 'state']); identifier(open.requestId, true); check(open.state === 'streaming');
+    turn = { requestId: open.requestId, state: 'streaming' };
+  }
   const head = cursor(selected.cursor);
   if (selected.threadId === null) check(threads.length === 0 && selected.messages.length === 0 && head === 0 && requested === undefined);
   else { identifier(selected.threadId); check(threads.some(item => item.id === selected.threadId)); }
   check(requested === undefined || requested === selected.threadId);
   const messages = sourceMessages.map(item => message(item, selected.threadId));
   check(new Set(messages.map(item => item.id)).size === messages.length);
-  return { threads, threadId: selected.threadId, messages, cursor: selected.cursor, lastSeq: head, runtime: { state: 'development-double' } };
+  return { synthetic: selected.synthetic, threads, threadId: selected.threadId, messages, cursor: selected.cursor, lastSeq: head,
+    runtime: { state: runtime.state, ...(runtime.provider ? { provider: runtime.provider } : {}) }, turn };
 }
 function eventPage(value, threadId, from) {
   const selected = envelope(value, ['threadId', 'events', 'cursor', 'lastSeq', 'hasMore']);
   check(selected.threadId === threadId, 'RESYNC_REQUIRED');
   check(Number.isSafeInteger(selected.lastSeq) && selected.lastSeq >= 0 && typeof selected.hasMore === 'boolean');
   const events = array(selected.events, 100).map(item => {
-    const head = plain(item, ['seq', 'threadId', 'type'], ['message', 'requestId', 'state']);
+    const head = plain(item, ['seq', 'threadId', 'type'], ['message', 'requestId', 'state', 'error']);
     check(Number.isSafeInteger(head.seq) && head.seq >= 1 && head.threadId === threadId, 'RESYNC_REQUIRED');
     if (head.type === 'message') { const exact = plain(item, ['seq', 'threadId', 'type', 'message']); return { ...exact, message: message(exact.message, threadId) }; }
-    check(head.type === 'turn'); const exact = plain(item, ['seq', 'threadId', 'type', 'requestId', 'state']);
-    identifier(exact.requestId, true); check(['streaming', 'complete', 'error'].includes(exact.state)); return exact;
+    if (head.type === 'noop') return plain(item, ['seq', 'threadId', 'type']);
+    check(head.type === 'turn'); const exact = plain(item, ['seq', 'threadId', 'type', 'requestId', 'state'], ['error']);
+    identifier(exact.requestId, true); check(TURN_STATES.includes(exact.state));
+    if (!Object.hasOwn(exact, 'error')) return exact;
+    check(exact.state === 'error');
+    const error = plain(exact.error, ['code', 'message'], ['resetsAt']);
+    check(typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)); text(error.message, 500, 2000);
+    check(!Object.hasOwn(error, 'resetsAt') || (typeof error.resetsAt === 'string' && error.resetsAt.length <= 40 && !Number.isNaN(Date.parse(error.resetsAt))));
+    return { ...exact, error };
   });
   check(events.every((item, index) => index === 0 || item.seq === events[index - 1].seq + 1), 'RESYNC_REQUIRED');
   const end = cursor(selected.cursor);
@@ -159,7 +181,7 @@ function upsert(messages, next) {
     (!before.requestId || !next.requestId || before.requestId === next.requestId) &&
     (before.role !== 'user' || before.text === next.text)); messages[index] = { ...before, ...next }; }
 }
-const initial = () => ({ synthetic: false, runtime: null, threads: [], threadId: null, messages: [], cursor: null,
+const initial = () => ({ opened: false, synthetic: false, runtime: null, threads: [], threadId: null, messages: [], cursor: null,
   lastSeq: 0, hasMore: false, turn: null, connection: 'disconnected', pending: null, draft: '', error: null });
 
 // pending is a submit {threadId,text} or createThread {title}, plus stable requestId/status.
@@ -183,7 +205,7 @@ export function createConversationClient({ transport = createConversationTranspo
     if (code === 'ACCESS_DENIED') { clear('denied', 'ACCESS_DENIED'); return; }
     if (code === 'INVALID_RESPONSE' || code === 'RESYNC_REQUIRED') { clear('unavailable', 'INVALID_RESPONSE'); return; }
     const uncertain = code === 'NETWORK_ERROR' || code === 'UNAVAILABLE';
-    state = { ...state, connection: uncertain ? (code === 'UNAVAILABLE' ? 'unavailable' : 'reconnecting') : state.synthetic ? 'ready' : 'unavailable',
+    state = { ...state, connection: uncertain ? (code === 'UNAVAILABLE' ? 'unavailable' : 'reconnecting') : state.opened ? 'ready' : 'unavailable',
       error: code, pending: uncertain && pending ? { ...pending, ...(write ? { status: 'uncertain' } : {}) } : null };
     emit();
   }
@@ -196,7 +218,7 @@ export function createConversationClient({ transport = createConversationTranspo
       const confirmed = pending?.action === 'submit' && data.messages.some(item => item.role === 'user' && item.requestId === pending.requestId);
       const draft = confirmed && state.draft === pending.text ? '' : state.draft;
       if (confirmed) pending = null;
-      state = { ...state, ...data, synthetic: true, connection: 'ready', hasMore: false, turn: null, pending, draft, error: null }; emit();
+      state = { ...state, ...data, opened: true, connection: 'ready', hasMore: false, pending, draft, error: null }; emit();
     } catch (error) { failure(error, version, retained); }
   }
   function nextId() { try { return identifier(requestId(), true, 'INVALID_REQUEST'); } catch { throw new ConversationError('INVALID_REQUEST'); } }
@@ -205,6 +227,11 @@ export function createConversationClient({ transport = createConversationTranspo
     if (Object.hasOwn(selected, 'threadId')) identifier(selected.threadId, false, 'INVALID_REQUEST');
     const version = begin(); state = { ...initial(), connection: 'loading', threadId: selected.threadId ?? null }; emit();
     await load(selected.threadId, version); return copy();
+  }
+  // Reload the open thread's snapshot (thread titles, final text) without dropping the draft or a pending action.
+  async function refresh() {
+    check(state.opened && state.connection !== 'loading' && !polling, 'NOT_READY');
+    const version = begin(); await load(state.threadId ?? undefined, version, state.pending); return copy();
   }
   async function submitPending(pending, version) {
     try {
@@ -232,13 +259,13 @@ export function createConversationClient({ transport = createConversationTranspo
     }
   }
   async function create(title) {
-    text(title, 80, 80, false, 'INVALID_REQUEST'); check(!state.pending, 'BUSY'); check(state.synthetic && state.connection === 'ready', 'NOT_READY');
+    text(title, 80, 80, false, 'INVALID_REQUEST'); check(!state.pending, 'BUSY'); check(state.opened && state.connection === 'ready', 'NOT_READY');
     const pending = { action: 'createThread', requestId: nextId(), title, status: 'submitting' }, version = begin();
     state = { ...initial(), connection: 'loading', pending }; emit(); await submitPending(pending, version); return copy();
   }
   async function send(value = state.draft) {
-    text(value, 1000, 4096, false, 'INVALID_REQUEST'); check(!state.pending, 'BUSY');
-    check(state.synthetic && state.connection === 'ready' && state.threadId !== null, 'NOT_READY');
+    text(value, USER_CHARS, USER_BYTES, false, 'INVALID_REQUEST'); check(!state.pending && state.turn?.state !== 'streaming', 'BUSY');
+    check(state.opened && state.connection === 'ready' && state.threadId !== null, 'NOT_READY');
     const pending = { action: 'submit', requestId: nextId(), threadId: state.threadId, text: value, status: 'submitting' }, version = epoch;
     state = { ...state, pending, error: null }; emit(); await submitPending(pending, version); return copy();
   }
@@ -247,8 +274,26 @@ export function createConversationClient({ transport = createConversationTranspo
     const pending = { ...state.pending, status: 'submitting' }, version = epoch;
     state = { ...state, pending, error: null }; emit(); await submitPending(pending, version); return copy();
   }
+  // Stop the running reply of the open thread. The final turn state arrives as an event.
+  async function cancel() {
+    const turn = state.turn;
+    check(state.opened && !state.synthetic && state.connection === 'ready' && state.threadId !== null && turn?.state === 'streaming', 'NOT_READY');
+    const version = epoch, threadId = state.threadId;
+    state = { ...state, turn: { ...turn, stopping: true }, error: null }; emit();
+    try {
+      const received = await call('cancel', { requestId: turn.requestId, threadId }, version);
+      if (!current(version)) return copy();
+      const body = envelope(received, ['cancel']), result = plain(body.cancel, ['requestId', 'threadId', 'state']);
+      check(result.requestId === turn.requestId && result.threadId === threadId &&
+        ['stopping', 'cancelled', 'complete', 'error'].includes(result.state));
+    } catch (error) {
+      if (current(version) && state.turn?.requestId === turn.requestId) { const { stopping, ...rest } = state.turn; state = { ...state, turn: rest }; }
+      failure(error, version, state.pending);
+    }
+    return copy();
+  }
   function poll() {
-    check(state.synthetic && state.threadId !== null && state.cursor !== null && state.connection !== 'loading', 'NOT_READY');
+    check(state.opened && state.threadId !== null && state.cursor !== null && state.connection !== 'loading', 'NOT_READY');
     if (polling) return polling.promise;
     const version = epoch, threadId = state.threadId, from = cursor(state.cursor), ticket = {};
     ticket.promise = (async () => {
@@ -262,7 +307,7 @@ export function createConversationClient({ transport = createConversationTranspo
             if (pending?.action === 'submit' && event.message.role === 'user' && event.message.requestId === pending.requestId) {
               if (draft === pending.text) draft = ''; pending = { ...pending, status: 'accepted' };
             }
-          } else { turn = { requestId: event.requestId, state: event.state };
+          } else if (event.type === 'turn') { turn = { requestId: event.requestId, state: event.state, ...(event.error ? { error: event.error } : {}) };
             if (pending?.requestId === event.requestId && event.state !== 'streaming') pending = null;
           }
         }
@@ -281,6 +326,6 @@ export function createConversationClient({ transport = createConversationTranspo
   return Object.freeze({ getState: copy,
     subscribe(listener) { check(typeof listener === 'function', 'INVALID_REQUEST'); listeners.add(listener); listener(copy()); return () => listeners.delete(listener); },
     open, select(threadId) { identifier(threadId, false, 'INVALID_REQUEST'); return open({ threadId }); }, create, send, retry, poll,
-    setDraft(value) { text(value, 1000, 4096, true, 'INVALID_REQUEST'); state = { ...state, draft: value }; emit(); return copy(); },
+    cancel, refresh, setDraft(value) { text(value, USER_CHARS, USER_BYTES, true, 'INVALID_REQUEST'); state = { ...state, draft: value }; emit(); return copy(); },
     clear: () => clear(), disconnect: () => clear() });
 }

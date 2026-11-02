@@ -1,4 +1,5 @@
 import { ConversationDemo, ConversationDemoError } from './conversation-demo.mjs';
+import { ConversationError } from './conversations.mjs';
 
 const UNAVAILABLE = { status: 503, body: { error: { code: 'CONVERSATION_UNAVAILABLE',
   message: 'Personal Codex is not connected. Your account connection is separate.' } } };
@@ -10,11 +11,20 @@ const DEMO_ERRORS = {
   CONVERSATION_DEMO_UNAVAILABLE: [503, 'The synthetic conversation fixture is unavailable.']
 };
 
-// Positive results are development fixtures only. Account mode never imports or exposes their data.
-export function createConversationHttp({ access, store, mode }) {
+const ACCOUNT_ERRORS = {
+  INVALID_REQUEST: [400, 'The conversation request is invalid.'],
+  NOT_FOUND: [404, 'The conversation was not found.'],
+  CONFLICT: [409, 'This request conflicts with an earlier request.'],
+  BUSY: [409, 'Wait for the current reply to finish or stop it first.'],
+  CAPACITY: [409, 'You have reached the conversation limit.']
+};
+
+// Demo results are development fixtures only. Account mode serves the signed-in companion's own
+// conversations (conversations: a Conversations instance; runtimeStatus(companionId) -> {state, provider}).
+export function createConversationHttp({ access, store, mode, conversations = null, runtimeStatus = async () => ({ state: 'unconfigured' }) }) {
   let fixture;
   return async function conversation(request) {
-    const parsed = await access.read(request, 16384);
+    const parsed = await access.read(request, mode === 'account' ? 65536 : 16384);
     if (parsed.failure) {
       if (parsed.failure.body.error.code === 'BAD_REQUEST') {
         return { ...parsed.failure, body: { error: { code: 'BAD_REQUEST', message: 'A valid JSON conversation request is required.' } } };
@@ -24,8 +34,16 @@ export function createConversationHttp({ access, store, mode }) {
     if (mode === 'account') {
       const admitted = await access.authorize(request);
       if (admitted.failure) return admitted.failure;
-      // A verified platform account cannot activate a provider, select a runtime or consume demo history.
-      return structuredClone(UNAVAILABLE);
+      if (!conversations) return structuredClone(UNAVAILABLE);
+      try {
+        const companionId = admitted.companionId;
+        return { status: 200, body: await conversations.handle(companionId, parsed.value, { runtime: () => runtimeStatus(companionId) }) };
+      } catch (error) {
+        const code = error instanceof ConversationError && Object.hasOwn(ACCOUNT_ERRORS, error.code) ? error.code : null;
+        if (!code) return { status: 503, body: { error: { code: 'CONVERSATION_UNAVAILABLE', message: 'The conversation service is unavailable.' } } };
+        const [status, message] = ACCOUNT_ERRORS[code];
+        return { status, body: { error: { code, message } } };
+      }
     }
     if (mode !== 'demo') return structuredClone(UNAVAILABLE);
     try {

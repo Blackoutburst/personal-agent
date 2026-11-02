@@ -1,0 +1,12 @@
+#!/usr/bin/env node
+const fs = require('node:fs'), path = require('node:path');
+const home = process.env.CODEX_HOME, args = process.argv.slice(2);
+if (args[0] === 'login') { process.stderr.write('Logged in using ChatGPT\n'); process.exit(0); }
+let prompt = ''; process.stdin.on('data', c => prompt += c); process.stdin.on('end', () => {
+  fs.appendFileSync(path.join(home, 'calls.jsonl'), JSON.stringify({ args, prompt }) + '\n');
+  const out = v => process.stdout.write(JSON.stringify(v) + '\n');
+  const resume = args[1] === 'resume' ? args[2] : null;
+  out({ type: resume ? 'thread.resumed' : 'thread.started', thread_id: resume || 'thread-1' });
+  out({ type: 'item.completed', item: { type: 'agent_message', text: 'Codex reply' } });
+  out({ type: 'turn.completed', usage: { output_tokens: 2 } });
+});

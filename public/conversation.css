@@ -46,6 +46,9 @@ main:focus { outline: none; }
 .sidebar-footer .small-dot { margin-top: 6px; }
 .sidebar-footer p { margin: 0; }
 .sidebar-footer p span { display: block; margin-top: 6px; color: #91a698; }
+.sidebar-footer p span.sidebar-status { margin-top: 0; color: #b4c7bb; }
+.turn-actions { display: flex; gap: 15px; flex: none; }
+.turn-row p[data-error="true"] { color: #f0b7a4; }
 .foundation-link { font-size: 11px; text-decoration: none; }
 .foundation-link:hover { text-decoration: underline; }
 .sidebar > .foundation-link { padding-left: 9px; }

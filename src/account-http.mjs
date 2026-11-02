@@ -129,6 +129,9 @@ export function createAccountHttp(options) {
     if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 0) return fail('BAD_REQUEST');
     const admitted = await access.authorize(request);
     if (admitted.failure) return admitted.failure;
-    return { status: 200, body: { companionId: admitted.companionId, provider: { state: 'unavailable' }, runtime: { state: 'unavailable' } } };
+    // runtime: this companion's own agent (ready / signed-out / provider-missing / unconfigured).
+    const runtime = options.runtimeStatus ? await options.runtimeStatus(admitted.companionId) : { state: 'unavailable' };
+    return { status: 200, body: { companionId: admitted.companionId,
+      provider: { state: runtime.provider ?? 'unavailable' }, runtime: { state: runtime.state } } };
   };
 }

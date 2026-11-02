@@ -34,6 +34,13 @@ sends selects a label, home or path. Turns of one owner run one at a time; owner
 parallel. Provider session IDs (for `--resume` / `exec resume`) are returned to the caller,
 which keeps them per conversation thread.
 
+## Conversations
+
+`src/conversations.mjs` (ticket #8, see CONVERSATION-UI.md) calls `turn()` for each user
+message, with the persona from `src/persona.mjs` as system prompt. It stores the provider
+session id per thread and passes it back as `resume`. `turnForLabel` (admin only) is what
+`manage.mjs ask` uses.
+
 ## Statuses and errors
 
 `status()` returns `unconfigured`, `provider-missing`, `signed-out` or `ready` (+ plan).

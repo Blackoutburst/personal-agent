@@ -11,6 +11,10 @@ import { PrivateStateStore } from './src/private-state.mjs';
 import { createPrivateHttp } from './src/private-http.mjs';
 import { createConversationHttp } from './src/conversation-http.mjs';
 import { createGoalsHttp } from './src/goals-http.mjs';
+import { loadRuntimeConfig } from './src/runtime-config.mjs';
+import { CompanionRunner } from './src/runner.mjs';
+import { Conversations } from './src/conversations.mjs';
+import { personaFor } from './src/persona.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STATIC = new Map([
@@ -28,8 +32,10 @@ const STATIC = new Map([
   ['/goals-client.mjs', ['goals-client.mjs', 'text/javascript; charset=utf-8']]
 ]);
 
+// runtimeFile / runtimeDir: the per-owner agent runtime (docs/RUNTIME.md). Without them, account
+// mode still serves conversations but every reply reports that no agent is configured.
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -53,6 +59,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let privateHttp;
   let conversationHttp;
   let goalsHttp;
+  let conversations = null;
   const allowedOrigins = () => new Set(publicOrigin ? [publicOrigin] :
     [`http://127.0.0.1:${server.address().port}`, `http://localhost:${server.address().port}`]);
   const server = createServer({ maxHeaderSize: 16384, requestTimeout: 5000, headersTimeout: 5000 }, async (req, res) => {
@@ -114,10 +121,22 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     const access = createAccountAccess({ store,
       validateAccount: mode === 'account' ? (validateAccount ?? createAccountValidator()) : null,
       pilotSubjects: admitted, allowedOrigins });
-    conversationHttp = createConversationHttp({ access, store, mode });
+    let runner = null;
+    if (mode === 'account') {
+      const owners = loadRuntimeConfig(runtimeFile);
+      if (owners.length) {
+        if (!runtimeDir) throw new Error('COMPANION_RUNTIME_DIR is required with COMPANION_RUNTIME_FILE');
+        runner = new CompanionRunner({ store, owners, runtimeDir, binaries, ...runnerOptions });
+      }
+      conversations = new Conversations({ store, runner,
+        systemPrompt: companionId => personaFor(runner?.ownerFor(companionId)), ...conversationOptions });
+      conversations.recover();
+    }
+    const runtimeStatus = async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' };
+    conversationHttp = createConversationHttp({ access, store, mode, conversations, runtimeStatus });
     goalsHttp = createGoalsHttp({ access, store, mode });
     if (mode === 'account') {
-      accountHttp = createAccountHttp({ access });
+      accountHttp = createAccountHttp({ access, runtimeStatus });
       privateHttp = createPrivateHttp({ access, state: new PrivateStateStore(store) });
     }
     await new Promise((resolve, reject) => {
@@ -127,7 +146,13 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   } catch (error) { store.close(); throw error; }
   return {
     server, store, url: `http://127.0.0.1:${server.address().port}`,
-    async close() { await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); store.close(); }
+    conversations,
+    async close() {
+      await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      // Running replies end as interrupted; nothing writes to a closed store.
+      await conversations?.shutdown();
+      store.close();
+    }
   };
 }
 
@@ -135,7 +160,9 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   try {
     const app = await startServer({ dataDir: process.env.COMPANION_DATA_DIR, mode: process.env.COMPANION_MODE || 'unavailable',
       port: Number(process.env.COMPANION_PORT || 4318), pilotFile: process.env.COMPANION_PILOT_FILE,
-      publicOrigin: process.env.COMPANION_PUBLIC_ORIGIN });
+      publicOrigin: process.env.COMPANION_PUBLIC_ORIGIN, runtimeFile: process.env.COMPANION_RUNTIME_FILE,
+      runtimeDir: process.env.COMPANION_RUNTIME_DIR,
+      binaries: { claude: process.env.COMPANION_CLAUDE_BIN || undefined, codex: process.env.COMPANION_CODEX_BIN || undefined } });
     console.log(`Personal Agent local bootstrap: ${app.url} (${process.env.COMPANION_MODE || 'unavailable'})`);
     let stopping = false;
     const stop = async () => { if (stopping) return; stopping = true; await app.close(); };

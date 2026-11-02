@@ -1,0 +1,42 @@
+#!/usr/bin/env node
+const fs = require('node:fs'), path = require('node:path');
+const home = process.env.CLAUDE_CONFIG_DIR, args = process.argv.slice(2);
+if (args[0] === 'auth') {
+  process.stdout.write(JSON.stringify({ loggedIn: fs.existsSync(path.join(home, 'signed-in')), subscriptionType: 'pro' }));
+  process.exit(0);
+}
+let prompt = ''; process.stdin.on('data', c => prompt += c); process.stdin.on('end', () => {
+  fs.appendFileSync(path.join(home, 'calls.jsonl'), JSON.stringify({ args, prompt, cwd: process.cwd() }) + '\n');
+  const out = v => process.stdout.write(JSON.stringify(v) + '\n');
+  const resume = args.includes('--resume') ? args[args.indexOf('--resume') + 1] : null;
+  const session = resume || 'sess-' + path.basename(path.dirname(home));
+  out({ type: 'system', subtype: 'init', session_id: session });
+  if (!fs.existsSync(path.join(home, 'signed-in'))) {
+    out({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login', session_id: session });
+    process.exit(1);
+  }
+  if (prompt.includes('LIMIT')) {
+    out({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1800000000 } });
+    out({ type: 'result', subtype: 'success', is_error: true, result: 'Claude usage limit reached', session_id: session });
+    process.exit(1);
+  }
+  if (prompt.includes('SLOW')) {
+    out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Thinking' } } });
+    setTimeout(() => {}, 60000); return;
+  }
+  if (prompt.includes('STREAM')) {
+    const parts = ['one ', 'two ', 'three ', 'four ', 'five'];
+    let i = 0;
+    const tick = () => {
+      if (i < parts.length) { out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: parts[i++] } } }); setTimeout(tick, 120); return; }
+      out({ type: 'result', subtype: 'success', is_error: false, result: parts.join(''), session_id: session });
+    };
+    out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } });
+    tick(); return;
+  }
+  out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', resetsAt: 1800000000 } });
+  for (const part of ['Hello ', 'from ', path.basename(path.dirname(home))]) {
+    out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: part } } });
+  }
+  out({ type: 'result', subtype: 'success', is_error: false, result: 'Hello from ' + path.basename(path.dirname(home)), session_id: session, usage: { output_tokens: 3 } });
+});

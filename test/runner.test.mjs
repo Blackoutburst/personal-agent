@@ -15,51 +15,9 @@ import * as codex from '../src/providers/codex.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-// Fake `claude`: records its home/args/prompt, then replays a stream chosen by the prompt.
-const FAKE_CLAUDE = `#!/usr/bin/env node
-const fs = require('node:fs'), path = require('node:path');
-const home = process.env.CLAUDE_CONFIG_DIR, args = process.argv.slice(2);
-if (args[0] === 'auth') {
-  process.stdout.write(JSON.stringify({ loggedIn: fs.existsSync(path.join(home, 'signed-in')), subscriptionType: 'pro' }));
-  process.exit(0);
-}
-let prompt = ''; process.stdin.on('data', c => prompt += c); process.stdin.on('end', () => {
-  fs.appendFileSync(path.join(home, 'calls.jsonl'), JSON.stringify({ args, prompt, cwd: process.cwd() }) + '\\n');
-  const out = v => process.stdout.write(JSON.stringify(v) + '\\n');
-  const resume = args.includes('--resume') ? args[args.indexOf('--resume') + 1] : null;
-  const session = resume || 'sess-' + path.basename(path.dirname(home));
-  out({ type: 'system', subtype: 'init', session_id: session });
-  if (!fs.existsSync(path.join(home, 'signed-in'))) {
-    out({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login', session_id: session });
-    process.exit(1);
-  }
-  if (prompt.includes('LIMIT')) {
-    out({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1800000000 } });
-    out({ type: 'result', subtype: 'success', is_error: true, result: 'Claude usage limit reached', session_id: session });
-    process.exit(1);
-  }
-  if (prompt.includes('SLOW')) { setTimeout(() => {}, 60000); return; }
-  out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', resetsAt: 1800000000 } });
-  for (const part of ['Hello ', 'from ', path.basename(path.dirname(home))]) {
-    out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: part } } });
-  }
-  out({ type: 'result', subtype: 'success', is_error: false, result: 'Hello from ' + path.basename(path.dirname(home)), session_id: session, usage: { output_tokens: 3 } });
-});
-`;
-
-const FAKE_CODEX = `#!/usr/bin/env node
-const fs = require('node:fs'), path = require('node:path');
-const home = process.env.CODEX_HOME, args = process.argv.slice(2);
-if (args[0] === 'login') { process.stderr.write('Logged in using ChatGPT\\n'); process.exit(0); }
-let prompt = ''; process.stdin.on('data', c => prompt += c); process.stdin.on('end', () => {
-  fs.appendFileSync(path.join(home, 'calls.jsonl'), JSON.stringify({ args, prompt }) + '\\n');
-  const out = v => process.stdout.write(JSON.stringify(v) + '\\n');
-  const resume = args[1] === 'resume' ? args[2] : null;
-  out({ type: resume ? 'thread.resumed' : 'thread.started', thread_id: resume || 'thread-1' });
-  out({ type: 'item.completed', item: { type: 'agent_message', text: 'Codex reply' } });
-  out({ type: 'turn.completed', usage: { output_tokens: 2 } });
-});
-`;
+// Fake `claude` / `codex` programs (test/fixtures): record home/args/prompt, then replay a stream chosen by the prompt.
+const FAKE_CLAUDE = readFileSync(join(ROOT, 'test/fixtures/fake-claude.cjs.txt'), 'utf8');
+const FAKE_CODEX = readFileSync(join(ROOT, 'test/fixtures/fake-codex.cjs.txt'), 'utf8');
 
 function setup({ providers = { blackout: 'claude', screamer: 'claude' }, signedIn = ['blackout', 'screamer'], timeoutMs } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pa-runner-'));

@@ -27,7 +27,7 @@ These files are protocol references, not copied executors. Current implementatio
 
 ## Privacy and dependency direction
 
-Private companion prompts, conversations, memories, personality and private goal context must remain outside all Board work records, payloads, metadata and logs. A shared message/ticket runtime whose prompt builder or transcript mirror writes to Board records cannot serve private conversation merely by changing a session label. Orchestration #66 must qualify that separation before companion #8 connects it.
+Private companion prompts, conversations, memories, personality and private goal context must remain outside all Board work records, payloads, metadata and logs. A shared message/ticket runtime whose prompt builder or transcript mirror writes to Board records cannot serve private conversation merely by changing a session label. The companion therefore runs its own per-owner runtime (RUNTIME.md) and never the Board's shared message runtime (orchestration #66 was closed as superseded by this).
 
 The #5/#6 acceptance splits preserve all actual credential-home placement, runtime-side authorization, native authentication, inference, binding/rebinding, lifecycle and isolation obligations in #7/#8. Private execution integration requires a qualified private scope from orchestration #66; a Board ticket with a different label cannot supply it. #20 owns deployment and #21 retains real cross-device/full-pilot acceptance. The stopped legacy listener and unresolved pilot cleanup remain untouched.
 
