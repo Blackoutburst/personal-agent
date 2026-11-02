@@ -13,13 +13,14 @@ import { startServer } from '../server.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const ISSUER = 'https://synthetic.invalid';
-const STALE = '<!-- Written by the Personal Agent app (version 2). -->\n# Previous app instructions\n';
+const STALE = '<!-- Written by the Personal Agent app (version 3). -->\n# Previous app instructions\n';
 const OWNER = { issuer: ISSUER, subject: 'synthetic-upgrade-alice', label: 'alice', provider: 'codex' };
 const MEMORY = {
   'SOUL.md': '# Soul\n\n- My chosen voice, with café and 🌙.\n',
   'USER.md': '# User\n\n## Preferences\n- PRIVATE-USER-CANARY\n',
   'MEMORY.md': '# Memories\n\n## Promises\n- PRIVATE-MEMORY-CANARY\n',
-  'memory/2026-11-02.md': '- PRIVATE-DIARY-CANARY\n'
+  'memory/2026-11-02.md': '- PRIVATE-DIARY-CANARY\n',
+  'board-followthrough.json': '{"ticket":"synthetic-ticket","cursor":"private-cursor-canary","pending":["synthetic-message"]}\n'
 };
 function temporary(t) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'companion-instruction-upgrade-')));
@@ -33,13 +34,13 @@ function assertMemory(dir) {
   for (const [file, text] of Object.entries(MEMORY)) assert.deepEqual(readFileSync(join(dir, file)), Buffer.from(text), file);
 }
 
-test('AGENTS v2 refresh reports one change while preserving private workspace files byte for byte', t => {
+test('AGENTS v3 refresh reports one change while preserving private workspace and Board follow-through notes byte for byte', t => {
   const dir = temporary(t);
   ensureWorkspace(dir, OWNER); writeMemory(dir); writeFileSync(join(dir, 'AGENTS.md'), STALE);
   assert.equal(ensureWorkspace(dir, OWNER), true);
   const upgraded = readFileSync(join(dir, 'AGENTS.md'));
-  assert.match(upgraded.toString('utf8'), /\(version 3\)/);
-  assert.doesNotMatch(upgraded.toString('utf8'), /\(version 2\)/);
+  assert.match(upgraded.toString('utf8'), /\(version 4\)/);
+  assert.doesNotMatch(upgraded.toString('utf8'), /\(version 3\)/);
   assertMemory(dir);
   assert.equal(ensureWorkspace(dir, OWNER), false);
   assert.deepEqual(readFileSync(join(dir, 'AGENTS.md')), upgraded);
@@ -57,7 +58,7 @@ test('a failed pre-change callback preserves the old marker for retry and only r
   assert.equal(ensureWorkspace(dir, OWNER, { beforeInstructionsChange() {
     calls++; assert.equal(readFileSync(join(dir, 'AGENTS.md'), 'utf8'), STALE); assertMemory(dir);
   } }), true);
-  assert.equal(calls, 2); assert.match(readFileSync(join(dir, 'AGENTS.md'), 'utf8'), /\(version 3\)/); assertMemory(dir);
+  assert.equal(calls, 2); assert.match(readFileSync(join(dir, 'AGENTS.md'), 'utf8'), /\(version 4\)/); assertMemory(dir);
   const upgraded = readFileSync(join(dir, 'AGENTS.md'));
   assert.equal(ensureWorkspace(dir, OWNER, { beforeInstructionsChange() { calls++; throw failure; } }), false);
   assert.equal(calls, 2); assert.deepEqual(readFileSync(join(dir, 'AGENTS.md')), upgraded); assertMemory(dir);
@@ -117,7 +118,7 @@ test('account startup leaves a failed contender untouched, upgrades only the sta
     assert.equal(row.session_at, 1000);
   }
   assert.equal(rows(app, 'alice').length, 2); assert.equal(rows(app, 'bob').length, 2);
-  assert.match(readFileSync(join(workspace('alice'), 'AGENTS.md'), 'utf8'), /\(version 3\)/);
+  assert.match(readFileSync(join(workspace('alice'), 'AGENTS.md'), 'utf8'), /\(version 4\)/);
   assert.deepEqual(readFileSync(join(workspace('bob'), 'AGENTS.md')), bobInstructions);
   for (const owner of owners) assertMemory(workspace(owner.label));
   for (const owner of owners) app.store.db.prepare('UPDATE conv_threads SET provider_session=?,session_turns=? WHERE companion_id=?')

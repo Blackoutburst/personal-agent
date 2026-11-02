@@ -160,6 +160,19 @@ ticket link returned by Board; do not claim creation from an unconfirmed tool
 response. The companion's Board-work instructions in its agent prompt apply to
 both provider paths.
 
+For read-based updates, see [Following Board work](FOLLOWTHROUGH.md). The
+companion can check when asked, or during an already enabled six-hour check-in,
+using private workspace notes and current canonical Board reads. This adds no
+continuous poller, automatic opt-in or default tool expansion; every public
+write still requires the owner's clear Yes in the current chat. Background
+wakes additionally narrow the application-supplied Board MCP selection to the
+existing eight `READ_ONLY_BOARD_TOOLS` names, preserving any narrower selection.
+Optional reads such as `list_activity`, `get_project` and `get_message` remain
+normal-turn options. Wakes propose privately and leave all Board writes and
+write retries for the next normal owner-confirmed turn. Native, other app and
+scheduler tools are preserved; this is not global CLI/native-shell or inherited
+Codex MCP isolation. Normal turns keep the owner's exact configured policy.
+
 ### Configured tool forwarding
 
 Applications may supply the synchronous runner constructor callback

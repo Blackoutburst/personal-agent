@@ -176,6 +176,36 @@ for (const provider of ['claude', 'codex']) {
     assert.deepEqual(env.calls('bob').map(call => call.prompt), ['fresh-bob', 'resume-bob']);
   });
 
+  test(`${provider}: canonical follow-through reads and optional activity reach both owner sessions without adding writes`, async t => {
+    const core = ['get_work', 'get_ticket', 'get_thread', 'get_text', 'list_human_requests', 'read_inbox'];
+    const reads = { alice: [...core, 'list_activity'], bob: core };
+    const env = setup(t, provider, { apps: false, boardTools: reads, tools: provider === 'claude' ? FILES : [] });
+    const sessions = {};
+    for (const label of ['alice', 'bob']) {
+      sessions[label] = (await env.runner.turn(env.ids[label], { prompt: `follow-fresh-${label}` })).sessionId;
+    }
+    for (const label of ['bob', 'alice']) {
+      assert.equal((await env.runner.turn(env.ids[label], { prompt: `follow-resume-${label}`, resume: sessions[label] })).sessionId, sessions[label]);
+    }
+    assert.equal(env.invocations.length, 4);
+    for (const [index, label] of ['alice', 'bob', 'bob', 'alice'].entries()) {
+      const owner = env.owners.find(value => value.label === label), other = env.owners.find(value => value.label !== label);
+      const invocation = env.invocations[index], paths = env.runner.paths(owner);
+      assert.deepEqual(configuredServers(provider, invocation), expectedServers(env, label, { boardTools: reads[label], appTools: [] }));
+      assert.equal(invocation.cwd, paths.workspace);
+      assert.equal(invocation.env[provider === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'], paths.home);
+      assert.ok(!JSON.stringify(invocation.args).includes(other.board.configDir));
+      assertNativePermissions(provider, invocation, owner.tools);
+      for (const write of ['create_ticket', 'post_message', 'update_ticket', 'resolve_human_request']) {
+        assert.ok(!configuredServers(provider, invocation).board.allowedTools.includes(write));
+      }
+    }
+    const calls = env.invocations.length;
+    await assert.rejects(env.runner.turn(env.ids.bob, { prompt: 'unconfigured activity', resume: sessions.bob,
+      allowedTools: ['mcp__board__list_activity'] }), error => error instanceof RunnerError && error.code === 'TOOL_POLICY_REFUSED');
+    assert.equal(env.invocations.length, calls, 'Another owner cannot acquire the optional read through a turn');
+  });
+
   test(`${provider}: configured Board writes reach fresh and resumed owner bridges and cannot expand`, async t => {
     const configured = { alice: ['get_work', 'create_ticket', 'post_message'], bob: ['get_work', 'post_message'] };
     const writes = { alice: ['create_ticket', 'post_message'], bob: ['post_message'] };
