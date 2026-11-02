@@ -31,6 +31,11 @@ CREATE TABLE IF NOT EXISTS conv_turns(thread_id TEXT NOT NULL, request_id TEXT N
   user_message_id TEXT NOT NULL, assistant_message_id TEXT, state TEXT NOT NULL, error TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(thread_id, request_id));
 CREATE INDEX IF NOT EXISTS conv_turns_open ON conv_turns(state);
+CREATE TABLE IF NOT EXISTS conv_ongoing(companion_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS conv_wakes(companion_id TEXT NOT NULL, id TEXT NOT NULL,
+  request_id TEXT NOT NULL, thread_id TEXT NOT NULL, kind TEXT NOT NULL, prompt TEXT NOT NULL,
+  fingerprint TEXT NOT NULL, state TEXT NOT NULL, attempt_token TEXT, result_text TEXT, result_feeling TEXT, message_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(companion_id,id), UNIQUE(companion_id,request_id));
 `;
 
 export class ConversationError extends Error {
@@ -82,7 +87,7 @@ function titleFrom(text) {
 }
 
 export class Conversations {
-  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools;
+  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy;
   #queues = new Map(); #active = new Map(); #closing = false;
 
   // runner: a CompanionRunner (or null when no runtime is configured).
@@ -91,15 +96,19 @@ export class Conversations {
   // session: when to start a new provider session (continuity then comes from the companion's files).
   // Omitted tools inherit owner policy; [] is an explicit turn-level narrowing.
   constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools,
-    session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 } }) {
+    session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 }, wakePolicy = {} }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
     this.#session = session; this.#allowedTools = allowedTools;
+    this.#wakePolicy = { beforeStart: () => true, canDeliver: () => true, ...wakePolicy };
+    if (['beforeStart', 'canDeliver'].some(key => typeof this.#wakePolicy[key] !== 'function')) throw invalid();
     this.#db.exec(SCHEMA);
     const columns = new Set(this.#db.prepare('PRAGMA table_info(conv_threads)').all().map(column => column.name));
     if (!columns.has('session_turns')) this.#db.exec('ALTER TABLE conv_threads ADD COLUMN session_turns INTEGER NOT NULL DEFAULT 0');
     if (!columns.has('session_at')) this.#db.exec('ALTER TABLE conv_threads ADD COLUMN session_at INTEGER NOT NULL DEFAULT 0');
     const messageColumns = new Set(this.#db.prepare('PRAGMA table_info(conv_messages)').all().map(column => column.name));
     if (!messageColumns.has('feeling')) this.#db.exec('ALTER TABLE conv_messages ADD COLUMN feeling TEXT');
+    const wakeColumns = new Set(this.#db.prepare('PRAGMA table_info(conv_wakes)').all().map(column => column.name));
+    if (!wakeColumns.has('result_feeling')) this.#db.exec('ALTER TABLE conv_wakes ADD COLUMN result_feeling TEXT');
   }
 
   // The next turn of every thread of this companion starts a new provider session
@@ -122,7 +131,81 @@ export class Conversations {
       if (turn.state === 'running') this.#finish(turn, 'error', { code: 'INTERRUPTED', message: ERROR_MESSAGES.INTERRUPTED });
       else this.#enqueue(turn.companion_id, turn.thread_id, turn.request_id);
     }
-    return open.length;
+    const wakes = this.#db.prepare("SELECT * FROM conv_wakes WHERE state IN ('queued','running') ORDER BY created_at,id").all();
+    for (const wake of wakes) {
+      if (wake.state === 'running') this.#endWake(wake, 'interrupted');
+      else this.#enqueue(wake.companion_id, wake.thread_id, wake.request_id, wake.id);
+    }
+    return open.length + wakes.length;
+  }
+
+  // Server-only admission. A wake prompt is private provider input, never a user message.
+  enqueueProactive(companionId, input) {
+    if (typeof companionId !== 'string' || !UUID.test(companionId) || !input || typeof input !== 'object'
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(input))) throw invalid();
+    const descriptors = Object.getOwnPropertyDescriptors(input), fields = ['id', 'kind', 'prompt'];
+    if (Reflect.ownKeys(descriptors).length !== fields.length || fields.some(key => !descriptors[key]?.enumerable
+        || !Object.hasOwn(descriptors[key], 'value'))) throw invalid();
+    const value = Object.fromEntries(fields.map(key => [key, descriptors[key].value]));
+    if (typeof value.id !== 'string' || !UUID.test(value.id) || !['reminder', 'heartbeat', 'watch', 'board'].includes(value.kind)
+        || !wellFormed(value.prompt, 4000, 16000)) throw invalid();
+    const digest = createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    const wake = this.#tx(() => {
+      const prior = this.#wake(companionId, value.id);
+      if (prior) { if (prior.fingerprint !== digest) throw new ConversationError('CONFLICT', 409); return prior; }
+      const requestId = 'wake-' + value.id;
+      if (this.#db.prepare('SELECT 1 FROM conv_requests WHERE companion_id=? AND request_id=?').get(companionId, requestId)) {
+        throw new ConversationError('CONFLICT', 409);
+      }
+      let mapping = this.#db.prepare('SELECT thread_id FROM conv_ongoing WHERE companion_id=?').get(companionId);
+      if (!mapping) {
+        let thread = this.#db.prepare('SELECT id FROM conv_threads WHERE companion_id=? ORDER BY updated_at DESC,id LIMIT 1').get(companionId);
+        if (!thread) {
+          thread = { id: randomUUID() };
+          this.#db.prepare('INSERT INTO conv_threads(id,companion_id,title,created_at,updated_at) VALUES(?,?,?,?,?)')
+            .run(thread.id, companionId, 'Companion', this.#now(), this.#now());
+        }
+        this.#db.prepare('INSERT INTO conv_ongoing VALUES(?,?)').run(companionId, thread.id);
+        mapping = { thread_id: thread.id };
+      }
+      this.#thread(companionId, mapping.thread_id);
+      this.#db.prepare(`INSERT INTO conv_wakes(companion_id,id,request_id,thread_id,kind,prompt,fingerprint,
+        state,attempt_token,result_text,message_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'queued',NULL,NULL,NULL,?,?)`)
+        .run(companionId, value.id, requestId, mapping.thread_id, value.kind, value.prompt, digest, this.#now(), this.#now());
+      return this.#wake(companionId, value.id);
+    });
+    if (['queued', 'waiting_delivery'].includes(wake.state)) this.#enqueue(companionId, wake.thread_id, wake.request_id, wake.id);
+    return this.#wakeResult(wake);
+  }
+
+  proactiveResult(companionId, id) { return this.#wakeResult(this.#wake(companionId, id)); }
+
+  cancelProactive(companionId, id) {
+    const wake = this.#tx(() => {
+      const current = this.#wake(companionId, id);
+      if (!current || !['queued', 'running', 'waiting_delivery'].includes(current.state)) return current;
+      this.#db.prepare("UPDATE conv_wakes SET state='cancelled',result_text=NULL,result_feeling=NULL,updated_at=? WHERE companion_id=? AND id=?")
+        .run(this.#now(), companionId, id);
+      if (current.state === 'running') this.#append(current.thread_id, { type: 'turn', requestId: current.request_id, state: 'cancelled' });
+      return this.#wake(companionId, id);
+    });
+    if (wake) this.#active.get(`${wake.thread_id}:${wake.request_id}`)?.abort();
+    return this.#wakeResult(wake);
+  }
+
+  #wake(companionId, id) {
+    if (typeof companionId !== 'string' || !UUID.test(companionId) || typeof id !== 'string' || !UUID.test(id)) throw invalid();
+    return this.#db.prepare('SELECT * FROM conv_wakes WHERE companion_id=? AND id=?').get(companionId, id) ?? null;
+  }
+  #wakeResult(wake) {
+    return wake ? { id: wake.id, requestId: wake.request_id, threadId: wake.thread_id, state: wake.state,
+      ...(wake.message_id ? { messageId: wake.message_id } : {}) } : null;
+  }
+  #wakeGate(name, companionId, id) {
+    const result = this.#wakePolicy[name](companionId, id);
+    if (result && typeof result.then === 'function') { Promise.resolve(result).catch(() => {}); throw invalid(); }
+    if (typeof result !== 'boolean') throw invalid();
+    return result;
   }
 
   // Wait until every queued or running turn has settled.
@@ -172,14 +255,18 @@ export class Conversations {
   #snapshot(companionId, threadId, runtime) {
     const threads = this.#db.prepare('SELECT id, title FROM conv_threads WHERE companion_id=? ORDER BY updated_at DESC, id LIMIT ?')
       .all(companionId, LIMITS.threads).map(row => ({ id: row.id, title: row.title }));
-    const selected = threadId === undefined ? (threads[0] ? this.#thread(companionId, threads[0].id) : null) : this.#thread(companionId, threadId);
+    const mapped = threadId === undefined ? this.#db.prepare('SELECT thread_id FROM conv_ongoing WHERE companion_id=?').get(companionId) : null;
+    const selected = threadId === undefined ? (mapped || threads[0] ? this.#thread(companionId, mapped?.thread_id ?? threads[0].id) : null) : this.#thread(companionId, threadId);
     let messages = [], cursor = 0, turn = null;
     if (selected) {
       // Read consistently: messages and the cursor they correspond to.
       ({ messages, cursor, turn } = this.#tx(() => {
         const rows = this.#db.prepare('SELECT * FROM (SELECT rowid AS r, * FROM conv_messages WHERE thread_id=? ORDER BY created_at DESC, r DESC LIMIT ?) ORDER BY created_at, r')
           .all(selected.id, LIMITS.snapshotMessages);
-        const open = this.#db.prepare("SELECT request_id, state FROM conv_turns WHERE thread_id=? AND state IN ('queued','running') ORDER BY created_at DESC LIMIT 1").get(selected.id);
+        const open = this.#db.prepare(`SELECT request_id,state FROM (
+          SELECT request_id,state,created_at FROM conv_turns WHERE thread_id=? AND state IN ('queued','running')
+          UNION ALL SELECT request_id,state,created_at FROM conv_wakes WHERE thread_id=? AND state='running')
+          ORDER BY created_at DESC LIMIT 1`).get(selected.id, selected.id);
         const { last_seq: seq } = this.#db.prepare('SELECT last_seq FROM conv_threads WHERE id=?').get(selected.id);
         return { messages: rows.map(row => this.#message(row)), cursor: seq, turn: open ? { requestId: open.request_id, state: 'streaming' } : null };
       }));
@@ -214,6 +301,9 @@ export class Conversations {
         if (cached.digest !== digest) throw new ConversationError('CONFLICT', 409);
         return { replay: true, body: JSON.parse(cached.result) };
       }
+      if (this.#db.prepare('SELECT 1 FROM conv_wakes WHERE companion_id=? AND request_id=?').get(companionId, op.requestId)) {
+        throw new ConversationError('CONFLICT', 409);
+      }
       const now = this.#now();
       let body;
       if (op.action === 'createThread') {
@@ -225,7 +315,9 @@ export class Conversations {
       } else {
         const thread = this.#thread(companionId, op.threadId);
         const busy = this.#db.prepare("SELECT 1 FROM conv_turns WHERE thread_id=? AND state IN ('queued','running')").get(thread.id);
-        if (busy) throw new ConversationError('BUSY', 409);
+        if (busy || this.#db.prepare("SELECT 1 FROM conv_wakes WHERE thread_id=? AND state='running'").get(thread.id)) {
+          throw new ConversationError('BUSY', 409);
+        }
         const messageId = randomUUID();
         this.#db.prepare('INSERT INTO conv_messages (id, thread_id, role, text, request_id, created_at) VALUES (?,?,?,?,?,?)').run(messageId, thread.id, 'user', op.text, op.requestId, now);
         this.#db.prepare("INSERT INTO conv_turns VALUES (?,?,?,?,NULL,'queued',NULL,?,?)").run(thread.id, op.requestId, companionId, messageId, now, now);
@@ -244,16 +336,21 @@ export class Conversations {
   #cancel(companionId, threadId, requestId) {
     this.#thread(companionId, threadId);
     const turn = this.#db.prepare('SELECT * FROM conv_turns WHERE thread_id=? AND request_id=? AND companion_id=?').get(threadId, requestId, companionId);
-    if (!turn) throw notFound();
+    if (!turn) {
+      const wake = this.#db.prepare('SELECT * FROM conv_wakes WHERE thread_id=? AND request_id=? AND companion_id=?').get(threadId, requestId, companionId);
+      if (!wake) throw notFound();
+      const cancelled = this.cancelProactive(companionId, wake.id);
+      return { version: 1, synthetic: false, cancel: { requestId, threadId, state: cancelled.state } };
+    }
     if (turn.state === 'queued') this.#finish(turn, 'cancelled');
     else if (turn.state === 'running') this.#active.get(`${threadId}:${requestId}`)?.abort();
     return { version: 1, synthetic: false, cancel: { requestId, threadId, state: turn.state === 'queued' ? 'cancelled' : turn.state === 'running' ? 'stopping' : turn.state } };
   }
 
   // One turn at a time per companion, so "running" always means the provider was really started.
-  #enqueue(companionId, threadId, requestId) {
+  #enqueue(companionId, threadId, requestId, wakeId = null) {
     const previous = this.#queues.get(companionId) ?? Promise.resolve();
-    const next = previous.then(() => this.#run(companionId, threadId, requestId)).catch(() => {});
+    const next = previous.then(() => wakeId ? this.#runWake(companionId, wakeId) : this.#run(companionId, threadId, requestId)).catch(() => {});
     this.#queues.set(companionId, next);
     next.finally(() => { if (this.#queues.get(companionId) === next) this.#queues.delete(companionId); });
   }
@@ -268,13 +365,127 @@ export class Conversations {
     });
   }
 
+  #endWake(wake, state) {
+    this.#tx(() => {
+      const current = this.#wake(wake.companion_id, wake.id);
+      if (current?.state !== 'running' || current.attempt_token !== wake.attempt_token) return;
+      this.#db.prepare('UPDATE conv_wakes SET state=?,result_text=NULL,result_feeling=NULL,updated_at=? WHERE companion_id=? AND id=?')
+        .run(state, this.#now(), wake.companion_id, wake.id);
+      this.#append(wake.thread_id, { type: 'turn', requestId: wake.request_id,
+        state: state === 'cancelled' ? 'cancelled' : 'error',
+        ...(state === 'cancelled' ? {} : { error: { code: state === 'interrupted' ? 'INTERRUPTED' : 'PROVIDER_ERROR',
+          message: state === 'interrupted' ? 'The server stopped during a background check.' : 'The background check could not complete.' } }) });
+    });
+  }
+
+  // Called only inside the same write transaction as the policy delivery check.
+  #deliverWake(wake) {
+    const running = wake.state === 'running';
+    if (!this.#wakeGate('canDeliver', wake.companion_id, wake.id)) {
+      this.#db.prepare("UPDATE conv_wakes SET state='waiting_delivery',result_text=?,result_feeling=?,updated_at=? WHERE companion_id=? AND id=?")
+        .run(wake.result_text, wake.result_feeling ?? null, this.#now(), wake.companion_id, wake.id);
+    } else {
+      const messageId = randomUUID();
+      this.#db.prepare('INSERT INTO conv_messages(id,thread_id,role,text,request_id,created_at,feeling) VALUES(?,?,?,?,?,?,?)')
+        .run(messageId, wake.thread_id, 'assistant', wake.result_text, wake.request_id, this.#now(), wake.result_feeling ?? null);
+      this.#db.prepare("UPDATE conv_wakes SET state='message',result_text=NULL,result_feeling=NULL,message_id=?,updated_at=? WHERE companion_id=? AND id=?")
+        .run(messageId, this.#now(), wake.companion_id, wake.id);
+      this.#append(wake.thread_id, { type: 'message', messageId });
+    }
+    if (running) this.#append(wake.thread_id, { type: 'turn', requestId: wake.request_id, state: 'complete' });
+  }
+
+  async #runWake(companionId, id) {
+    if (this.#closing) return;
+    const prior = this.#wake(companionId, id);
+    if (prior?.state === 'waiting_delivery') {
+      this.#tx(() => {
+        const current = this.#wake(companionId, id);
+        if (current?.state === 'waiting_delivery') this.#deliverWake(current);
+      });
+      return;
+    }
+    const wake = this.#tx(() => {
+      const current = this.#wake(companionId, id);
+      if (current?.state !== 'queued') return null;
+      if (!this.#runner) {
+        this.#db.prepare("UPDATE conv_wakes SET state='error',updated_at=? WHERE companion_id=? AND id=?")
+          .run(this.#now(), companionId, id);
+        return null;
+      }
+      const token = randomUUID();
+      if (!this.#wakeGate('beforeStart', companionId, id)) return null;
+      const claimed = this.#db.prepare("UPDATE conv_wakes SET state='running',attempt_token=?,updated_at=? WHERE companion_id=? AND id=? AND state='queued'")
+        .run(token, this.#now(), companionId, id);
+      if (claimed.changes !== 1) return null;
+      this.#append(current.thread_id, { type: 'turn', requestId: current.request_id, state: 'streaming' });
+      return this.#wake(companionId, id);
+    });
+    if (!wake) return;
+    const controller = new AbortController(), key = `${wake.thread_id}:${wake.request_id}`;
+    this.#active.set(key, controller);
+    try {
+      const thread = this.#thread(companionId, wake.thread_id), resume = this.#resume(thread);
+      if (!resume) this.#db.prepare('UPDATE conv_threads SET provider_session=NULL,session_turns=0 WHERE id=?').run(thread.id);
+      const recent = resume ? [] : this.#db.prepare(`SELECT role,text FROM (SELECT rowid AS r,role,text,created_at FROM conv_messages
+        WHERE thread_id=? ORDER BY created_at DESC,r DESC LIMIT ?) ORDER BY created_at,r`).all(thread.id, this.#session.recentMessages);
+      let buffered = '', overflow = false;
+      const reply = await this.#runner.turn(companionId, {
+        prompt: 'This is a private background ' + wake.kind + ' wake, not a user message. Decide whether to contact the owner. '
+          + 'For this background turn only, return exactly one JSON object, without markdown or other text: {"action":"message","text":"your message"} '
+          + 'or {"action":"silent"}. Your native feeling tag may precede the JSON. Message text must be nonempty and at most 4000 characters. Respond naturally again on normal user turns.\n\n' + wake.prompt,
+        resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }),
+        allowedTools: this.#allowedTools, signal: controller.signal,
+        onEvent: event => {
+          if (event.type === 'session') this.#db.prepare(`UPDATE conv_threads SET provider_session=? WHERE id=? AND EXISTS(
+            SELECT 1 FROM conv_wakes WHERE companion_id=? AND id=? AND state='running' AND attempt_token=?)`)
+            .run(event.id, thread.id, companionId, id, wake.attempt_token);
+          else if (event.type === 'delta' && typeof event.text === 'string' && !overflow) {
+            if (Buffer.byteLength(buffered) + Buffer.byteLength(event.text) > 32000) overflow = true;
+            else buffered += event.text;
+          }
+        }
+      });
+      if (this.#closing) { this.#endWake(wake, 'interrupted'); return; }
+      const raw = typeof reply?.text === 'string' && reply.text.length ? reply.text : overflow ? null : buffered;
+      if (typeof raw !== 'string' || Buffer.byteLength(raw) > 32000) throw invalid();
+      const split = splitFeeling(raw);
+      if (split.pending) throw invalid();
+      const decision = JSON.parse(split.text);
+      if (!decision || typeof decision !== 'object' || Array.isArray(decision)
+          || !(decision.action === 'silent' && Object.keys(decision).length === 1
+            || decision.action === 'message' && Object.keys(decision).length === 2
+              && Object.hasOwn(decision, 'text') && wellFormed(decision.text, 4000, 16000))) throw invalid();
+      this.#tx(() => {
+        const current = this.#wake(companionId, id);
+        if (current?.state !== 'running' || current.attempt_token !== wake.attempt_token) return;
+        if (reply.sessionId) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(reply.sessionId, thread.id);
+        this.#db.prepare('UPDATE conv_threads SET session_turns=session_turns+1,session_at=? WHERE id=?').run(this.#now(), thread.id);
+        if (decision.action === 'silent') {
+          this.#db.prepare("UPDATE conv_wakes SET state='silent',result_text=NULL,result_feeling=NULL,updated_at=? WHERE companion_id=? AND id=?")
+            .run(this.#now(), companionId, id);
+          this.#append(thread.id, { type: 'turn', requestId: wake.request_id, state: 'complete' });
+        } else this.#deliverWake({ ...current, result_text: decision.text, result_feeling: split.feeling });
+      });
+    } catch (error) {
+      this.#endWake(wake, this.#closing ? 'interrupted' : controller.signal.aborted ? 'cancelled' : 'error');
+    } finally { this.#active.delete(key); }
+  }
+
   async #run(companionId, threadId, requestId) {
-    const turn = this.#db.prepare('SELECT * FROM conv_turns WHERE thread_id=? AND request_id=?').get(threadId, requestId);
-    if (turn?.state !== 'queued' || this.#closing) return;
+    if (this.#closing) return;
+    const turn = this.#tx(() => {
+      const current = this.#db.prepare('SELECT * FROM conv_turns WHERE thread_id=? AND request_id=? AND companion_id=?').get(threadId, requestId, companionId);
+      if (current?.state !== 'queued') return null;
+      if (!this.#runner) return current;
+      const claim = this.#db.prepare("UPDATE conv_turns SET state='running',updated_at=? WHERE thread_id=? AND request_id=? AND state='queued'")
+        .run(this.#now(), threadId, requestId);
+      return claim.changes === 1 ? current : null;
+    });
+    if (!turn) return;
     if (!this.#runner) { this.#finish(turn, 'error', describe(new RunnerError('NO_RUNTIME'))); return; }
     const thread = this.#db.prepare('SELECT * FROM conv_threads WHERE id=?').get(threadId);
     const user = this.#db.prepare('SELECT text FROM conv_messages WHERE id=?').get(turn.user_message_id);
-    this.#db.prepare("UPDATE conv_turns SET state='running', updated_at=? WHERE thread_id=? AND request_id=?").run(this.#now(), threadId, requestId);
     const controller = new AbortController(), key = `${threadId}:${requestId}`;
     this.#active.set(key, controller);
     let assistantId = null, text = '', written = '', timer = null;

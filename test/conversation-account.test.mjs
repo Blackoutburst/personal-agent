@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, writeFileSync, chmodSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -14,12 +15,25 @@ const PA = { issuer: ISSUER, subject: 'synthetic-owner-a' }, PB = { issuer: ISSU
 const A = 'A'.repeat(43), B = 'B'.repeat(43);
 const COOKIE = value => `__Secure-blackout_session=${value}`;
 
-function setup(t, { signedIn = ['blackout', 'screamer'], timeoutMs, ownerSettings = {} } = {}) {
+function setup(t, { signedIn = ['blackout', 'screamer'], timeoutMs, ownerSettings = {}, wakeReply } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'conversation-account-')));
   const binaries = {};
   for (const name of ['claude', 'codex']) {
     const file = join(dir, `fake-${name}.cjs`);
-    writeFileSync(file, readFileSync(join(ROOT, 'test/fixtures', `fake-${name}.cjs.txt`))); chmodSync(file, 0o755); binaries[name] = file;
+    let source = readFileSync(join(ROOT, 'test/fixtures', `fake-${name}.cjs.txt`), 'utf8');
+    if (name === 'claude' && wakeReply !== undefined) {
+      const seam = "  if (prompt.includes('LIMIT')) {";
+      assert.ok(source.includes(seam));
+      source = source.replace(seam, `  if (prompt.includes('private background')) {
+    const result = ${JSON.stringify(wakeReply)};
+    for (const part of [result.slice(0, 5), result.slice(5, 18), result.slice(18)]) {
+      out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: part } } });
+    }
+    out({ type: 'result', subtype: 'success', is_error: false, result, session_id: session }); return;
+  }
+` + seam);
+    }
+    writeFileSync(file, source); chmodSync(file, 0o755); binaries[name] = file;
   }
   const runtimeFile = join(dir, 'owners.json');
   writeFileSync(runtimeFile, JSON.stringify({ owners: [
@@ -88,7 +102,10 @@ test('authenticated conversations inherit owner file/web/Board and app MCP polic
     assert.equal(native.includes('WebSearch'), label === 'blackout');
     assert.equal(args[args.indexOf('--permission-mode') + 1], 'acceptEdits');
     const servers = JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers;
-    assert.deepEqual(Object.keys(servers), label === 'blackout' ? ['board', 'appdocs'] : ['appdocs']);
+    assert.deepEqual(Object.keys(servers), label === 'blackout' ? ['board', 'appdocs', 'scheduler'] : ['appdocs', 'scheduler']);
+    assert.ok(args.includes('mcp__scheduler__create_schedule'));
+    assert.match(servers.scheduler.env.COMPANION_SCHEDULER_TOKEN, /^[a-f0-9]{64}$/);
+    assert.equal(servers.scheduler.env.COMPANION_SCHEDULER_URL, app.url + '/internal/scheduler');
     assert.deepEqual(servers.appdocs.args, ['--owner', label]);
     assert.equal(servers.appdocs.env.OWNER_LABEL, label);
     assert.ok(args.includes('mcp__appdocs__lookup'));
@@ -98,6 +115,19 @@ test('authenticated conversations inherit owner file/web/Board and app MCP polic
       allowedTools: ['Bash'], mcpServersFor: 'caller replacement' }, proof)).status, 400);
     assert.equal(f.calls(label).length, before);
   }
+});
+
+test('the application wrapper consumes a rejected async tool factory and refuses before provider launch', async t => {
+  const f = setup(t), app = await f.open({ runnerOptions: { statusTtlMs: 0,
+    mcpServersFor: async () => { throw new Error('PRIVATE-APP-FACTORY-CANARY'); } } });
+  await ready(f, app);
+  const threadId = await newThread(app);
+  await post(app, { action: 'submit', requestId: 'async-app-refused', threadId, text: 'hello' });
+  const result = await settle(app, A, threadId);
+  assert.equal(result.events.at(-1).state, 'error');
+  assert.equal(result.events.at(-1).error.code, 'TOOL_POLICY_REFUSED');
+  assert.equal(f.calls('blackout').length, 0);
+  assert.ok(!JSON.stringify(result).includes('PRIVATE-APP-FACTORY-CANARY'));
 });
 
 test('a real reply streams from the owner\'s own agent and persists across reopen', async t => {
@@ -360,4 +390,76 @@ test('the feeling tag picks the face and never shows in the reply', async t => {
   const agents = readFileSync(join(f.home('blackout'), '..', 'workspace', 'AGENTS.md'), 'utf8');
   assert.match(agents, /\[feeling:laugh\]/);
   assert.match(agents, /version 2/);
+});
+
+test('account user and tagged wake turns share native continuity while outfit and forget reset fresh instructions', async t => {
+  const wakeText = 'A kind reminder from your companion.';
+  const f = setup(t, { wakeReply: '[feeling:tender] ' + JSON.stringify({ action: 'message', text: wakeText }) });
+  const app = await f.open({ conversationOptions: { flushMs: 1,
+    wakePolicy: { beforeStart: () => true, canDeliver: () => true } } });
+  await ready(f, app);
+  const companion = async body => {
+    const response = await fetch(app.url + '/api/companion', { method: 'POST',
+      headers: { Origin: app.url, 'Content-Type': 'application/json', Cookie: COOKIE(A) }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  assert.equal((await companion({ action: 'setProfile', profile: { name: 'Nova', character: 'claude', color: 'peach', outfit: 'base' } })).status, 200);
+  const session = await fetch(app.url + '/api/session', { method: 'POST',
+    headers: { Origin: app.url, 'Content-Type': 'application/json', Cookie: COOKIE(A) }, body: '{}' }).then(response => response.json());
+  const threadId = await newThread(app), wakeIds = [];
+  const userTurn = async (requestId, text) => {
+    assert.equal((await post(app, { action: 'submit', requestId, threadId, text })).status, 200);
+    await app.conversations.idle();
+  };
+  const wakeTurn = async () => {
+    const id = randomUUID(); wakeIds.push(id);
+    const accepted = app.conversations.enqueueProactive(session.companionId, {
+      id, kind: 'reminder', prompt: 'PRIVATE-NATIVE-WAKE-PROMPT-CANARY'
+    });
+    assert.equal(accepted.threadId, threadId);
+    await app.conversations.idle();
+    assert.equal(app.conversations.proactiveResult(session.companionId, id).state, 'message');
+  };
+  await userTurn('before-wake', 'Hello.'); await wakeTurn(); await userTurn('after-wake', 'FEELING joke');
+  assert.equal((await companion({ action: 'setProfile', profile: { outfit: 'christmas' } })).body.wearing, 'christmas');
+  await wakeTurn();
+  const workspace = join(dirname(f.home('blackout')), 'workspace');
+  writeFileSync(join(workspace, 'USER.md'), '# Blackout\n\n## Preferences\n- Keeps the release notes\n- PRIVATE-FORGOTTEN-NATIVE-MEMORY\n');
+  await userTurn('after-outfit-wake', 'Thanks for the new outfit.');
+  const memory = (await companion({ action: 'memory' })).body.files.find(file => file.file === 'USER.md');
+  const forgotten = memory.sections.flatMap(section => section.items).find(item => item.text === 'PRIVATE-FORGOTTEN-NATIVE-MEMORY');
+  assert.ok(forgotten);
+  assert.equal((await companion({ action: 'forget', file: 'USER.md', id: forgotten.id })).body.removed, true);
+  await wakeTurn(); await userTurn('after-forget-wake', 'Thank you again.');
+
+  const calls = f.calls('blackout'), system = call => call.args[call.args.indexOf('--append-system-prompt') + 1];
+  assert.equal(calls.length, 7);
+  for (const index of [1, 2, 4, 6]) assert.ok(calls[index].args.includes('--resume'));
+  for (const index of [0, 3, 5]) assert.ok(!calls[index].args.includes('--resume'));
+  assert.match(system(calls[0]), /signature cream ruffled blouse/);
+  assert.match(system(calls[3]), /red Santa dress/);
+  assert.match(system(calls[3]), /<recent_chat[\s\S]*A kind reminder from your companion\./);
+  assert.ok(system(calls[4]).includes('PRIVATE-FORGOTTEN-NATIVE-MEMORY'));
+  assert.ok(!system(calls[5]).includes('PRIVATE-FORGOTTEN-NATIVE-MEMORY'));
+  assert.match(system(calls[5]), /Keeps the release notes/);
+  for (const index of [1, 3, 5]) {
+    assert.match(system(calls[index]), /^You are Nova, Blackout's personal companion\./);
+    assert.match(calls[index].prompt, /private background reminder/);
+    const recent = system(calls[index]).split('<recent_chat')[1] ?? '';
+    assert.ok(!recent.includes('PRIVATE-NATIVE-WAKE-PROMPT-CANARY'));
+    assert.ok(!recent.includes('[feeling:') && !recent.includes('"action":"message"'));
+  }
+  const view = (await post(app, { action: 'snapshot', threadId })).body;
+  assert.equal(view.messages.filter(row => row.role === 'user').length, 4);
+  for (const id of wakeIds) {
+    const row = view.messages.find(item => item.requestId === 'wake-' + id);
+    assert.deepEqual([row.role, row.text, row.feeling], ['assistant', wakeText, 'tender']);
+  }
+  assert.deepEqual(view.messages.filter(row => row.requestId === 'after-wake' && row.role === 'assistant').map(row => [row.text, row.feeling]), [['Ha, yes!', 'laugh']]);
+  const history = (await post(app, { action: 'events', threadId, cursor: '0' })).body;
+  for (const value of [view, history]) {
+    assert.ok(!JSON.stringify(value).includes('PRIVATE-NATIVE-WAKE-PROMPT-CANARY'));
+    assert.ok(!JSON.stringify(value).includes('[feeling:'));
+    assert.ok(!JSON.stringify(value).includes('"action":"message"'));
+  }
 });

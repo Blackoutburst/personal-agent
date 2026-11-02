@@ -2,19 +2,22 @@ import { createServer } from 'node:http';
 import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { randomBytes } from 'node:crypto';
 import { BootstrapStore } from './src/store.mjs';
 import { adapterStatus, syntheticPreview } from './src/adapters.mjs';
 import { createAccountValidator } from './src/account-validator.mjs';
-import { createAccountAccess, createAccountHttp } from './src/account-http.mjs';
+import { createAccountAccess, createAccountHttp, readJsonBody } from './src/account-http.mjs';
 import { loadPilotSubjects } from './src/pilot-config.mjs';
 import { PrivateStateStore } from './src/private-state.mjs';
 import { createPrivateHttp } from './src/private-http.mjs';
 import { createConversationHttp } from './src/conversation-http.mjs';
-import { loadRuntimeConfig } from './src/runtime-config.mjs';
+import { loadRuntimeConfig, companionIdFor } from './src/runtime-config.mjs';
 import { CompanionRunner } from './src/runner.mjs';
 import { Conversations } from './src/conversations.mjs';
 import { Profiles, ensureWorkspace, instructions } from './src/companion.mjs';
 import { createCompanionHttp } from './src/companion-http.mjs';
+import { SchedulerStore, SchedulerService } from './src/scheduler.mjs';
+import { createSchedulerHttp, schedulerOperation } from './src/scheduler-http.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 // Claude-chan art (docs/COMPANION.md): outfits are whole pictures, faces are patches drawn over them.
@@ -27,6 +30,7 @@ const STATIC = new Map([
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/companion.css', ['companion.css', 'text/css; charset=utf-8']],
   ['/companion-app.mjs', ['companion-app.mjs', 'text/javascript; charset=utf-8']],
+  ['/reminders-ui.mjs', ['reminders-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-character.mjs', ['companion-character.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-theme.js', ['companion-theme.js', 'text/javascript; charset=utf-8']],
   ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']],
@@ -40,7 +44,7 @@ const STATIC = new Map([
 // runtimeFile / runtimeDir: the per-owner agent runtime (docs/RUNTIME.md). Without them, account
 // mode still serves conversations but every reply reports that no agent is configured.
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {} } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -65,6 +69,14 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let conversationHttp;
   let agentsConfigured = false;
   let companionHttp;
+  let schedulerHttp, schedulerService, schedulerStore;
+  const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
+  const tokenFor = companionId => {
+    if (!schedulerOwnerTokens.has(companionId)) {
+      const token = randomBytes(32).toString('hex'); schedulerOwnerTokens.set(companionId, token); schedulerTokens.set(token, companionId);
+    }
+    return schedulerOwnerTokens.get(companionId);
+  };
   let conversations = null;
   const allowedOrigins = () => new Set(publicOrigin ? [publicOrigin] :
     [`http://127.0.0.1:${server.address().port}`, `http://localhost:${server.address().port}`]);
@@ -85,6 +97,27 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       }
       // Exact raw paths only: queries cannot enable demo and traversal is rejected.
       const path = req.url;
+      if (path === '/internal/scheduler' && mode === 'account') {
+        // The provider's stdio adapter receives an ephemeral token for exactly one owner.
+        // This path never accepts cookies, companion selectors or settings changes.
+        if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'POST is required.');
+        const authorization = req.headers.authorization;
+        const token = typeof authorization === 'string' && /^Bearer [a-f0-9]{64}$/.test(authorization) ? authorization.slice(7) : null;
+        const companionId = token && schedulerTokens.get(token);
+        if (!companionId) return fail(401, 'SCHEDULER_UNAUTHORIZED', 'Reminder tool authorization required.');
+        if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '')) {
+          return fail(415, 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json.');
+        }
+        const parsed = await readJsonBody(req, 16384);
+        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value);
+        if (result.closeConnection) res.setHeader('connection', 'close');
+        return send(result.status, result.body);
+      }
+      if (path === '/api/schedules' && mode === 'account') {
+        const result = await schedulerHttp(req);
+        if (result.closeConnection) res.setHeader('connection', 'close');
+        return send(result.status, result.body);
+      }
       if (path === '/api/companion' && mode === 'account') {
         if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'Method not available.');
         const result = await companionHttp(req);
@@ -130,13 +163,26 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       pilotSubjects: admitted, allowedOrigins });
     let runner = null;
     if (mode === 'account') {
+      const profiles = new Profiles({ store });
+      schedulerStore = new SchedulerStore({ store, timezoneFor: companionId => profiles.get(companionId)?.timezone ?? 'UTC',
+        ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
       const owners = loadRuntimeConfig(runtimeFile);
       if (owners.length) {
         if (!runtimeDir) throw new Error('COMPANION_RUNTIME_DIR is required with COMPANION_RUNTIME_FILE');
-        runner = new CompanionRunner({ store, owners, runtimeDir, binaries, ...runnerOptions });
+        const appServersFor = runnerOptions.mcpServersFor ?? (() => []);
+        runner = new CompanionRunner({ store, owners, runtimeDir, binaries, ...runnerOptions,
+          mcpServersFor: owner => {
+            const additional = appServersFor(owner), companionId = companionIdFor(store, owner);
+            if (additional && typeof additional.then === 'function') {
+              Promise.resolve(additional).catch(() => {}); throw new TypeError('App tools must be synchronous');
+            }
+            if (!Array.isArray(additional) || !companionId || !server.address()) throw new TypeError('Invalid app tools');
+            return [...additional, { name: 'scheduler', command: process.execPath, args: [join(ROOT, 'src', 'scheduler-mcp.mjs')],
+              env: { COMPANION_SCHEDULER_URL: `http://127.0.0.1:${server.address().port}/internal/scheduler`,
+                COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule'] }];
+          } });
         agentsConfigured = true;
       }
-      const profiles = new Profiles({ store });
       const workspaceFor = companionId => {
         const owner = runner?.ownerFor(companionId);
         return owner ? { owner, dir: runner.paths(owner).workspace } : null;
@@ -148,11 +194,17 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         if (!workspace) return null;
         ensureWorkspace(workspace.dir, workspace.owner);
         return instructions({ owner: workspace.owner, profile: profiles.get(companionId), dir: workspace.dir,
-          files: workspace.owner.provider === 'claude' || fresh, recent });
+          files: workspace.owner.provider === 'claude' || fresh, recent }) +
+          '\n\nUse your scheduler tools for reminders the owner asks for. Check list_schedules for the current time and owner timezone, then resolve an explicit ISO timestamp. Never claim a reminder was saved without a successful tool result. Do not create unsolicited reminders or enable periodic checks for the owner.';
       };
-      conversations = new Conversations({ store, runner, systemPrompt,
+      conversations = new Conversations({ store, runner, systemPrompt, wakePolicy: {
+        beforeStart: (companionId, id) => Boolean(runner?.ownerFor(companionId)) && schedulerStore.startInTransaction(companionId, id),
+        canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id) },
         ...conversationOptions });
-      conversations.recover();
+      schedulerService = new SchedulerService({ scheduler: schedulerStore, conversations,
+        companions: () => owners.map(owner => companionIdFor(store, owner)).filter(id => id && profiles.get(id)),
+        ready: companionId => Boolean(runner?.ownerFor(companionId)), ...(schedulerOptions.pollMs ? { pollMs: schedulerOptions.pollMs } : {}) });
+      schedulerHttp = createSchedulerHttp({ access, scheduler: schedulerService });
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
         onForget: companionId => conversations.resetSessions(companionId),
@@ -169,11 +221,20 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       server.once('error', reject);
       server.listen(port, '127.0.0.1', resolve);
     });
-  } catch (error) { store.close(); throw error; }
+    // A competing process must bind its socket before it can recover another process's turns.
+    conversations?.recover();
+    schedulerService?.start();
+  } catch (error) {
+    await schedulerService?.stop();
+    if (server.listening) await new Promise(resolve => server.close(resolve));
+    await conversations?.shutdown();
+    store.close(); throw error;
+  }
   return {
     server, store, url: `http://127.0.0.1:${server.address().port}`,
-    conversations,
+    conversations, scheduler: schedulerService,
     async close() {
+      await schedulerService?.stop();
       await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       // Running replies end as interrupted; nothing writes to a closed store.
       await conversations?.shutdown();

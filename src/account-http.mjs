@@ -39,7 +39,7 @@ function selectedSession(request) {
   return selected.length === 1 && /^[A-Za-z0-9_-]{43}$/.test(selected[0]) ? selected[0] : null;
 }
 
-function readJsonBody(request, maximum) {
+export function readJsonBody(request, maximum) {
   if (Number(request.headers['content-length']) > maximum) return Promise.resolve({ failure: fail('BODY_TOO_LARGE', true) });
   return new Promise(resolve => {
     const chunks = [];

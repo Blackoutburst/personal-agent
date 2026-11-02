@@ -47,6 +47,20 @@
             <div id="typing" class="bubble companion typing" hidden aria-label="Typing"><span></span><span></span><span></span></div>
           </div>
           <p id="note" class="note" role="status" hidden></p>
+          <details id="upcoming" class="upcoming">
+            <summary>Upcoming <span id="upcoming-count"></span></summary>
+            <p id="schedule-note" class="schedule-note" role="status"></p>
+            <ul id="schedule-list" class="schedule-list"></ul>
+            <form id="schedule-settings" class="schedule-settings" hidden>
+              <label class="checkin-option"><input id="schedule-checkins" type="checkbox"> Check in when something matters</label>
+              <div class="quiet-times">
+                <label>Quiet from <input id="schedule-quiet-start" type="time" required></label>
+                <label>until <input id="schedule-quiet-end" type="time" required></label>
+                <button id="schedule-save" class="button" type="submit" disabled>Save</button>
+              </div>
+              <small id="schedule-zone"></small>
+            </form>
+          </details>
           <form id="composer" class="composer">
             <label class="sr-only" for="input">Your message</label>
             <textarea id="input" rows="1" maxlength="8000" placeholder="Write a message…" enterkeyhint="send"></textarea>

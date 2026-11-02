@@ -1,9 +1,11 @@
 // The companion web app: one ongoing chat with your companion, what it remembers, and how it looks.
 import { createConversationClient, USER_CHARS } from './conversation-client.mjs';
 import { renderCharacter, CHARACTERS, COLORS, OUTFITS, HAS_OUTFITS } from './companion-character.mjs';
+import { createRemindersUI } from './reminders-ui.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
+const remindersUI = createRemindersUI({ document });
 const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
 let profile = null, runtime = null, view = 'loading', chatOpened = false, state = client.getState();
@@ -144,6 +146,7 @@ function schedulePoll() {
     const before = state.turn;
     try {
       await client.poll();
+      await remindersUI.refreshIfOpen();
       if (before?.state === 'streaming' && state.turn?.requestId === before.requestId && state.turn.state !== 'streaming') {
         if (state.turn.state === 'complete') happyUntil = Date.now() + 5000;
       }
@@ -390,6 +393,7 @@ client.subscribe(next => {
   if (key && key !== lastTurnKey && next.turn.state === 'complete' && lastTurnKey?.startsWith(next.turn.requestId)) happyUntil = Date.now() + 5000;
   lastTurnKey = key;
   state = next;
+  if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') remindersUI.clear();
   renderAll();
   if (!polling) schedulePoll();
 });

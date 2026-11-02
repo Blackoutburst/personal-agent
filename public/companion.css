@@ -187,6 +187,21 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .top-mood { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40vw; }
 @media (max-width: 760px) { .mini-avatar { width: 50px; height: 50px; } .who { gap: 8px; } }
 
+/* Reminder disclosure (Chat) */
+.upcoming { margin: 4px 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); flex-shrink: 0; }
+.upcoming[open] { max-height: 42vh; overflow: auto; }
+.upcoming summary { cursor: pointer; font-weight: 700; }
+.schedule-note, .schedule-settings small { color: var(--soft); font-size: 12px; }
+.schedule-list { list-style: none; margin: 0; padding: 0; }
+.schedule-list li { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.schedule-list li div { min-width: 0; overflow-wrap: anywhere; }
+.schedule-list strong, .schedule-list small { display: block; }
+.schedule-list small { color: var(--soft); margin-top: 4px; }
+.schedule-settings { display: grid; gap: 10px; padding-top: 12px; }
+.checkin-option { display: flex; gap: 8px; align-items: center; }
+.quiet-times { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+.quiet-times label { display: grid; gap: 4px; font-size: 12px; }
+.quiet-times input { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); padding: 7px; border-radius: 8px; }
 /* App theme picker (Look) */
 .theme-pick { margin-top: 28px; }
 .theme-pick h2 { font-size: 18px; margin: 0 0 10px; }
