@@ -44,6 +44,10 @@ data class UiState(
 
 class CompanionModel(application: Application) : AndroidViewModel(application) {
     private val store = SessionStore(application)
+    private val settings = application.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+    private val _theme = MutableStateFlow(
+        ThemeChoice.entries.firstOrNull { it.name == settings.getString("theme", null) } ?: ThemeChoice.System)
+    val theme: StateFlow<ThemeChoice> = _theme
     private val api = Api { store.session }
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
@@ -55,6 +59,11 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private var failedSend: Pair<String, String>? = null // (requestId, text): a retry reuses the id
 
     init { load() }
+
+    fun setTheme(choice: ThemeChoice) {
+        _theme.value = choice
+        settings.edit().putString("theme", choice.name).apply()
+    }
 
     // ---- Sign-in ----
 

@@ -1,13 +1,20 @@
 package dev.blackoutburst.companion
 
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.toArgb
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 class MainActivity : ComponentActivity() {
     private val model: CompanionModel by viewModels()
@@ -17,7 +24,17 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         handle(intent)
-        setContent { CompanionApp(model, ::openBrowser) }
+        setContent {
+            val theme by model.theme.collectAsStateWithLifecycle()
+            val tones = tonesFor(theme)
+            LaunchedEffect(tones.dark) {
+                val bars = if (tones.dark) SystemBarStyle.dark(Color.TRANSPARENT)
+                else SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+                enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
+                window.setBackgroundDrawable(ColorDrawable(tones.top.toArgb()))
+            }
+            CompanionApp(model, tones, ::openBrowser)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

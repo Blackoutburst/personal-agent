@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,8 +34,11 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -62,19 +66,45 @@ import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
 
-private val Cream = Color(0xFFFFF6EE)
-private val Blush = Color(0xFFFDEFF3)
-private val Ink = Color(0xFF3A2E39)
-private val Soft = Color(0xFF8A7A86)
-private val Line = Color(0xFFF1E4E0)
-private val Card = Color.White
+/** The app's colors in one theme. The characters keep their own colors in both. */
+data class Tones(
+    val top: Color, val bottom: Color, val ink: Color, val soft: Color, val line: Color,
+    val card: Color, val mine: Color, val danger: Color, val dark: Boolean,
+)
+
+val LightTones = Tones(Color(0xFFFFF6EE), Color(0xFFFDEFF3), Color(0xFF3A2E39), Color(0xFF8A7A86), Color(0xFFF1E4E0),
+    Color.White, Color(0xFFFFE3D3), Color(0xFFC0504D), dark = false)
+val DarkTones = Tones(Color(0xFF231B22), Color(0xFF2C2029), Color(0xFFF6ECEF), Color(0xFFB8A7B2), Color(0xFF4A3C47),
+    Color(0xFF362A33), Color(0xFF5B3F37), Color(0xFFFF8A80), dark = true)
+
+private val LocalTones = staticCompositionLocalOf { LightTones }
+private val Cream: Color @Composable get() = LocalTones.current.top
+private val Blush: Color @Composable get() = LocalTones.current.bottom
+private val Ink: Color @Composable get() = LocalTones.current.ink
+private val Soft: Color @Composable get() = LocalTones.current.soft
+private val Line: Color @Composable get() = LocalTones.current.line
+private val Card: Color @Composable get() = LocalTones.current.card
+private val Mine: Color @Composable get() = LocalTones.current.mine
+private val Danger: Color @Composable get() = LocalTones.current.danger
+
+/** System follows the phone's dark mode setting. */
+enum class ThemeChoice(val label: String) { System("System"), Light("Light"), Dark("Dark") }
+
+@Composable
+fun tonesFor(choice: ThemeChoice): Tones = when (choice) {
+    ThemeChoice.System -> if (isSystemInDarkTheme()) DarkTones else LightTones
+    ThemeChoice.Light -> LightTones
+    ThemeChoice.Dark -> DarkTones
+}
 
 private enum class Tab(val label: String) { Chat("Chat"), Memories("Memories"), Look("Look") }
 
 @Composable
-fun CompanionApp(model: CompanionModel, openBrowser: (android.net.Uri) -> Unit) {
+fun CompanionApp(model: CompanionModel, tones: Tones, openBrowser: (android.net.Uri) -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
-    MaterialTheme(colorScheme = lightColorScheme(primary = Ink, background = Cream, surface = Card, onSurface = Ink)) {
+    val scheme = if (tones.dark) darkColorScheme(primary = tones.ink, background = tones.top, surface = tones.card, onSurface = tones.ink, onSurfaceVariant = tones.soft)
+    else lightColorScheme(primary = tones.ink, background = tones.top, surface = tones.card, onSurface = tones.ink, onSurfaceVariant = tones.soft)
+    CompositionLocalProvider(LocalTones provides tones) { MaterialTheme(colorScheme = scheme) {
         Box(
             Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Cream, Blush)))
                 .statusBarsPadding().navigationBarsPadding().imePadding()
@@ -85,7 +115,7 @@ fun CompanionApp(model: CompanionModel, openBrowser: (android.net.Uri) -> Unit) 
                 Gate.Ready -> if (state.profile == null) LookScreen(model, state, first = true) else Home(model, state)
             }
         }
-    }
+    } }
 }
 
 @Composable
@@ -107,7 +137,7 @@ private fun SignInScreen(state: UiState, signIn: () -> Unit) {
         Text("Sign in with your blackoutburst.com account to meet your companion.", color = Soft, fontSize = 17.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(28.dp))
         Pill(if (state.signingIn) "Waiting for the browser…" else "Sign in", enabled = true, onClick = signIn)
-        state.signInError?.let { Spacer(Modifier.height(14.dp)); Text(it, color = Color(0xFFC0504D), textAlign = TextAlign.Center) }
+        state.signInError?.let { Spacer(Modifier.height(14.dp)); Text(it, color = Danger, textAlign = TextAlign.Center) }
     }
 }
 
@@ -217,7 +247,7 @@ private fun Bubble(message: Message) {
         Text(message.text,
             Modifier.widthIn(max = 320.dp)
                 .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = if (mine) 20.dp else 6.dp, bottomEnd = if (mine) 6.dp else 20.dp))
-                .background(if (mine) Color(0xFFFFE3D3) else Card)
+                .background(if (mine) Mine else Card)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             color = Ink, fontSize = 17.sp, lineHeight = 23.sp)
     }
@@ -254,7 +284,7 @@ private fun MemoriesScreen(model: CompanionModel, state: UiState) {
                             Text(item.text, Modifier.weight(1f), color = Ink, fontSize = 16.sp)
                             if (confirming == key) {
                                 TextButton({ confirming = null }) { Text("Keep", color = Soft) }
-                                TextButton({ confirming = null; model.forget(file.file, item.id) }) { Text("Forget", color = Color(0xFFC0504D), fontWeight = FontWeight.Bold) }
+                                TextButton({ confirming = null; model.forget(file.file, item.id) }) { Text("Forget", color = Danger, fontWeight = FontWeight.Bold) }
                             } else {
                                 TextButton({ confirming = key }, Modifier.semantics { contentDescription = "Forget: ${item.text}" }) { Text("Forget", color = Soft) }
                             }
@@ -314,6 +344,26 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
             model.saveProfile(shownName, character, color) { saved = true; if (!first) done() }
         }
         AnimatedVisibility(state.offline) { Text("Connection lost. Trying again…", color = Soft, modifier = Modifier.padding(top = 10.dp)) }
+        if (!first) {
+            Spacer(Modifier.height(32.dp))
+            ThemePicker(model)
+        }
+    }
+}
+
+@Composable
+private fun ThemePicker(model: CompanionModel) {
+    val theme by model.theme.collectAsStateWithLifecycle()
+    Text("App theme", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Ink)
+    Spacer(Modifier.height(10.dp))
+    Row(Modifier.clip(RoundedCornerShape(50)).background(Card).border(1.dp, Line, RoundedCornerShape(50)).padding(4.dp)) {
+        for (choice in ThemeChoice.entries) {
+            val selected = choice == theme
+            Text(choice.label, Modifier.clip(RoundedCornerShape(50)).background(if (selected) Color(0xFFEE8F64) else Color.Transparent)
+                .clickable(role = Role.RadioButton) { model.setTheme(choice) }.padding(horizontal = 20.dp, vertical = 10.dp)
+                .semantics { contentDescription = "${choice.label} theme" + if (selected) ", selected" else "" },
+                color = if (selected) Color.White else Ink, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 15.sp)
+        }
     }
 }
 
