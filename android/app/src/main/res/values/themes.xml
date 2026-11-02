@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.Companion" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/cream</item>
+    </style>
+    <color name="cream">#FFF6EE</color>
+    <color name="peach">#FFB38A</color>
+</resources>
