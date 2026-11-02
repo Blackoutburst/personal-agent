@@ -19,7 +19,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FAKE_CLAUDE = readFileSync(join(ROOT, 'test/fixtures/fake-claude.cjs.txt'), 'utf8');
 const FAKE_CODEX = readFileSync(join(ROOT, 'test/fixtures/fake-codex.cjs.txt'), 'utf8');
 
-function setup({ providers = { blackout: 'claude', screamer: 'claude' }, signedIn = ['blackout', 'screamer'], timeoutMs } = {}) {
+function setup({ providers = { blackout: 'claude', screamer: 'claude' }, signedIn = ['blackout', 'screamer'], timeoutMs, ownerOptions = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pa-runner-'));
   const bin = join(dir, 'bin');
   const store = new BootstrapStore(join(dir, 'data'), ROOT);
@@ -28,10 +28,10 @@ function setup({ providers = { blackout: 'claude', screamer: 'claude' }, signedI
     const file = join(dir, `fake-${name}.cjs`); writeFileSync(file, source); chmodSync(file, 0o755); fakes[name] = file;
   }
   const owners = parseRuntimeConfig(JSON.stringify({ owners: Object.entries(providers).map(([label, provider]) =>
-    ({ subject: `subject-${label}`, label, provider })) }));
+    ({ subject: `subject-${label}`, label, provider, ...ownerOptions[label] })) }));
   const ids = {};
   for (const owner of owners) {
-    ids[owner.label] = store.getOrInsert('companion-identity-v1', principalKey({ issuer: ISSUER, subject: owner.subject }), { companionId: randomUUID() }).companionId;
+    ids[owner.label] = store.getOrInsert('companion-identity-v1', principalKey({ issuer: owner.issuer, subject: owner.subject }), { companionId: randomUUID() }).companionId;
   }
   const runner = new CompanionRunner({ store, owners, runtimeDir: join(dir, 'runtimes'), binaries: fakes, timeoutMs, statusTtlMs: 0 });
   for (const label of signedIn) {
@@ -61,7 +61,7 @@ test('each owner is answered by their own agent home and workspace', async t => 
 });
 
 test('prompt goes through stdin and session resume, system prompt and tools are passed', async t => {
-  const env = setup(); t.after(env.cleanup);
+  const env = setup({ ownerOptions: { blackout: { tools: ['WebSearch'] } } }); t.after(env.cleanup);
   await env.runner.turn(env.ids.blackout, { prompt: 'line one\n"quoted" $HOME', resume: 'sess-42', systemPrompt: 'Be kind.', allowedTools: ['WebSearch'] });
   const [call] = env.calls('blackout');
   assert.equal(call.prompt, 'line one\n"quoted" $HOME');
@@ -138,6 +138,42 @@ test('runtime config validation', () => {
   assert.equal(parseRuntimeConfig(JSON.stringify({ owners: [{ subject: 'a', label: 'a', provider: 'codex', model: 'gpt-5' }] }))[0].model, 'gpt-5');
 });
 
+test('runtime config preserves issuer and owner name while rejecting unknown fields and unsupported tool selections', () => {
+  const base = { subject: 'owner', label: 'owner', provider: 'claude' };
+  const parse = owner => parseRuntimeConfig(JSON.stringify({ owners: [owner] }))[0];
+  const configured = parse({ ...base, issuer: 'https://alternate.invalid', name: '  Owner name  ' });
+  assert.equal(configured.issuer, 'https://alternate.invalid');
+  assert.equal(configured.name, 'Owner name');
+  assert.deepEqual(configured.tools, ['Read', 'Edit', 'Write', 'Glob', 'Grep']);
+  assert.equal(configured.board, null);
+  assert.ok(Object.isFrozen(configured) && Object.isFrozen(configured.tools));
+  assert.deepEqual(parse({ ...base, tools: ['Read', 'WebSearch'] }).tools, ['Read', 'WebSearch']);
+  assert.deepEqual(parse({ ...base, provider: 'codex' }).tools, []);
+  assert.deepEqual(parse({ ...base, provider: 'codex', tools: ['WebSearch', 'WebFetch'] }).tools, ['WebSearch', 'WebFetch']);
+  for (const name of ['', '   ', '<Owner>', 'Owner\nname', 'x'.repeat(41), 7]) assert.throws(() => parse({ ...base, name }));
+  for (const issuer of ['', 'http://alternate.invalid', 'https://alternate.invalid/path', null]) assert.throws(() => parse({ ...base, issuer }));
+  for (const tools of [null, ['Bash'], ['Read', 'Read']]) assert.throws(() => parse({ ...base, tools }));
+  for (const tools of [['Read'], ['WebSearch'], ['WebFetch'], ['WebSearch', 'WebFetch', 'Read']]) {
+    assert.throws(() => parse({ ...base, provider: 'codex', tools }));
+  }
+  for (const extra of ['mcpServersFor', 'workspace', 'home', 'token']) assert.throws(() => parse({ ...base, [extra]: 'untrusted' }));
+  assert.throws(() => parseRuntimeConfig(JSON.stringify({ owners: [base], tools: [] })));
+  assert.throws(() => parseRuntimeConfig(JSON.stringify({ owners: [[base]] })));
+});
+
+test('runtime issuer selects only its provisioned principal and keeps the configured owner name', async t => {
+  const env = setup({ ownerOptions: { blackout: { issuer: 'https://alternate.invalid', name: '  Preferred owner  ' } } });
+  t.after(env.cleanup);
+  const owner = env.runner.ownerFor(env.ids.blackout);
+  assert.equal(owner.issuer, 'https://alternate.invalid');
+  assert.equal(owner.name, 'Preferred owner');
+  const foreign = env.store.getOrInsert('companion-identity-v1', principalKey({ issuer: ISSUER, subject: owner.subject }), { companionId: randomUUID() });
+  await assert.rejects(env.runner.turn(foreign.companionId, { prompt: 'foreign issuer' }), e => e.code === 'NO_RUNTIME');
+  assert.equal(env.calls('blackout').length, 0);
+  assert.equal((await env.runner.turn(env.ids.blackout, { prompt: 'configured issuer' })).text, 'Hello from blackout');
+  assert.equal(env.calls('screamer').length, 0);
+});
+
 test('claude parser matches recorded CLI output', () => {
   assert.deepEqual(claude.parseLine('{"type":"system","subtype":"init","session_id":"s1"}'), [{ type: 'session', id: 's1' }]);
   assert.deepEqual(claude.parseLine('{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}')[0].code, 'NOT_SIGNED_IN');
@@ -151,4 +187,19 @@ test('claude parser matches recorded CLI output', () => {
   assert.ok(codex.command({ home: '/h', resume: 't1' }).args.includes('sandbox_mode="workspace-write"'));
   assert.ok(claude.command({ home: '/h', allowedTools: ['Read', 'Edit'] }).args.join(' ').includes('--permission-mode acceptEdits'));
   assert.ok(!claude.command({ home: '/h', allowedTools: ['Read'] }).args.includes('--permission-mode'));
+});
+
+test('status and owner-managed sign-in commands retain their existing paths and arguments', () => {
+  assert.deepEqual(claude.statusCommand({ home: '/owner-home' }), {
+    binary: 'claude', args: ['auth', 'status', '--json'], env: { CLAUDE_CONFIG_DIR: '/owner-home' }
+  });
+  assert.deepEqual(claude.loginCommand({ home: '/owner-home' }), {
+    binary: 'claude', args: ['auth', 'login'], env: { CLAUDE_CONFIG_DIR: '/owner-home' }
+  });
+  assert.deepEqual(codex.statusCommand({ home: '/owner-home' }), {
+    binary: 'codex', args: ['login', 'status'], env: { CODEX_HOME: '/owner-home' }
+  });
+  assert.deepEqual(codex.loginCommand({ home: '/owner-home' }), {
+    binary: 'codex', args: ['login', '--device-auth'], env: { CODEX_HOME: '/owner-home' }
+  });
 });

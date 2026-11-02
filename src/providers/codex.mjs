@@ -3,14 +3,27 @@
 // Event names differ slightly between Codex releases; both known spellings are accepted.
 // Verified against codex-cli 0.166.0 (signed-out paths; signed-in turn pending owner sign-in).
 
+import { mcpServersFor } from '../tool-policy.mjs';
+
 export const name = 'codex';
 
-export function command({ binary = 'codex', home, resume, model, systemPrompt }) {
+export function command({ binary = 'codex', home, resume, model, systemPrompt, toolPolicy = { tools: [], board: null } }) {
+  if (toolPolicy.tools.length === 1) throw new Error('Codex web search and fetch must be configured together');
   const args = ['exec'];
   if (resume) args.push('resume', resume);
   // `exec resume` has no --sandbox flag; the config override works for both forms.
   // The companion keeps its own files (soul, memory, diary) in its workspace: writes are allowed there only.
   args.push('--json', '--skip-git-repo-check', '-c', 'sandbox_mode="workspace-write"');
+  args.push('-c', `web_search=${JSON.stringify(toolPolicy.tools.length ? 'live' : 'disabled')}`);
+  for (const server of toolPolicy.mcpServers ?? mcpServersFor(toolPolicy)) {
+    const prefix = `mcp_servers.${server.name}`;
+    args.push('-c', `${prefix}.command=${JSON.stringify(server.command)}`,
+      '-c', `${prefix}.args=${JSON.stringify(server.args)}`,
+      '-c', `${prefix}.enabled_tools=${JSON.stringify(server.allowedTools)}`,
+      '-c', `${prefix}.required=true`, '-c', `${prefix}.default_tools_approval_mode="auto"`);
+    for (const [key, value] of Object.entries(server.env)) args.push('-c', `${prefix}.env.${key}=${JSON.stringify(value)}`);
+  }
+  // MCP tables deep-merge in 0.166; these overrides do not clear other config layers.
   if (model) args.push('--model', model);
   // Codex has no append-system-prompt flag; the caller's persona is prepended to the prompt.
   args.push('-');
