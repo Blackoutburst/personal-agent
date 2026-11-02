@@ -17,6 +17,7 @@ import { Profiles, ensureWorkspace, instructions } from './src/companion.mjs';
 import { createCompanionHttp } from './src/companion-http.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+const PORTRAIT_FRAMES = ['idle', 'blink', 'talk', 'listening', 'thinking', 'happy', 'sleepy'];
 const STATIC = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
@@ -26,7 +27,9 @@ const STATIC = new Map([
   ['/companion-theme.js', ['companion-theme.js', 'text/javascript; charset=utf-8']],
   ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']],
   // Old address of the chat page: it now redirects to the companion.
-  ['/conversation.html', ['conversation.html', 'text/html; charset=utf-8']]
+  ['/conversation.html', ['conversation.html', 'text/html; charset=utf-8']],
+  // Illustrated characters: one picture per expression.
+  ...PORTRAIT_FRAMES.map(frame => [`/characters/claude/${frame}.webp`, [`characters/claude/${frame}.webp`, 'image/webp']])
 ]);
 
 // runtimeFile / runtimeDir: the per-owner agent runtime (docs/RUNTIME.md). Without them, account
@@ -147,7 +150,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       conversations.recover();
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
-        onForget: companionId => conversations.resetSessions(companionId) });
+        onForget: companionId => conversations.resetSessions(companionId),
+        // Claude reads the look every turn; Codex keeps its first instructions, so it starts afresh.
+        onLook: companionId => conversations.resetSessions(companionId) });
     }
     const runtimeStatus = async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' };
     conversationHttp = createConversationHttp({ access, store, mode, conversations, runtimeStatus });

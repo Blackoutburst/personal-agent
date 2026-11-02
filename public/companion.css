@@ -122,7 +122,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .look-form { display: flex; flex-direction: column; gap: 18px; }
 fieldset { border: 0; margin: 0; padding: 0; }
 legend { font-weight: 700; margin-bottom: 10px; }
-.pick-character { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.pick-character { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 10px; }
 .pick-character button { background: var(--glass); border: 3px solid transparent; border-radius: 20px; padding: 8px 6px 10px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; font-weight: 700; }
 .pick-character button span.pic { width: 84px; height: 84px; display: block; }
 .pick-character button small { font-weight: 500; color: var(--soft); font-size: 12px; }
@@ -149,6 +149,14 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .zzz text { animation: zzz 2.6s ease-in-out infinite; } .zzz text:nth-child(2) { animation-delay: .6s; }
 .mood-happy .char-body { animation: hop .9s ease-in-out 2, bob 3.4s ease-in-out 1.8s infinite; }
 .mood-sleepy .char-body { animation-duration: 5s; }
+/* Illustrated characters: a softer breath, a blink, and talking frames. */
+.char-portrait .char-body { animation: breathe 4s ease-in-out infinite; transform-origin: 100px 200px; }
+.char-portrait.mood-happy .char-body { animation: hop .9s ease-in-out 2, breathe 4s ease-in-out 1.8s infinite; }
+.frame-blink { opacity: 0; animation: frame-blink 5s steps(1, end) infinite; }
+.frame-talk { opacity: 0; animation: frame-talk .5s steps(1, end) infinite; }
+@keyframes breathe { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-2px) scale(1.006); } }
+@keyframes frame-blink { 0%, 93% { opacity: 0; } 94%, 97% { opacity: 1; } 98%, 100% { opacity: 0; } }
+@keyframes frame-talk { 0% { opacity: 0; } 50% { opacity: 1; } }
 @keyframes bob { 0%, 100% { transform: translateY(0) scale(1, 1); } 50% { transform: translateY(-4px) scale(1.01, .99); } }
 @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-9px); } }
 @keyframes shadow { 0%, 100% { transform: scale(1); opacity: .08; } 50% { transform: scale(.85); opacity: .05; } }

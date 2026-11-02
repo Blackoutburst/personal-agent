@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -312,7 +313,7 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
         Text(if (first) "Meet your companion" else "${profile?.name ?: shownName}’s look", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
         if (first) Text("Pick how it looks and give it a name. You can change this any time.", color = Soft, fontSize = 15.sp, textAlign = TextAlign.Center)
         CompanionCharacter(character, color, Mood.Happy, Modifier.size(200.dp).padding(8.dp), label = shownName)
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (option in CHARACTERS) {
                 val selected = option.id == character
                 Column(Modifier.clip(RoundedCornerShape(20.dp)).background(if (selected) Card else Color.Transparent)

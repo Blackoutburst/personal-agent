@@ -5,7 +5,8 @@ export const CHARACTERS = [
   { id: 'pip', label: 'Pip', hint: 'a round little blob' },
   { id: 'mochi', label: 'Mochi', hint: 'a soft cat' },
   { id: 'sprout', label: 'Sprout', hint: 'a tiny plant spirit' },
-  { id: 'luna', label: 'Luna', hint: 'a friendly ghost' }
+  { id: 'luna', label: 'Luna', hint: 'a friendly ghost' },
+  { id: 'claude', label: 'Claude', hint: 'a cheerful anime girl' }
 ];
 export const COLORS = {
   peach: { body: '#FFB38A', shade: '#EE8F64', light: '#FFDCC8', cheek: '#FF7E7E' },
@@ -76,7 +77,22 @@ function extras(mood, c) {
   return '';
 }
 
+// Illustrated characters are pictures, one per expression, in characters/<id>/. Idle blinks and
+// talking alternates with the open-mouth picture, both by fading a second picture in and out.
+const PORTRAITS = { claude: { blink: true } };
+const FRAME_FOR = { idle: 'idle', listening: 'listening', thinking: 'thinking', talking: 'idle', happy: 'happy', sleepy: 'sleepy' };
+
+function portrait(character, mood, label) {
+  const at = name => `characters/${character}/${name}.webp`;
+  const picture = (name, cls = '') => `<image${cls ? ` class="${cls}"` : ''} href="${at(name)}" x="0" y="0" width="200" height="200" preserveAspectRatio="xMidYMid meet"/>`;
+  const overlay = mood === 'talking' ? picture('talk', 'frame-talk') : mood === 'idle' && PORTRAITS[character].blink ? picture('blink', 'frame-blink') : '';
+  return `<svg class="char char-portrait char-${character} mood-${mood}" viewBox="0 0 200 200" role="img" aria-label="${label}" xmlns="http://www.w3.org/2000/svg">
+  <g class="char-body">${picture(FRAME_FOR[mood])}${overlay}</g>
+</svg>`;
+}
+
 export function renderCharacter({ character = 'pip', color = 'peach', mood = 'idle', title = '' } = {}) {
+  if (Object.hasOwn(PORTRAITS, character)) return portrait(character, MOODS.includes(mood) ? mood : 'idle', title.replace(/[<>&"]/g, ''));
   const body = BODIES[character] ?? BODIES.pip, c = COLORS[color] ?? COLORS.peach, m = MOODS.includes(mood) ? mood : 'idle';
   const y = body.face;
   return `<svg class="char char-${character} mood-${m}" viewBox="0 0 200 200" role="img" aria-label="${title.replace(/[<>&"]/g, '')}" xmlns="http://www.w3.org/2000/svg">

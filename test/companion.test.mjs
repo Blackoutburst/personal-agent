@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ensureWorkspace, readMemory, forgetMemory, instructions, Profiles, localTime } from '../src/companion.mjs';
+import { ensureWorkspace, readMemory, forgetMemory, instructions, appearance, Profiles, localTime } from '../src/companion.mjs';
 import { BootstrapStore } from '../src/store.mjs';
 
 const OWNER = { label: 'blackout', provider: 'claude' };
@@ -74,4 +74,20 @@ test('profiles validate name, character, color and timezone', t => {
     { timezone: 'Mars/Base' }, { admin: true }, null, []]) assert.throws(() => profiles.set('c1', bad), { code: 'INVALID_REQUEST' });
   assert.throws(() => profiles.set('c2', { name: 'Solo' }), { code: 'INVALID_REQUEST' }); // a first profile needs a look
   assert.equal(profiles.get('c2'), null);
+});
+
+test('the companion knows how it looks, and the line follows its look', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'companion-look-'));
+  try {
+    const owner = { name: 'Blackout' };
+    ensureWorkspace(dir, owner);
+    const cat = instructions({ owner, dir, profile: { name: 'Miso', character: 'mochi', color: 'mint', timezone: 'UTC' } });
+    assert.match(cat, /How you look in the app: you are a soft round cat .*colored mint green\./);
+    const girl = instructions({ owner, dir, profile: { name: 'Claude', character: 'claude', color: 'peach', timezone: 'UTC' } });
+    assert.match(girl, /anime girl with long wavy orange hair/);
+    assert.match(girl, /the app around you is peach/);
+    assert.doesNotMatch(girl, /soft round cat/);
+    assert.equal(appearance(null, 'Blackout'), null);
+    assert.doesNotMatch(instructions({ owner, dir, profile: null }), /How you look/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

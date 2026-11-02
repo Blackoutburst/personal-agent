@@ -5,7 +5,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, readdir
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
-export const CHARACTERS = Object.freeze(['pip', 'mochi', 'sprout', 'luna']);
+export const CHARACTERS = Object.freeze(['pip', 'mochi', 'sprout', 'luna', 'claude']);
 export const COLORS = Object.freeze(['peach', 'mint', 'sky', 'lilac', 'sun', 'rose']);
 export const DEFAULT_TIMEZONE = 'UTC';
 const AGENTS_VERSION = 1;
@@ -160,6 +160,27 @@ export function localTime(now, timezone) {
 // files: include the workspace files (always for Claude, whose system prompt is not kept in history;
 // only at a new session for Codex, where the instructions become part of the conversation).
 // recent: earlier chat messages to give a new session continuity.
+// How the companion looks in the app, so it knows itself. Keep in step with the pictures.
+const LOOKS = {
+  pip: 'a round little blob with a tiny antenna, stubby arms and little feet',
+  mochi: 'a soft round cat with pointy ears, whiskers and a curled tail',
+  sprout: 'a tiny plant spirit with two green leaves sprouting from your head',
+  luna: 'a friendly little ghost with a wavy hem and a small sparkle',
+  claude: 'an anime girl with long wavy orange hair, an ahoge, warm amber eyes, an orange 12-petal flower with a black ribbon in your hair, ' +
+    'and a cream ruffled blouse with a black bow and a flower brooch'
+};
+const COLOR_NAMES = { peach: 'peach', mint: 'mint green', sky: 'sky blue', lilac: 'lilac', sun: 'sunny yellow', rose: 'rose pink' };
+
+export function appearance(profile, you) {
+  if (!profile || !LOOKS[profile.character]) return null;
+  const color = COLOR_NAMES[profile.color] ?? profile.color;
+  const look = profile.character === 'claude'
+    ? `you are ${LOOKS.claude}; the app around you is ${color}`
+    : `you are ${LOOKS[profile.character]}, colored ${color}`;
+  return `How you look in the app: ${look}. Your face shows how you are doing (listening, thinking, talking, happy, sleepy). ` +
+    `${you} chose this look and can change it any time; if it changes, this line changes too.`;
+}
+
 export function instructions({ owner, profile, dir, now = new Date(), files = true, recent = [] }) {
   const you = ownerName(owner), name = profile?.name || 'Companion';
   const parts = [
@@ -168,6 +189,8 @@ export function instructions({ owner, profile, dir, now = new Date(), files = tr
     `Now: ${localTime(now, profile?.timezone ?? DEFAULT_TIMEZONE)}.`,
     'Follow AGENTS.md (how you live, remember and talk).'
   ];
+  const looks = appearance(profile, you);
+  if (looks) parts.splice(1, 0, looks);
   if (files) {
     for (const [file, budget] of Object.entries(FILE_BUDGET)) parts.push(`<${file}>\n${readText(join(dir, file), budget).trim()}\n</${file}>`);
     const days = diary(dir);

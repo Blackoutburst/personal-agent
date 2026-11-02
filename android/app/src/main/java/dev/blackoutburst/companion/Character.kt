@@ -22,6 +22,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.semantics.contentDescription
@@ -38,6 +40,7 @@ val CHARACTERS = listOf(
     CharacterInfo("mochi", "Mochi", "a soft cat"),
     CharacterInfo("sprout", "Sprout", "a tiny plant spirit"),
     CharacterInfo("luna", "Luna", "a friendly ghost"),
+    CharacterInfo("claude", "Claude", "a cheerful anime girl"),
 )
 
 val COLORS = linkedMapOf(
@@ -150,9 +153,53 @@ private fun DrawScope.extras(mood: Mood, c: Palette, pulse: Float) {
     }
 }
 
+/** Illustrated characters: one picture per expression (res/drawable-nodpi/<id>_<frame>.webp). */
+private val PORTRAITS = mapOf(
+    "claude" to mapOf(
+        "idle" to R.drawable.claude_idle, "blink" to R.drawable.claude_blink, "talk" to R.drawable.claude_talk,
+        "listening" to R.drawable.claude_listening, "thinking" to R.drawable.claude_thinking,
+        "happy" to R.drawable.claude_happy, "sleepy" to R.drawable.claude_sleepy,
+    ),
+)
+
+@Composable
+private fun Portrait(frames: Map<String, Int>, mood: Mood, modifier: Modifier, label: String, still: Boolean) {
+    val motion = rememberInfiniteTransition(label = "portrait")
+    val breath by motion.animateFloat(0f, 1f, infiniteRepeatable(tween(2000), RepeatMode.Reverse), label = "breath")
+    // 1 while the overlay picture shows: a short blink every 5 s, or the open mouth every other 250 ms.
+    val blink by motion.animateFloat(0f, 0f, infiniteRepeatable(keyframes {
+        durationMillis = 5000; 0f at 4690; 1f at 4700; 1f at 4850; 0f at 4860
+    }), label = "blink")
+    val talk by motion.animateFloat(0f, 1f, infiniteRepeatable(keyframes {
+        durationMillis = 500; 0f at 249; 1f at 250; 1f at 499
+    }), label = "talk")
+    val base = when (mood) {
+        Mood.Listening -> "listening"; Mood.Thinking -> "thinking"; Mood.Happy -> "happy"; Mood.Sleepy -> "sleepy"
+        else -> "idle"
+    }
+    val overlay = when {
+        still -> null
+        mood == Mood.Talking && talk >= .5f -> "talk"
+        mood == Mood.Idle && blink >= .5f -> "blink"
+        else -> null
+    }
+    androidx.compose.foundation.layout.Box(modifier.semantics { if (label.isNotEmpty()) contentDescription = label }) {
+        val lift = if (still) 0f else breath
+        androidx.compose.foundation.Image(
+            androidx.compose.ui.res.painterResource(frames.getValue(overlay ?: base)), null,
+            Modifier.matchParentSize().graphicsLayer {
+                translationY = -lift * 2.dp.toPx()
+                scaleX = 1f + lift * .006f; scaleY = scaleX
+                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(.5f, 1f)
+            },
+        )
+    }
+}
+
 /** The companion, gently alive: it breathes, blinks, talks and thinks. */
 @Composable
 fun CompanionCharacter(character: String, color: String, mood: Mood, modifier: Modifier = Modifier, label: String = "", still: Boolean = false) {
+    PORTRAITS[character]?.let { return Portrait(it, mood, modifier, label, still) }
     val body = BODIES[character] ?: BODIES.getValue("pip")
     val palette = COLORS[color] ?: COLORS.getValue("peach")
     val motion = rememberInfiniteTransition(label = "character")

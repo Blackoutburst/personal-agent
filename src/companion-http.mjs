@@ -6,7 +6,8 @@ const fail = (status, code, message) => ({ status, body: { error: { code, messag
 
 // profiles: Profiles. workspaceFor(companionId) -> {dir, owner} or null when no agent is configured.
 // onForget(companionId): called after a memory was removed (starts a new agent session).
-export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, onForget = () => {} }) {
+// onLook(companionId): called when the name or look changed, so the agent's next session knows.
+export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, onForget = () => {}, onLook = () => {} }) {
   return async function companion(request) {
     const parsed = await access.read(request, 4096);
     if (parsed.failure) return parsed.failure;
@@ -22,9 +23,12 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
           const runtime = await runtimeStatus(companionId);
           return { status: 200, body: { profile: profiles.get(companionId), runtime: { state: runtime.state, ...(runtime.provider ? { provider: runtime.provider } : {}) } } };
         }
-        case 'setProfile':
+        case 'setProfile': {
           if (!only(['action', 'profile'])) break;
-          return { status: 200, body: { profile: profiles.set(companionId, payload.profile) } };
+          const before = profiles.get(companionId), profile = profiles.set(companionId, payload.profile);
+          if (!before || ['name', 'character', 'color'].some(key => before[key] !== profile[key])) onLook(companionId);
+          return { status: 200, body: { profile } };
+        }
         case 'memory': {
           if (!only(['action'])) break;
           const workspace = workspaceFor(companionId);
