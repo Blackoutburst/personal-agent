@@ -88,7 +88,8 @@ export class Conversations {
   // systemPrompt(companionId, {fresh, recent}) returns the instructions for a turn: fresh is true when a
   // new provider session starts, recent holds the messages before it for continuity.
   // session: when to start a new provider session (continuity then comes from the companion's files).
-  constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools = [],
+  // Omitted tools inherit owner policy; [] is an explicit turn-level narrowing.
+  constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools,
     session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 } }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
     this.#session = session; this.#allowedTools = allowedTools;

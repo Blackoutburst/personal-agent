@@ -14,7 +14,7 @@ const PA = { issuer: ISSUER, subject: 'synthetic-owner-a' }, PB = { issuer: ISSU
 const A = 'A'.repeat(43), B = 'B'.repeat(43);
 const COOKIE = value => `__Secure-blackout_session=${value}`;
 
-function setup(t, { signedIn = ['blackout', 'screamer'], timeoutMs } = {}) {
+function setup(t, { signedIn = ['blackout', 'screamer'], timeoutMs, ownerSettings = {} } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'conversation-account-')));
   const binaries = {};
   for (const name of ['claude', 'codex']) {
@@ -23,8 +23,8 @@ function setup(t, { signedIn = ['blackout', 'screamer'], timeoutMs } = {}) {
   }
   const runtimeFile = join(dir, 'owners.json');
   writeFileSync(runtimeFile, JSON.stringify({ owners: [
-    { subject: PA.subject, issuer: ISSUER, label: 'blackout', provider: 'claude' },
-    { subject: PB.subject, issuer: ISSUER, label: 'screamer', provider: 'claude' }] }));
+    { subject: PA.subject, issuer: ISSUER, label: 'blackout', provider: 'claude', ...ownerSettings.blackout },
+    { subject: PB.subject, issuer: ISSUER, label: 'screamer', provider: 'claude', ...ownerSettings.screamer }] }));
   const runtimeDir = join(dir, 'runtimes'), dataDir = join(dir, 'data');
   const apps = [];
   t.after(async () => { for (const app of apps) if (app.server.listening) await app.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -67,6 +67,38 @@ async function settle(app, proof, threadId, from = '0') {
 }
 const newThread = async (app, proof = A, requestId = 'new-1') =>
   (await post(app, { action: 'createThread', requestId, title: 'New conversation' }, proof)).body.thread.id;
+
+test('authenticated conversations inherit owner file/web/Board and app MCP policy', async t => {
+  const f = setup(t, { ownerSettings: { blackout: {
+    tools: ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
+    board: { configDir: '/synthetic/blackout/board', connectPath: '/synthetic/connect.py', pythonPath: '/synthetic/python3' }
+  } } });
+  const app = await f.open({ runnerOptions: { statusTtlMs: 0, mcpServersFor: owner => [{
+    name: 'appdocs', command: '/synthetic/app', args: ['--owner', owner.label],
+    env: { OWNER_LABEL: owner.label }, allowedTools: ['lookup']
+  }] } });
+  await ready(f, app);
+  for (const [proof, label] of [[A, 'blackout'], [B, 'screamer']]) {
+    const threadId = await newThread(app, proof, label);
+    assert.equal((await post(app, { action: 'submit', requestId: 'configured', threadId, text: 'hello' }, proof)).status, 200);
+    assert.equal((await settle(app, proof, threadId)).events.at(-1).state, 'complete');
+    const args = f.calls(label)[0].args;
+    const native = args[args.indexOf('--tools') + 1].split(',');
+    assert.ok(['Read', 'Edit', 'Write', 'Glob', 'Grep'].every(tool => native.includes(tool)));
+    assert.equal(native.includes('WebSearch'), label === 'blackout');
+    assert.equal(args[args.indexOf('--permission-mode') + 1], 'acceptEdits');
+    const servers = JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers;
+    assert.deepEqual(Object.keys(servers), label === 'blackout' ? ['board', 'appdocs'] : ['appdocs']);
+    assert.deepEqual(servers.appdocs.args, ['--owner', label]);
+    assert.equal(servers.appdocs.env.OWNER_LABEL, label);
+    assert.ok(args.includes('mcp__appdocs__lookup'));
+    if (label === 'screamer') assert.ok(!JSON.stringify(args).includes('/synthetic/blackout/board'));
+    const before = f.calls(label).length;
+    assert.equal((await post(app, { action: 'submit', requestId: 'injected', threadId, text: 'hello',
+      allowedTools: ['Bash'], mcpServersFor: 'caller replacement' }, proof)).status, 400);
+    assert.equal(f.calls(label).length, before);
+  }
+});
 
 test('a real reply streams from the owner\'s own agent and persists across reopen', async t => {
   const f = setup(t), app = await f.open(); await ready(f, app);

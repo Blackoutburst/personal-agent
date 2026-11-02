@@ -2,16 +2,27 @@
 // CLAUDE_CONFIG_DIR. Sign-in happens only through Anthropic's own flow (`claude auth login`),
 // run by the owner; this module never reads or stores credentials.
 
+import { mcpServersFor } from '../tool-policy.mjs';
+
 export const name = 'claude';
 
-export function command({ binary = 'claude', home, resume, model, systemPrompt, allowedTools = [] }) {
+export function command({ binary = 'claude', home, resume, model, systemPrompt, toolPolicy, allowedTools = [] }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   if (resume) args.push('--resume', resume);
   if (model) args.push('--model', model);
   if (systemPrompt) args.push('--append-system-prompt', systemPrompt);
-  if (allowedTools.length) args.push('--allowedTools', ...allowedTools);
+  const policy = toolPolicy ?? { tools: allowedTools, board: null };
+  const servers = policy.mcpServers ?? mcpServersFor(policy);
+  const mcpServers = Object.fromEntries(servers.map(server => [server.name, {
+    command: server.command, args: server.args, ...(Object.keys(server.env).length ? { env: server.env } : {})
+  }]));
+  const approved = [...policy.tools, ...servers.flatMap(server => server.allowedTools.map(tool => `mcp__${server.name}__${tool}`))];
+  // allowedTools auto-approves; tools bounds built-ins and strict MCP selects only app transports.
+  args.push('--tools', policy.tools.join(','), '--setting-sources=', '--strict-mcp-config',
+    '--mcp-config', JSON.stringify({ mcpServers }));
+  if (approved.length) args.push('--allowedTools', ...approved);
   // File edits are accepted without a prompt, but only inside the working directory (the companion's workspace).
-  if (allowedTools.some(tool => ['Edit', 'Write'].includes(tool))) args.push('--permission-mode', 'acceptEdits');
+  if (policy.tools.some(tool => ['Edit', 'Write'].includes(tool))) args.push('--permission-mode', 'acceptEdits');
   return { binary, args, env: { CLAUDE_CONFIG_DIR: home } };
 }
 

@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import * as claude from './providers/claude.mjs';
 import * as codex from './providers/codex.mjs';
 import { companionIdFor } from './runtime-config.mjs';
+import { WEB_TOOLS, narrowToolPolicy } from './tool-policy.mjs';
 
 const ADAPTERS = { claude, codex };
 const MESSAGES = {
   NO_RUNTIME: 'No agent is configured for this companion yet.',
+  TOOL_POLICY_REFUSED: 'The requested tools are not enabled for this companion.',
   NOT_SIGNED_IN: 'Your agent is not signed in. Run the sign-in step for your account on the server.',
   USAGE_LIMIT: 'Your subscription usage limit is reached. Your agent will be available again after it resets.',
   PROVIDER_MISSING: 'The agent program is not installed on the server.',
@@ -38,8 +40,11 @@ function collect(child) {
 // Runs each owner's own agent (Claude Code or Codex) under that owner's provider home.
 // One turn at a time per owner; turns of different owners run concurrently.
 export class CompanionRunner {
-  constructor({ store, owners, runtimeDir, binaries = {}, timeoutMs = 10 * 60_000, spawnImpl = spawn, statusTtlMs = 30_000 }) {
+  constructor({ store, owners, runtimeDir, binaries = {}, timeoutMs = 10 * 60_000, spawnImpl = spawn, statusTtlMs = 30_000,
+    mcpServersFor = () => [] }) {
+    if (typeof mcpServersFor !== 'function') throw new TypeError('mcpServersFor must be a synchronous function');
     this.store = store; this.owners = owners; this.runtimeDir = runtimeDir; this.binaries = binaries;
+    this.mcpServersFor = mcpServersFor;
     this.timeoutMs = timeoutMs; this.spawn = spawnImpl; this.statusTtlMs = statusTtlMs;
     this.queues = new Map(); this.statusCache = new Map();
   }
@@ -88,7 +93,7 @@ export class CompanionRunner {
 
   // prompt: user text. resume: provider session id from a previous turn of the same thread.
   // onEvent receives {type:'session'|'delta'|'rate'} events while the reply streams.
-  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools = [], onEvent = () => {}, signal } = {}) {
+  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, onEvent = () => {}, signal } = {}) {
     return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, onEvent, signal });
   }
 
@@ -97,19 +102,34 @@ export class CompanionRunner {
     return this.#enqueue(this.owners.find(owner => owner.label === label) ?? null, options);
   }
 
-  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools = [], onEvent = () => {}, signal } = {}) {
+  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, onEvent = () => {}, signal } = {}) {
     if (!owner) return Promise.reject(new RunnerError('NO_RUNTIME'));
+    let toolPolicy;
+    try {
+      const appServers = this.mcpServersFor(owner);
+      if (appServers && typeof appServers.then === 'function') {
+        Promise.resolve(appServers).catch(() => {});
+        throw new TypeError('mcpServersFor must return synchronously');
+      }
+      toolPolicy = narrowToolPolicy({ tools: owner.tools, board: owner.board }, allowedTools, appServers);
+      if (owner.provider === 'codex' && toolPolicy.tools.length
+          && (toolPolicy.tools.length !== WEB_TOOLS.length || !WEB_TOOLS.every(tool => toolPolicy.tools.includes(tool)))) {
+        throw new TypeError('Codex web tools must be selected together');
+      }
+    } catch {
+      return Promise.reject(new RunnerError('TOOL_POLICY_REFUSED'));
+    }
     const previous = this.queues.get(owner.label) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(() => this.#turn(owner, { prompt, resume, systemPrompt, allowedTools, onEvent, signal }));
+    const current = previous.catch(() => {}).then(() => this.#turn(owner, { prompt, resume, systemPrompt, toolPolicy, onEvent, signal }));
     this.queues.set(owner.label, current);
     current.finally(() => { if (this.queues.get(owner.label) === current) this.queues.delete(owner.label); }).catch(() => {});
     return current;
   }
 
-  async #turn(owner, { prompt, resume, systemPrompt, allowedTools, onEvent, signal }) {
+  async #turn(owner, { prompt, resume, systemPrompt, toolPolicy, onEvent, signal }) {
     if (signal?.aborted) throw new RunnerError('CANCELLED');
     const adapter = ADAPTERS[owner.provider], { home, workspace } = this.paths(owner);
-    const spec = adapter.command({ binary: this.binaries[owner.provider], home, resume, model: owner.model, systemPrompt, allowedTools });
+    const spec = adapter.command({ binary: this.binaries[owner.provider], home, resume, model: owner.model, systemPrompt, toolPolicy });
     const child = this.#run(spec, workspace);
     child.stdin.on('error', () => {});
     child.stdin.end((spec.promptPrefix ?? '') + prompt);

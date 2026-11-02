@@ -141,7 +141,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         return instructions({ owner: workspace.owner, profile: profiles.get(companionId), dir: workspace.dir,
           files: workspace.owner.provider === 'claude' || fresh, recent });
       };
-      conversations = new Conversations({ store, runner, systemPrompt, allowedTools: ['Read', 'Edit', 'Write', 'Glob', 'Grep'],
+      conversations = new Conversations({ store, runner, systemPrompt,
         ...conversationOptions });
       conversations.recover();
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor,
