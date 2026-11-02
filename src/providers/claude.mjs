@@ -10,6 +10,8 @@ export function command({ binary = 'claude', home, resume, model, systemPrompt, 
   if (model) args.push('--model', model);
   if (systemPrompt) args.push('--append-system-prompt', systemPrompt);
   if (allowedTools.length) args.push('--allowedTools', ...allowedTools);
+  // File edits are accepted without a prompt, but only inside the working directory (the companion's workspace).
+  if (allowedTools.some(tool => ['Edit', 'Write'].includes(tool))) args.push('--permission-mode', 'acceptEdits');
   return { binary, args, env: { CLAUDE_CONFIG_DIR: home } };
 }
 

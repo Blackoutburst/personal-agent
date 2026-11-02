@@ -87,7 +87,7 @@ test('conversation endpoint preserves origin/body/method/static boundaries and s
   assert.equal((await fetch(app.url + '/api/conversation')).status, 405);
   assert.equal((await fetch(app.url + '/api/conversation?mode=demo')).status, 404);
   assert.equal((await fetch(app.url + '/src/conversation-demo.mjs')).status, 404);
-  for (const path of ['/conversation.html', '/conversation.css', '/conversation-app.mjs', '/conversation-client.mjs']) {
+  for (const path of ['/conversation.html', '/companion.css', '/companion-app.mjs', '/conversation-client.mjs']) {
     const response = await fetch(app.url + path); assert.equal(response.status, 200);
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
     assert.ok(response.headers.get('content-security-policy').includes("default-src 'self'"));

@@ -10,26 +10,22 @@ import { loadPilotSubjects } from './src/pilot-config.mjs';
 import { PrivateStateStore } from './src/private-state.mjs';
 import { createPrivateHttp } from './src/private-http.mjs';
 import { createConversationHttp } from './src/conversation-http.mjs';
-import { createGoalsHttp } from './src/goals-http.mjs';
 import { loadRuntimeConfig } from './src/runtime-config.mjs';
 import { CompanionRunner } from './src/runner.mjs';
 import { Conversations } from './src/conversations.mjs';
-import { personaFor } from './src/persona.mjs';
+import { Profiles, ensureWorkspace, instructions } from './src/companion.mjs';
+import { createCompanionHttp } from './src/companion-http.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STATIC = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
-  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
-  ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
-  ['/conversation.html', ['conversation.html', 'text/html; charset=utf-8']],
-  ['/conversation.css', ['conversation.css', 'text/css; charset=utf-8']],
-  ['/conversation-app.mjs', ['conversation-app.mjs', 'text/javascript; charset=utf-8']],
+  ['/companion.css', ['companion.css', 'text/css; charset=utf-8']],
+  ['/companion-app.mjs', ['companion-app.mjs', 'text/javascript; charset=utf-8']],
+  ['/companion-character.mjs', ['companion-character.mjs', 'text/javascript; charset=utf-8']],
   ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']],
-  ['/goals.html', ['goals.html', 'text/html; charset=utf-8']],
-  ['/goals.css', ['goals.css', 'text/css; charset=utf-8']],
-  ['/goals-app.mjs', ['goals-app.mjs', 'text/javascript; charset=utf-8']],
-  ['/goals-client.mjs', ['goals-client.mjs', 'text/javascript; charset=utf-8']]
+  // Old address of the chat page: it now redirects to the companion.
+  ['/conversation.html', ['conversation.html', 'text/html; charset=utf-8']]
 ]);
 
 // runtimeFile / runtimeDir: the per-owner agent runtime (docs/RUNTIME.md). Without them, account
@@ -59,7 +55,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let privateHttp;
   let conversationHttp;
   let agentsConfigured = false;
-  let goalsHttp;
+  let companionHttp;
   let conversations = null;
   const allowedOrigins = () => new Set(publicOrigin ? [publicOrigin] :
     [`http://127.0.0.1:${server.address().port}`, `http://localhost:${server.address().port}`]);
@@ -80,8 +76,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       }
       // Exact raw paths only: queries cannot enable demo and traversal is rejected.
       const path = req.url;
-      if (path === '/api/goals') {
-        const result = await goalsHttp(req);
+      if (path === '/api/companion' && mode === 'account') {
+        if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'Method not available.');
+        const result = await companionHttp(req);
         if (result.closeConnection) res.setHeader('connection', 'close');
         return send(result.status, result.body);
       }
@@ -130,13 +127,29 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         runner = new CompanionRunner({ store, owners, runtimeDir, binaries, ...runnerOptions });
         agentsConfigured = true;
       }
-      conversations = new Conversations({ store, runner,
-        systemPrompt: companionId => personaFor(runner?.ownerFor(companionId)), ...conversationOptions });
+      const profiles = new Profiles({ store });
+      const workspaceFor = companionId => {
+        const owner = runner?.ownerFor(companionId);
+        return owner ? { owner, dir: runner.paths(owner).workspace } : null;
+      };
+      // Claude gets the companion's files in every turn's system prompt (not kept in its history);
+      // Codex only when a new session starts, since its instructions become part of the conversation.
+      const systemPrompt = (companionId, { fresh = true, recent = [] } = {}) => {
+        const workspace = workspaceFor(companionId);
+        if (!workspace) return null;
+        ensureWorkspace(workspace.dir, workspace.owner);
+        return instructions({ owner: workspace.owner, profile: profiles.get(companionId), dir: workspace.dir,
+          files: workspace.owner.provider === 'claude' || fresh, recent });
+      };
+      conversations = new Conversations({ store, runner, systemPrompt, allowedTools: ['Read', 'Edit', 'Write', 'Glob', 'Grep'],
+        ...conversationOptions });
       conversations.recover();
+      companionHttp = createCompanionHttp({ access, profiles, workspaceFor,
+        runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
+        onForget: companionId => conversations.resetSessions(companionId) });
     }
     const runtimeStatus = async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' };
     conversationHttp = createConversationHttp({ access, store, mode, conversations, runtimeStatus });
-    goalsHttp = createGoalsHttp({ access, store, mode });
     if (mode === 'account') {
       accountHttp = createAccountHttp({ access, runtimeStatus });
       privateHttp = createPrivateHttp({ access, state: new PrivateStateStore(store) });

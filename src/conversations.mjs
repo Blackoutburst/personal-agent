@@ -81,14 +81,33 @@ function titleFrom(text) {
 }
 
 export class Conversations {
-  #db; #runner; #now; #systemPrompt; #flushMs;
+  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools;
   #queues = new Map(); #active = new Map(); #closing = false;
 
   // runner: a CompanionRunner (or null when no runtime is configured).
-  // systemPrompt(companionId) returns the persona/instructions for that companion's turns.
-  constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS }) {
+  // systemPrompt(companionId, {fresh, recent}) returns the instructions for a turn: fresh is true when a
+  // new provider session starts, recent holds the messages before it for continuity.
+  // session: when to start a new provider session (continuity then comes from the companion's files).
+  constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools = [],
+    session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 } }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
+    this.#session = session; this.#allowedTools = allowedTools;
     this.#db.exec(SCHEMA);
+    const columns = new Set(this.#db.prepare('PRAGMA table_info(conv_threads)').all().map(column => column.name));
+    if (!columns.has('session_turns')) this.#db.exec('ALTER TABLE conv_threads ADD COLUMN session_turns INTEGER NOT NULL DEFAULT 0');
+    if (!columns.has('session_at')) this.#db.exec('ALTER TABLE conv_threads ADD COLUMN session_at INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // The next turn of every thread of this companion starts a new provider session
+  // (for example after a memory was forgotten, so the old one doesn't linger in context).
+  resetSessions(companionId) {
+    this.#db.prepare('UPDATE conv_threads SET provider_session=NULL, session_turns=0 WHERE companion_id=?').run(companionId);
+  }
+
+  #resume(thread) {
+    if (!thread.provider_session) return null;
+    if (thread.session_turns >= this.#session.maxTurns || this.#now() - thread.session_at > this.#session.idleMs) return null;
+    return thread.provider_session;
   }
 
   // After a restart: turns that never started are run again; a turn that was running may already
@@ -269,15 +288,21 @@ export class Conversations {
       written = text;
     };
     const schedule = () => { if (!timer) timer = setTimeout(flush, this.#flushMs); };
+    const resume = this.#resume(thread);
+    if (!resume) this.#db.prepare('UPDATE conv_threads SET provider_session=NULL, session_turns=0 WHERE id=?').run(threadId);
+    const recent = resume ? [] : this.#db.prepare(`SELECT role, text FROM (SELECT rowid AS r, role, text, created_at FROM conv_messages
+      WHERE thread_id=? AND id<>? ORDER BY created_at DESC, r DESC LIMIT ?) ORDER BY created_at, r`)
+      .all(threadId, turn.user_message_id, this.#session.recentMessages);
     try {
       const reply = await this.#runner.turn(companionId, {
-        prompt: user.text, resume: thread.provider_session, systemPrompt: this.#systemPrompt(companionId), signal: controller.signal,
+        prompt: user.text, resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }), allowedTools: this.#allowedTools, signal: controller.signal,
         onEvent: event => {
           if (event.type === 'session') this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(event.id, threadId);
           else if (event.type === 'delta') { text += event.text; schedule(); }
         }
       });
       if (reply.sessionId) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(reply.sessionId, threadId);
+      this.#db.prepare('UPDATE conv_threads SET session_turns=session_turns+1, session_at=? WHERE id=?').run(this.#now(), threadId);
       clearTimeout(timer);
       text = reply.text || text;
       flush();

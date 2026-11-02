@@ -1,3 +1,5 @@
+// Not used by the app UI any more (goals live in the companion's memory). Kept because the Board
+// boundary (#11) authorizes project work through these permission cards; #12 revisits that.
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 
 export const GOAL_AUTHORITY_AUDIENCE = 'blackoutburst-goal-project-authority-v1';

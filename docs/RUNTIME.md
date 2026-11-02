@@ -21,7 +21,7 @@ platform accounts to owners and holds no secrets:
 
 ```json
 {"owners": [
-  {"subject": "<platform account id>", "label": "blackout", "provider": "claude", "model": "opus"},
+  {"subject": "<platform account id>", "label": "blackout", "name": "Blackout", "provider": "claude", "model": "opus"},
   {"subject": "<platform account id>", "label": "screamer", "provider": "codex"}
 ]}
 ```
@@ -37,7 +37,7 @@ which keeps them per conversation thread.
 ## Conversations
 
 `src/conversations.mjs` (ticket #8, see CONVERSATION-UI.md) calls `turn()` for each user
-message, with the persona from `src/persona.mjs` as system prompt. It stores the provider
+message, with instructions built from the companion's own files (COMPANION.md) as system prompt. It stores the provider
 session id per thread and passes it back as `resume`. `turnForLabel` (admin only) is what
 `manage.mjs ask` uses.
 
@@ -62,7 +62,8 @@ node manage.mjs ask <label> "hello"  # one smoke-test turn, streamed
 - Claude: `claude -p --output-format stream-json --verbose --include-partial-messages`, prompt on
   stdin. Verified against Claude Code 2.1.316. Using the official CLI with your own
   subscription is what Anthropic's terms allow; the Agent SDK with claude.ai sign-in is not.
-- Codex: `codex exec [resume <id>] --json -c sandbox_mode="read-only" -`, persona prepended to
+- Codex: `codex exec [resume <id>] --json -c sandbox_mode="workspace-write" -` (writes only in the
+  companion workspace, see COMPANION.md), instructions prepended to
   the prompt. codex-cli 0.166.0 is installed in the user npm prefix (no sudo). Transient
   "Reconnecting…" error events are ignored; the final `turn.failed` decides.
 - Tests (`test/runner.test.mjs`) use fake provider binaries; no credentials or usage involved.

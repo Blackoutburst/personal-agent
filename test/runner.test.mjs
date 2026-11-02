@@ -147,4 +147,8 @@ test('claude parser matches recorded CLI output', () => {
   assert.equal(codex.parseLine('{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Missing bearer"}}')[0].code, 'NOT_SIGNED_IN');
   assert.ok(codex.parseStatus('Not logged in').signedIn === false && codex.parseStatus('Logged in using ChatGPT').signedIn);
   assert.ok(!codex.command({ home: '/h', resume: 't1' }).args.includes('--sandbox'));
+  // The companion writes its own files (soul, memory, diary) in its workspace only.
+  assert.ok(codex.command({ home: '/h', resume: 't1' }).args.includes('sandbox_mode="workspace-write"'));
+  assert.ok(claude.command({ home: '/h', allowedTools: ['Read', 'Edit'] }).args.join(' ').includes('--permission-mode acceptEdits'));
+  assert.ok(!claude.command({ home: '/h', allowedTools: ['Read'] }).args.includes('--permission-mode'));
 });

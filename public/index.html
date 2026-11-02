@@ -2,64 +2,81 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <title>Personal Agent · Local foundation</title>
-  <link rel="stylesheet" href="styles.css">
-  <script src="app.js" defer></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#FFF6EE">
+  <title>Your companion</title>
+  <link rel="stylesheet" href="companion.css">
+  <script type="module" src="companion-app.mjs"></script>
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
-  <div class="shell">
-    <aside class="sidebar" aria-label="Project information">
-      <a class="brand" href="./" aria-label="Personal Agent home"><span class="brand-mark" aria-hidden="true"></span><span>Personal Agent<span class="brand-caption">A companion with continuity</span></span></a>
-      <p class="sidebar-label">WORKSPACE</p>
-      <div class="current-view"><span aria-hidden="true">◈</span> Foundation <span class="view-number">01</span></div>
-      <p><a href="conversation.html">Open conversation ↗</a></p>
-      <p><a href="goals.html">Goals and permission cards ↗</a></p>
-      <div class="sidebar-note"><span class="small-dot" aria-hidden="true"></span><p>Built one step at a time.<span>Memory, tools and proactive messages come next.</span></p></div>
-      <div class="sidebar-footer">BLACKOUTBURST<span>Local development workspace</span></div>
-    </aside>
+  <div id="app" class="app" data-view="loading">
+    <header class="topbar">
+      <button id="home-link" class="who" type="button" aria-label="Back to chat">
+        <span id="mini-avatar" class="mini-avatar" aria-hidden="true"></span>
+        <span class="who-text"><strong id="top-name">Your companion</strong><span id="top-mood" class="top-mood"></span></span>
+      </button>
+      <nav id="nav" class="nav" aria-label="Pages" hidden>
+        <a href="#chat" data-view="chat">Chat</a>
+        <a href="#memories" data-view="memories">Memories</a>
+        <a href="#look" data-view="look">Look</a>
+      </nav>
+    </header>
 
-    <div class="workspace">
-      <header class="topbar"><span>Companion / <strong>Foundation</strong></span><div class="environment"><span class="local-badge">Local development</span><span id="demo-badge" class="demo-badge" hidden>Demo · synthetic data</span></div></header>
-      <main id="main" tabindex="-1">
-        <section class="intro" aria-labelledby="page-title">
-          <div><p class="eyebrow">THE FIRST BUILDING BLOCK</p><h1 id="page-title">A steady place to start.</h1><p class="intro-copy">The local foundation for one persistent companion. See what is available, and inspect the integration contract before connecting real services.</p></div>
-          <div class="companion-mark" aria-hidden="true"><div class="orbit"></div><div class="companion-core">✦</div><span>Foundation / v1</span></div>
-        </section>
+    <main>
+      <section id="view-loading" class="view loading" aria-busy="true"><div class="soft-spinner" aria-hidden="true"></div></section>
 
-        <section id="account-panel" class="account-panel panel" aria-labelledby="account-title" hidden>
-          <div><p class="eyebrow">YOUR BLACKOUTBURST ACCOUNT</p><h2 id="account-title">One account. Your companion.</h2><p class="section-copy">Use your existing platform sign-in to find your private companion. It answers with your own Claude or Codex.</p><p id="account-status" class="account-status" role="status">Check your current platform sign-in to continue.</p><p id="companion-identity" class="companion-identity" hidden></p></div>
-          <div class="account-actions"><button id="account-button" type="button">Check platform sign-in <span aria-hidden="true">↗</span></button><a id="platform-login" href="https://blackoutburst.com/account/" rel="noreferrer">Open Blackoutburst sign-in</a></div>
-        </section>
+      <section id="view-gate" class="view gate" hidden>
+        <div id="gate-character" class="gate-character" aria-hidden="true"></div>
+        <h1 id="gate-title">Hi there!</h1>
+        <p id="gate-text"></p>
+        <a id="gate-signin" class="button primary" href="https://blackoutburst.com/account/" rel="noreferrer" hidden>Sign in</a>
+        <button id="gate-retry" class="button" type="button" hidden>Try again</button>
+      </section>
 
-        <div class="foundation-layout">
-          <section class="connections panel" aria-labelledby="connections-title">
-            <div class="section-heading"><div><p class="eyebrow">SERVICE READINESS</p><h2 id="connections-title">Connection map</h2></div><span class="section-counter">4 adapters</span></div>
-            <p id="connection-notice" class="section-copy" role="status">Checking the local service…</p>
-            <div class="adapter-grid">
-              <article class="adapter" data-adapter="account"><div class="adapter-top"><span class="adapter-icon" aria-hidden="true">01</span><span class="state" data-state="pending">Checking</span></div><h3>Account</h3><p class="adapter-caption">Blackoutburst identity</p><p class="adapter-reason">Waiting for local status.</p></article>
-              <article class="adapter" data-adapter="board"><div class="adapter-top"><span class="adapter-icon" aria-hidden="true">02</span><span class="state" data-state="pending">Checking</span></div><h3>Board</h3><p class="adapter-caption">Project work and inbox</p><p class="adapter-reason">Waiting for local status.</p></article>
-              <article class="adapter" data-adapter="provider"><div class="adapter-top"><span class="adapter-icon" aria-hidden="true">03</span><span class="state" data-state="pending">Checking</span></div><h3>Provider</h3><p class="adapter-caption">Per-user model connection</p><p class="adapter-reason">Waiting for local status.</p></article>
-              <article class="adapter" data-adapter="runtime"><div class="adapter-top"><span class="adapter-icon" aria-hidden="true">04</span><span class="state" data-state="pending">Checking</span></div><h3>Runtime</h3><p class="adapter-caption">Persistent execution</p><p class="adapter-reason">Waiting for local status.</p></article>
-            </div>
-            <div class="storage-row"><span>Storage</span><span id="storage-state">Checking…</span></div>
-          </section>
-
-          <section class="preview panel" aria-labelledby="preview-title">
-            <div class="preview-symbol" aria-hidden="true">⌘</div><p class="eyebrow">READ-ONLY CHECK</p><h2 id="preview-title">A small, honest preview.</h2><p class="section-copy">Inspect synthetic account, Board and runtime data through the local API contract.</p>
-            <ul class="preview-facts"><li>No real account connection</li><li>No live Board access or claims</li><li>No provider or model calls</li></ul>
-            <button id="preview-button" type="button" disabled>Run local contract preview <span aria-hidden="true">↗</span></button>
-            <p id="preview-status" class="preview-status" role="status">Checking whether demo mode is available.</p>
-          </section>
+      <section id="view-chat" class="view chat-view" hidden>
+        <div class="stage" aria-hidden="true">
+          <div id="stage-character" class="stage-character"></div>
+          <p id="stage-name" class="stage-name"></p>
+          <p id="stage-mood" class="stage-mood"></p>
         </div>
+        <div class="chat">
+          <div id="history" class="history" tabindex="0" aria-label="Your chat">
+            <div id="welcome" class="welcome" hidden><p id="welcome-text"></p></div>
+            <ol id="messages" class="messages"></ol>
+            <div id="typing" class="bubble companion typing" hidden aria-label="Typing"><span></span><span></span><span></span></div>
+          </div>
+          <p id="note" class="note" role="status" hidden></p>
+          <form id="composer" class="composer">
+            <label class="sr-only" for="input">Your message</label>
+            <textarea id="input" rows="1" maxlength="8000" placeholder="Write a message…" enterkeyhint="send"></textarea>
+            <button id="stop" class="round stop" type="button" aria-label="Stop" hidden><span aria-hidden="true">■</span></button>
+            <button id="send" class="round send" type="submit" aria-label="Send" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V6M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </form>
+        </div>
+      </section>
 
-        <section id="preview-result" class="result panel" aria-labelledby="result-title" hidden><div class="section-heading"><div><p class="eyebrow">SYNTHETIC DATA ONLY</p><h2 id="result-title">Contract preview</h2></div><span class="read-only-label">Read only</span></div><p id="preview-message" class="section-copy"></p><pre id="preview-json" tabindex="0" aria-label="Synthetic API contract JSON"></pre></section>
+      <section id="view-memories" class="view page" hidden>
+        <h1 id="memories-title">What I remember</h1>
+        <p id="memories-intro" class="intro"></p>
+        <div id="memory-groups" class="memory-groups"></div>
+      </section>
 
-        <footer class="page-footer"><p id="foundation-notice">This foundation is not connected to real accounts, Board services or a model provider. Chat and goals are a later step.</p><span id="service-version">LOCAL FOUNDATION</span></footer>
-      </main>
-    </div>
+      <section id="view-look" class="view page look" hidden>
+        <h1 id="look-title">Meet your companion</h1>
+        <p id="look-intro" class="intro">Choose how they look and give them a name. You can change it any time.</p>
+        <div class="look-layout">
+          <div id="look-preview" class="look-preview" aria-hidden="true"></div>
+          <form id="look-form" class="look-form">
+            <fieldset><legend>Character</legend><div id="pick-character" class="pick-character"></div></fieldset>
+            <fieldset><legend>Color</legend><div id="pick-color" class="pick-color"></div></fieldset>
+            <label class="name-field">Name<input id="name" maxlength="24" autocomplete="off" required></label>
+            <p id="look-error" class="look-error" role="alert" hidden></p>
+            <button id="save-look" class="button primary" type="submit">Save</button>
+          </form>
+        </div>
+      </section>
+    </main>
+    <p id="announce" class="sr-only" role="status" aria-live="polite"></p>
   </div>
 </body>
 </html>

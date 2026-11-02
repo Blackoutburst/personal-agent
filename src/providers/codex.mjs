@@ -9,7 +9,8 @@ export function command({ binary = 'codex', home, resume, model, systemPrompt })
   const args = ['exec'];
   if (resume) args.push('resume', resume);
   // `exec resume` has no --sandbox flag; the config override works for both forms.
-  args.push('--json', '--skip-git-repo-check', '-c', 'sandbox_mode="read-only"');
+  // The companion keeps its own files (soul, memory, diary) in its workspace: writes are allowed there only.
+  args.push('--json', '--skip-git-repo-check', '-c', 'sandbox_mode="workspace-write"');
   if (model) args.push('--model', model);
   // Codex has no append-system-prompt flag; the caller's persona is prepended to the prompt.
   args.push('-');

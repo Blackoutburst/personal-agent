@@ -100,7 +100,7 @@ test('the provider session is resumed for later turns of the same thread only', 
   assert.equal(calls.length, 3);
   assert.ok(!calls[0].args.includes('--resume') && !calls[2].args.includes('--resume'));
   assert.deepEqual(calls[1].args.slice(calls[1].args.indexOf('--resume'), calls[1].args.indexOf('--resume') + 2), ['--resume', 'sess-blackout']);
-  assert.ok(calls[0].args.includes('--append-system-prompt') && calls[0].args[calls[0].args.indexOf('--append-system-prompt') + 1].includes("blackout's personal companion"));
+  assert.ok(calls[0].args.includes('--append-system-prompt') && calls[0].args[calls[0].args.indexOf('--append-system-prompt') + 1].includes("Blackout's personal companion"));
 });
 
 test('each owner only ever sees and reaches their own conversations and agent', async t => {
@@ -254,4 +254,52 @@ test('the browser client drives a real conversation: stream, stop, error and reo
   await client.send('hello');
   state = await until(s => s.turn?.state === 'error', 'error');
   assert.equal(state.turn.error.code, 'NOT_SIGNED_IN'); assert.ok(state.turn.error.message.length > 0);
+});
+
+test('the companion: profile, memory view and forget, file-based instructions and session rotation', async t => {
+  const f = setup(t), app = await f.open(); await ready(f, app);
+  const api = async (body, proof = A) => {
+    const response = await fetch(app.url + '/api/companion', { method: 'POST',
+      headers: { Origin: app.url, 'Content-Type': 'application/json', Cookie: COOKIE(proof) }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  const workspace = join(dirname(f.home('blackout')), 'workspace');
+  assert.deepEqual((await api({ action: 'get' })).body, { profile: null, runtime: { state: 'ready', provider: 'claude' } });
+  assert.equal((await api({ action: 'setProfile', profile: { name: 'Nova', character: 'pip', color: 'peach', timezone: 'Europe/Paris' } })).status, 200);
+  assert.equal((await api({ action: 'setProfile', profile: { name: 'Nova', character: 'robot', color: 'peach' } })).status, 400);
+  assert.equal((await api({ action: 'get' }, B)).body.profile, null); // each owner has their own companion
+  assert.equal((await api({ action: 'get' }, null)).status, 401);
+  assert.deepEqual((await api({ action: 'memory' })).body.files.map(file => [file.file, file.sections.length]), [['USER.md', 0], ['MEMORY.md', 0]]);
+
+  const threadId = await newThread(app);
+  let cursor = '0';
+  const turn = async (requestId, text) => {
+    await post(app, { action: 'submit', requestId, threadId, text });
+    ({ cursor } = await settle(app, A, threadId, cursor));
+  };
+  await turn('t1', 'hello');
+  await turn('t2', 'again');
+  writeFileSync(join(workspace, 'USER.md'), '# Blackout\n\n## About Blackout\n- Lives in Lyon\n- Secret crush on Mochi\n');
+  const memory = (await api({ action: 'memory' })).body.files[0];
+  assert.deepEqual(memory.sections[0].items.map(item => item.text), ['Lives in Lyon', 'Secret crush on Mochi']);
+  const forgotten = await api({ action: 'forget', file: 'USER.md', id: memory.sections[0].items[1].id });
+  assert.equal(forgotten.body.removed, true);
+  assert.equal((await api({ action: 'forget', file: 'USER.md', id: memory.sections[0].items[1].id }, B)).body.removed, false); // B's own workspace
+  await turn('t3', 'third');
+
+  const calls = f.calls('blackout'), system = call => call.args[call.args.indexOf('--append-system-prompt') + 1];
+  assert.equal(calls.length, 3);
+  assert.ok(!calls[0].args.includes('--resume') && calls[1].args.includes('--resume') && !calls[2].args.includes('--resume'));
+  for (const call of calls) {
+    assert.ok(call.args.includes('--permission-mode') && call.args.includes('acceptEdits'));
+    assert.deepEqual(call.args.slice(call.args.indexOf('--allowedTools') + 1, call.args.indexOf('--allowedTools') + 6), ['Read', 'Edit', 'Write', 'Glob', 'Grep']);
+    assert.match(system(call), /^You are Nova, Blackout's personal companion\./);
+    assert.match(system(call), /<SOUL\.md>[\s\S]*You're becoming someone/);
+  }
+  assert.ok(!system(calls[0]).includes('<recent_chat'));
+  assert.match(system(calls[2]), /<recent_chat[^>]*>\nBlackout: hello\nNova: [^\n]+\nBlackout: again\nNova: /);
+  assert.match(system(calls[2]), /- Lives in Lyon/);
+  assert.ok(!system(calls[2]).includes('Secret crush'));
+  assert.ok(!system(calls[2]).split('<recent_chat')[1].includes('third')); // the new message is the prompt, not context
+  assert.ok(existsSync(join(workspace, 'AGENTS.md')) && existsSync(join(workspace, 'CLAUDE.md')));
 });

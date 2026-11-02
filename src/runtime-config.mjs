@@ -7,13 +7,15 @@ const LABEL = /^[a-z][a-z0-9-]{0,31}$/;
 
 // Runtime file (COMPANION_RUNTIME_FILE), kept outside the checkout:
 // {"owners":[{"subject":"<platform account id>","label":"blackout","provider":"claude","model":"opus"}]}
-// "model" is optional; "issuer" defaults to the platform issuer. The file holds no credentials.
+// "model" and "name" (how the companion calls its owner) are optional; "issuer" defaults to the platform
+// issuer. The file holds no credentials.
 export function parseRuntimeConfig(text) {
   const config = JSON.parse(text);
   if (!config || !Array.isArray(config.owners) || config.owners.length === 0) throw new Error('Runtime config needs an "owners" list');
   const labels = new Set(), subjects = new Set();
   return config.owners.map(owner => {
-    const { subject, label, provider, model = null, issuer = ISSUER } = owner ?? {};
+    const { subject, label, provider, model = null, issuer = ISSUER, name = null } = owner ?? {};
+    if (name !== null && (typeof name !== 'string' || !name.trim() || name.length > 40 || /[\u0000-\u001f<>]/.test(name))) throw new Error(`Invalid name for ${label}`);
     if (typeof issuer !== 'string' || !/^https:\/\/[^\s/]+$/.test(issuer)) throw new Error(`Invalid issuer for ${label}`);
     if (typeof subject !== 'string' || !subject || subject.length > 200) throw new Error('Each owner needs a "subject"');
     if (typeof label !== 'string' || !LABEL.test(label)) throw new Error(`Invalid label for ${subject}: use lowercase letters, digits and dashes`);
@@ -21,7 +23,7 @@ export function parseRuntimeConfig(text) {
     if (model !== null && (typeof model !== 'string' || !model || model.length > 100)) throw new Error(`Invalid model for ${label}`);
     if (labels.has(label) || subjects.has(subject)) throw new Error(`Duplicate owner ${label}`);
     labels.add(label); subjects.add(subject);
-    return Object.freeze({ subject, label, provider, model, issuer });
+    return Object.freeze({ subject, label, provider, model, issuer, ...(name !== null ? { name: name.trim() } : {}) });
   });
 }
 

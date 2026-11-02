@@ -1,6 +1,7 @@
-# Conversation (web, ticket #8)
+# Conversation protocol (ticket #8)
 
-`/conversation.html` is the web conversation with your own companion. It has two modes:
+The chat with your companion (COMPANION.md) runs on this protocol. `/conversation.html` now redirects to
+the companion app. The service has two modes:
 
 - **Account mode** (`COMPANION_MODE=account`): real conversations. Every request revalidates
   the platform session and routes the account only to its own companion, which answers through
@@ -56,22 +57,14 @@ Turns are queued per companion, so each owner's agent answers one message at a t
 Limits (`LIMITS`): 8,000 characters per user message, 100,000 per reply, 80 per title and
 200 threads per owner.
 
-## Client (`public/conversation-client.mjs`, `public/conversation-app.mjs`)
+## Client (`public/conversation-client.mjs`)
 
 The client model provides `open`, `select`, `create`, `send`, `retry`, `cancel`, `refresh`,
 `poll`, `setDraft`, `clear` and `subscribe`. It validates every response strictly, recovers
 from event gaps with a snapshot, and keeps an uncertain send's request id for an explicit
-retry. It never resends on its own.
-
-In account mode the page opens the conversations on load. It polls every 0.5 s during a reply
-and every 2.5 s otherwise, and reloads the snapshot when a reply ends (for the new title) and
-when the page becomes visible again. Hiding the page only pauses polling. When the platform
-session ends, the page clears its display and offers the sign-in link.
-
-The demo still clears everything when the page is hidden.
-
-Messages are rendered as text nodes. Only http/https links without credentials become links,
-opened with `noopener` and no referrer. There are no uploads, voice or push notifications yet.
+retry. It never resends on its own. The companion app (COMPANION.md) uses it for its single
+ongoing chat: it polls every 0.5 s during a reply and every 3 s otherwise, pauses while the page is
+hidden and reloads the snapshot when it becomes visible again.
 
 ## Tests
 
