@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { RunnerError } from './runner.mjs';
 import { splitFeeling } from './wardrobe.mjs';
+import { READ_ONLY_BOARD_TOOLS } from './tool-policy.mjs';
 
 // Real conversations (M1, ticket #8). Everything is scoped by the server-side companion ID;
 // nothing the browser sends selects another companion, provider home or session.
@@ -12,6 +13,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/;
 const DEFAULT_TITLE = 'New conversation';
 const FLUSH_MS = 400;
+const BOARD_PREFIX = 'mcp__board__';
+const wakeToolAllowed = name => !name.startsWith(BOARD_PREFIX) || READ_ONLY_BOARD_TOOLS.includes(name.slice(BOARD_PREFIX.length));
 const ERROR_MESSAGES = {
   INTERRUPTED: 'The server restarted during this reply. Send your message again to retry.',
   BUSY: 'Wait for the current reply to finish or stop it first.'
@@ -458,7 +461,7 @@ export class Conversations {
           + 'For this background turn only, return exactly one JSON object, without markdown or other text: {"action":"message","text":"your message"} '
           + 'or {"action":"silent"}. Your native feeling tag may precede the JSON. Message text must be nonempty and at most 4000 characters. Respond naturally again on normal user turns.\n\n' + wake.prompt,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }),
-        allowedTools: this.#allowedTools, signal: controller.signal,
+        allowedTools: this.#allowedTools, toolFilter: wakeToolAllowed, signal: controller.signal,
         onEvent: event => {
           if (event.type === 'session') this.#db.prepare(`UPDATE conv_threads SET provider_session=? WHERE id=? AND EXISTS(
             SELECT 1 FROM conv_wakes WHERE companion_id=? AND id=? AND state='running' AND attempt_token=?)`)

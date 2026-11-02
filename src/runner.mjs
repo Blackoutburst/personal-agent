@@ -93,8 +93,8 @@ export class CompanionRunner {
 
   // prompt: user text. resume: provider session id from a previous turn of the same thread.
   // onEvent receives {type:'session'|'delta'|'rate'} events while the reply streams.
-  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, onEvent = () => {}, signal } = {}) {
-    return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, onEvent, signal });
+  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, onEvent = () => {}, signal } = {}) {
+    return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, onEvent, signal });
   }
 
   // Server-side admin tooling only (manage.mjs smoke test): select the owner by config label.
@@ -102,7 +102,7 @@ export class CompanionRunner {
     return this.#enqueue(this.owners.find(owner => owner.label === label) ?? null, options);
   }
 
-  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, onEvent = () => {}, signal } = {}) {
+  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, onEvent = () => {}, signal } = {}) {
     if (!owner) return Promise.reject(new RunnerError('NO_RUNTIME'));
     let toolPolicy;
     try {
@@ -111,7 +111,7 @@ export class CompanionRunner {
         Promise.resolve(appServers).catch(() => {});
         throw new TypeError('mcpServersFor must return synchronously');
       }
-      toolPolicy = narrowToolPolicy({ tools: owner.tools, board: owner.board }, allowedTools, appServers);
+      toolPolicy = narrowToolPolicy({ tools: owner.tools, board: owner.board }, allowedTools, appServers, toolFilter);
       if (owner.provider === 'codex' && toolPolicy.tools.length
           && (toolPolicy.tools.length !== WEB_TOOLS.length || !WEB_TOOLS.every(tool => toolPolicy.tools.includes(tool)))) {
         throw new TypeError('Codex web tools must be selected together');

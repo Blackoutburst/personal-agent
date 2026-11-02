@@ -5,25 +5,36 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { BootstrapStore } from '../src/store.mjs';
 import { principalKey } from '../src/provisioning.mjs';
 import { Conversations, ConversationError } from '../src/conversations.mjs';
+import { CompanionRunner } from '../src/runner.mjs';
+import { READ_ONLY_BOARD_TOOLS, narrowToolPolicy } from '../src/tool-policy.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const PRIVATE = 'PRIVATE-WAKE-PROMPT-CANARY';
 const message = text => ({ text: JSON.stringify({ action: 'message', text }), sessionId: 'private-provider-session' });
 const wake = (extra = {}) => ({ id: randomUUID(), kind: 'reminder', prompt: PRIVATE, ...extra });
+const toolNames = policy => [...policy.tools, ...policy.mcpServers.flatMap(server => server.allowedTools.map(name => `mcp__${server.name}__${name}`))];
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 function fixture(t, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'proactive-conversations-')), stores = new Set(), conversations = new Set();
   let now = 1000000;
-  const f = { calls: [], prompts: [], now: () => now, advance(ms = 1) { now += ms; },
+  const f = { calls: [], prompts: [], factoryCalls: [], now: () => now, advance(ms = 1) { now += ms; },
     handler: options.handler ?? (() => message('A gentle reminder.')),
     open() { const store = new BootstrapStore(dir, ROOT); stores.add(store); return store; },
     close(store) { store.close(); stores.delete(store); },
     create(store = f.store, changes = {}) {
       const conv = new Conversations({ store, now: f.now, flushMs: 1,
-        runner: { turn(companionId, turn) { f.calls.push({ companionId, ...turn }); return f.handler(companionId, turn); } },
+        runner: { turn(companionId, turn) {
+          const owner = f.owners.find(value => f[value.label] === companionId);
+          f.factoryCalls.push(owner.label);
+          const policy = narrowToolPolicy({ tools: owner.tools, board: owner.board }, turn.allowedTools, f.apps[owner.label], turn.toolFilter);
+          const resolved = { ...turn, allowedTools: toolNames(policy) };
+          f.calls.push({ companionId, ...resolved }); return f.handler(companionId, resolved);
+        } },
         systemPrompt(companionId, context) { f.prompts.push({ companionId, context }); return 'Native file persona'; },
         ...options, ...changes });
       conversations.add(conv); return conv;
@@ -33,6 +44,14 @@ function fixture(t, options = {}) {
     const key = principalKey({ issuer: 'https://synthetic.invalid', subject: 'proactive-owner-' + label });
     f[label] = f.store.getOrInsert('companion-identity-v1', key, { companionId: randomUUID() }).companionId;
   }
+  f.owners = ['a', 'b'].map(label => ({ issuer: 'https://synthetic.invalid', subject: 'proactive-owner-' + label, label,
+    provider: 'claude', tools: ['Read', 'Write', 'WebSearch', 'WebFetch'], board: { configDir: join(dir, label, 'board'),
+      pythonPath: join(dir, 'python'), connectPath: join(dir, 'connect.py'),
+      allowedTools: [...READ_ONLY_BOARD_TOOLS, 'create_ticket', 'post_message', 'list_activity', 'unknown_operation'] } }));
+  f.apps = Object.fromEntries(['a', 'b'].map(label => [label, [
+    { name: 'scheduler', command: join(dir, 'scheduler'), env: { OWNER: label }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule'] },
+    { name: 'board_docs', command: join(dir, 'docs'), allowedTools: ['post_message', 'read'] }
+  ]]));
   options.beforeCreate?.(f);
   f.conv = f.create();
   t.after(async () => { for (const conv of conversations) await conv.shutdown(); for (const store of stores) store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -370,11 +389,108 @@ test('wake and user turns share the owner queue, native persona and provider-ses
   await f.conv.handle(f.a, { action: 'submit', threadId, requestId: 'user-first', text: 'Hello.' }); await f.conv.idle();
   const input = wake(); f.conv.enqueueProactive(f.a, input); await f.conv.idle();
   assert.equal(f.calls[1].resume, 'user-session'); assert.equal(f.calls[1].systemPrompt, 'Native file persona');
-  assert.equal(f.calls[1].allowedTools, undefined, 'Prepared #27 owner policy still inherits');
+  assert.deepEqual(f.calls[1].allowedTools.filter(name => name.startsWith('mcp__board__')),
+    READ_ONLY_BOARD_TOOLS.map(name => 'mcp__board__' + name));
+  assert.ok(f.calls[1].allowedTools.includes('Write') && f.calls[1].allowedTools.includes('mcp__scheduler__create_schedule'));
   assert.equal(f.prompts[1].context.fresh, false);
   await f.conv.handle(f.a, { action: 'submit', threadId, requestId: 'user-after', text: 'Thank you.' }); await f.conv.idle();
   assert.equal(f.calls[2].resume, 'private-provider-session');
+  for (const index of [0, 2]) assert.ok(f.calls[index].allowedTools.includes('mcp__board__post_message'), 'Normal turns retain configured writes');
   assert.deepEqual((await snapshot(f)).messages.map(item => item.role), ['user', 'assistant', 'assistant', 'user', 'assistant']);
+});
+
+test('every wake kind keeps inherited native/app tools but only the exact configured Board read names', async t => {
+  const f = fixture(t), before = structuredClone(f.owners[0]);
+  for (const kind of ['reminder', 'heartbeat', 'watch', 'board']) {
+    f.conv.enqueueProactive(f.a, wake({ kind })); await f.conv.idle();
+    const selected = f.calls.at(-1).allowedTools;
+    assert.deepEqual(selected.filter(name => name.startsWith('mcp__board__')), READ_ONLY_BOARD_TOOLS.map(name => 'mcp__board__' + name));
+    for (const name of ['Read', 'Write', 'WebSearch', 'WebFetch', 'mcp__scheduler__create_schedule', 'mcp__scheduler__list_schedules',
+      'mcp__scheduler__cancel_schedule', 'mcp__board_docs__post_message']) assert.ok(selected.includes(name), name);
+  }
+  assert.deepEqual(f.owners[0], before); assert.equal(f.factoryCalls.length, 4);
+  f.owners[0].board.allowedTools = ['get_ticket', 'post_message', 'list_activity'];
+  f.conv.enqueueProactive(f.a, wake()); await f.conv.idle();
+  assert.deepEqual(f.calls.at(-1).allowedTools.filter(name => name.startsWith('mcp__board__')), ['mcp__board__get_ticket'],
+    'The guard never adds unconfigured members of the read-only default');
+});
+
+test('wake filtering preserves explicit subsets and empty selections while invalid requests still refuse', async t => {
+  const f = fixture(t), subset = ['Read', 'mcp__board__get_ticket', 'mcp__board__post_message',
+    'mcp__scheduler__list_schedules', 'mcp__board_docs__post_message'];
+  const narrowed = f.create(f.store, { allowedTools: subset });
+  narrowed.enqueueProactive(f.a, wake()); await narrowed.idle();
+  assert.deepEqual(f.calls.at(-1).allowedTools, ['Read', 'mcp__board__get_ticket', 'mcp__scheduler__list_schedules', 'mcp__board_docs__post_message']);
+  assert.ok(subset.includes('mcp__board__post_message'), 'Caller selection was not mutated');
+  const empty = f.create(f.store, { allowedTools: [] }); empty.enqueueProactive(f.a, wake()); await empty.idle();
+  assert.deepEqual(f.calls.at(-1).allowedTools, []);
+  const invalid = f.create(f.store, { allowedTools: ['mcp__board__not_configured'] }), input = wake(), calls = f.calls.length;
+  invalid.enqueueProactive(f.a, input); await invalid.idle();
+  assert.equal(invalid.proactiveResult(f.a, input.id).state, 'error'); assert.equal(f.calls.length, calls);
+});
+
+test('the second narrowing uses frozen target descriptors and rejects invalid filters', async t => {
+  const f = fixture(t); f.conv.enqueueProactive(f.a, wake()); await f.conv.idle();
+  const predicate = f.calls[0].toolFilter, owner = f.owners[0], apps = f.apps.a; let changed = false;
+  const policy = narrowToolPolicy({ tools: owner.tools, board: owner.board }, undefined, apps, name => {
+    if (!changed) {
+      changed = true; apps[0].env.OWNER = 'other-owner'; apps[0].command = join(tmpdir(), 'changed-command');
+      apps[0].allowedTools.push('delete_schedule'); owner.board.configDir = join(tmpdir(), 'changed-board');
+    }
+    return predicate(name);
+  });
+  assert.equal(policy.mcpServers.find(server => server.name === 'scheduler').env.OWNER, 'a');
+  assert.notEqual(policy.mcpServers.find(server => server.name === 'scheduler').command, apps[0].command);
+  assert.notEqual(policy.board.configDir, owner.board.configDir);
+  assert.ok(!toolNames(policy).includes('mcp__scheduler__delete_schedule'));
+  for (const filter of [null, true, () => undefined, async () => { throw new Error('private filter failure'); }]) {
+    assert.throws(() => narrowToolPolicy({ tools: ['Read'] }, undefined, [], filter), TypeError);
+  }
+});
+
+function fakeProviderChild(provider) {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+  child.kill = () => true; let prompt = '';
+  child.stdin.on('data', chunk => { prompt += chunk; });
+  child.stdin.on('finish', () => queueMicrotask(() => {
+    const text = prompt.includes('private background') ? '{"action":"silent"}' : 'Normal reply.';
+    const records = provider === 'claude' ? [{ type: 'result', is_error: false, result: text, session_id: 'synthetic-session' }]
+      : [{ type: 'thread.started', thread_id: 'synthetic-session' }, { type: 'item.completed', item: { type: 'agent_message', text } }, { type: 'turn.completed' }];
+    child.stdout.end(records.map(value => JSON.stringify(value)).join('\n') + '\n'); child.emit('close', 0);
+  }));
+  return child;
+}
+function overrides(args) {
+  const values = new Map();
+  for (let index = 0; index < args.length; index++) if (args[index] === '-c') {
+    const entry = args[++index], equals = entry.indexOf('='); values.set(entry.slice(0, equals), JSON.parse(entry.slice(equals + 1)));
+  }
+  return values;
+}
+for (const provider of ['claude', 'codex']) test(`${provider}: real runner resolves one factory snapshot per turn and exposes read-only Board tools only on wakes`, async t => {
+  const f = fixture(t), owner = { ...f.owners[0], provider,
+    tools: provider === 'codex' ? ['WebSearch', 'WebFetch'] : f.owners[0].tools }, launches = []; let factories = 0;
+  const runner = new CompanionRunner({ store: f.store, owners: [owner], runtimeDir: join(tmpdir(), 'unused-synthetic-runtime'),
+    mcpServersFor() { factories++; return f.apps.a; },
+    spawnImpl(_binary, args) { launches.push([...args]); return fakeProviderChild(provider); } });
+  runner.paths = () => ({ home: join(tmpdir(), 'synthetic-home'), workspace: join(tmpdir(), 'synthetic-workspace') });
+  const conv = f.create(f.store, { runner }), threadId = (await conv.handle(f.a, { action: 'createThread', requestId: 'real-runner-thread', title: 'Chat' })).thread.id;
+  await conv.handle(f.a, { action: 'submit', threadId, requestId: 'before-wake', text: 'Normal turn before.' }); await conv.idle();
+  conv.enqueueProactive(f.a, wake()); await conv.idle();
+  await conv.handle(f.a, { action: 'submit', threadId, requestId: 'after-wake', text: 'Normal turn after.' }); await conv.idle();
+  assert.equal(factories, 3); assert.equal(launches.length, 3);
+  const board = args => provider === 'claude' ? args.filter(name => name.startsWith('mcp__board__')).map(name => name.slice(12))
+    : overrides(args).get('mcp_servers.board.enabled_tools');
+  assert.deepEqual(board(launches[1]), READ_ONLY_BOARD_TOOLS);
+  for (const index of [0, 2]) assert.deepEqual(board(launches[index]), owner.board.allowedTools);
+  if (provider === 'claude') {
+    assert.equal(launches[1][launches[1].indexOf('--tools') + 1], owner.tools.join(','));
+    assert.ok(launches[1].includes('mcp__scheduler__create_schedule') && launches[1].includes('mcp__board_docs__post_message'));
+  } else {
+    assert.equal(overrides(launches[1]).get('web_search'), 'live');
+    assert.deepEqual(overrides(launches[1]).get('mcp_servers.scheduler.enabled_tools'), f.apps.a[0].allowedTools);
+    assert.deepEqual(overrides(launches[1]).get('mcp_servers.board_docs.enabled_tools'), f.apps.a[1].allowedTools);
+  }
 });
 
 test('invalid admissions and asynchronous hooks fail closed without user rows or hidden spends', async t => {

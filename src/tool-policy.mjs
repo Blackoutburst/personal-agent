@@ -108,7 +108,7 @@ export function mcpServersFor(owner, appServers = []) {
   return Object.freeze(servers);
 }
 
-export function narrowToolPolicy(policy, allowedTools, appServers = []) {
+export function narrowToolPolicy(policy, allowedTools, appServers = [], toolFilter) {
   const configured = normalizeToolPolicy(policy);
   const servers = mcpServersFor(configured, appServers);
   const available = new Set([...configured.tools,
@@ -120,6 +120,17 @@ export function narrowToolPolicy(policy, allowedTools, appServers = []) {
     allowedTools: server.allowedTools.filter(tool => selected.has(`mcp__${server.name}__${tool}`))
   })).filter(server => server.allowedTools.length);
   const boardTools = narrowed.find(server => server.name === 'board')?.allowedTools;
-  return frozenPolicy(configured.tools.filter(tool => selected.has(tool)),
+  const effective = frozenPolicy(configured.tools.filter(tool => selected.has(tool)),
     boardTools ? { ...configured.board, allowedTools: boardTools } : null, narrowed);
+  if (toolFilter === undefined) return effective;
+  if (typeof toolFilter !== 'function') throw new TypeError('Tool filter must be a function');
+  const names = [...effective.tools, ...effective.mcpServers.flatMap(server => server.allowedTools.map(tool => `mcp__${server.name}__${tool}`))];
+  const retained = names.filter(name => {
+    const keep = toolFilter(name);
+    if (keep && typeof keep.then === 'function') Promise.resolve(keep).catch(() => {});
+    if (typeof keep !== 'boolean') throw new TypeError('Tool filter must return a boolean');
+    return keep;
+  });
+  return narrowToolPolicy({ tools: effective.tools, board: effective.board }, retained,
+    effective.mcpServers.filter(server => server.name !== 'board'));
 }
