@@ -24,6 +24,16 @@ let prompt = ''; process.stdin.on('data', c => prompt += c); process.stdin.on('e
     out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Thinking' } } });
     setTimeout(() => {}, 60000); return;
   }
+  if (prompt.includes('FEELING')) {
+    // The feeling tag arrives split across deltas, like a real stream.
+    const parts = ['[feel', 'ing:laugh] ', 'Ha, ', 'yes!'];
+    let i = 0;
+    const tick = () => {
+      if (i < parts.length) { out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: parts[i++] } } }); setTimeout(tick, 60); return; }
+      out({ type: 'result', subtype: 'success', is_error: false, result: parts.join(''), session_id: session });
+    };
+    tick(); return;
+  }
   if (prompt.includes('STREAM')) {
     const parts = ['one ', 'two ', 'three ', 'four ', 'five'];
     let i = 0;

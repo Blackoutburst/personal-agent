@@ -83,18 +83,36 @@ function extras(mood, c) {
 const PORTRAITS = { claude: true };
 const FACE_FOR = { idle: null, listening: 'listening', thinking: 'thinking', talking: null, happy: 'happy', sleepy: 'sleepy' };
 
-function portrait(character, mood, label, outfit = 'base') {
+// feeling: the face the companion chose for its reply; shown instead of the talking and happy faces.
+function portrait(character, mood, label, outfit = 'base', feeling = null) {
   const at = name => `characters/${character}/${name}.webp`;
   const picture = (name, cls = '') => `<image${cls ? ` class="${cls}"` : ''} href="${at(name)}" x="0" y="0" width="200" height="200" preserveAspectRatio="xMidYMid meet"/>`;
-  const face = FACE_FOR[mood] ? picture(`faces/${FACE_FOR[mood]}`) : '';
-  const overlay = mood === 'talking' ? picture('faces/talk', 'frame-talk') : mood === 'idle' ? picture('faces/blink', 'frame-blink') : '';
+  const felt = feeling && (mood === 'talking' || mood === 'happy') ? feeling : null;
+  const face = felt ? picture(`faces/${felt}`) : FACE_FOR[mood] ? picture(`faces/${FACE_FOR[mood]}`) : '';
+  const overlay = felt ? '' : mood === 'talking' ? picture('faces/talk', 'frame-talk') : mood === 'idle' ? picture('faces/blink', 'frame-blink') : '';
   return `<svg class="char char-portrait char-${character} mood-${mood}" viewBox="0 0 200 200" role="img" aria-label="${label}" xmlns="http://www.w3.org/2000/svg">
   <g class="char-body">${picture(`outfits/${outfit}`)}${face}${overlay}</g>
 </svg>`;
 }
 
-export function renderCharacter({ character = 'pip', color = 'peach', mood = 'idle', title = '', outfit = 'base' } = {}) {
-  if (Object.hasOwn(PORTRAITS, character)) return portrait(character, MOODS.includes(mood) ? mood : 'idle', title.replace(/[<>&"]/g, ''), /^[a-z-]{1,32}$/.test(outfit) ? outfit : 'base');
+// Claude-chan's outfits (the server picks one when automatic: src/wardrobe.mjs).
+export const OUTFITS = [['base', 'Signature'], ['cozy-home', 'Cozy at home'], ['pajamas', 'Pajamas'], ['spring', 'Spring'],
+  ['summer', 'Summer'], ['sunny', 'Sunny day'], ['autumn', 'Autumn'], ['windy', 'Windy day'], ['winter', 'Winter'], ['rain', 'Rain'],
+  ['snow', 'Snow'], ['halloween', 'Halloween'], ['christmas', 'Christmas'], ['party', "New Year's Eve"], ['new-year', 'New Year'],
+  ['lunar-new-year', 'Lunar New Year'], ['valentine', "Valentine's"], ['easter', 'Easter'], ['summer-festival', 'Summer festival'],
+  ['birthday', 'Birthday']];
+export const HAS_OUTFITS = character => Object.hasOwn(PORTRAITS, character);
+export const FEELINGS = ['happy', 'laugh', 'wink', 'surprised', 'sad', 'worried', 'teary-smile', 'embarrassed', 'pout', 'proud',
+  'excited', 'confused', 'determined', 'tender', 'love', 'focused', 'thinking', 'sleepy'];
+// The drawn characters have fewer faces: the nearest one.
+const NEAREST = { happy: 'happy', laugh: 'happy', wink: 'happy', proud: 'happy', excited: 'happy', tender: 'happy', love: 'happy',
+  'teary-smile': 'happy', thinking: 'thinking', confused: 'thinking', focused: 'thinking', sleepy: 'sleepy' };
+
+export function renderCharacter({ character = 'pip', color = 'peach', mood = 'idle', title = '', outfit = 'base', feeling = null } = {}) {
+  const felt = FEELINGS.includes(feeling) ? feeling : null;
+  if (Object.hasOwn(PORTRAITS, character)) return portrait(character, MOODS.includes(mood) ? mood : 'idle', title.replace(/[<>&"]/g, ''),
+    /^[a-z-]{1,32}$/.test(outfit) ? outfit : 'base', felt);
+  if (felt && (mood === 'talking' || mood === 'happy') && NEAREST[felt]) mood = NEAREST[felt];
   const body = BODIES[character] ?? BODIES.pip, c = COLORS[color] ?? COLORS.peach, m = MOODS.includes(mood) ? mood : 'idle';
   const y = body.face;
   return `<svg class="char char-${character} mood-${m}" viewBox="0 0 200 200" role="img" aria-label="${title.replace(/[<>&"]/g, '')}" xmlns="http://www.w3.org/2000/svg">

@@ -17,15 +17,16 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
-@Serializable data class Profile(val name: String, val character: String, val color: String, val timezone: String)
+@Serializable data class Profile(val name: String, val character: String, val color: String, val timezone: String, val outfit: String = "auto")
 @Serializable data class Runtime(val state: String, val provider: String? = null)
-@Serializable data class CompanionInfo(val profile: Profile? = null, val runtime: Runtime)
+@Serializable data class CompanionInfo(val profile: Profile? = null, val runtime: Runtime, val wearing: String = "base")
+@Serializable data class SavedProfile(val profile: Profile, val wearing: String = "base")
 @Serializable data class MemoryItem(val id: String, val text: String)
 @Serializable data class MemorySection(val title: String, val items: List<MemoryItem>)
 @Serializable data class MemoryFile(val file: String, val sections: List<MemorySection>)
 @Serializable data class Memories(val files: List<MemoryFile>)
 @Serializable data class ChatThread(val id: String, val title: String)
-@Serializable data class Message(val id: String, val threadId: String, val role: String, val text: String, val requestId: String? = null)
+@Serializable data class Message(val id: String, val threadId: String, val role: String, val text: String, val requestId: String? = null, val feeling: String? = null)
 @Serializable data class TurnError(val code: String, val message: String, val resetsAt: String? = null)
 @Serializable data class Turn(val requestId: String, val state: String, val error: TurnError? = null)
 @Serializable data class Snapshot(
@@ -54,11 +55,11 @@ class Api(private val session: () -> Session?) {
     private val companion = BuildConfig.SITE + BuildConfig.COMPANION_PATH
 
     suspend fun companionInfo(): CompanionInfo = call("api/companion", buildJsonObject { put("action", "get") })
-    suspend fun setProfile(profile: Profile): Profile = json.decodeFromJsonElement(
+    suspend fun setProfile(profile: Profile): SavedProfile = json.decodeFromJsonElement(
         post(companion + "api/companion", buildJsonObject {
             put("action", "setProfile")
             put("profile", json.encodeToJsonElement(Profile.serializer(), profile))
-        }).jsonObject.getValue("profile"))
+        }))
     suspend fun memories(): Memories = call("api/companion", buildJsonObject { put("action", "memory") })
     suspend fun forget(file: String, id: String): Memories = call("api/companion", buildJsonObject {
         put("action", "forget"); put("file", file); put("id", id)

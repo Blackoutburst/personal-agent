@@ -24,6 +24,8 @@ data class UiState(
     val signInError: String? = null,
     val username: String? = null,
     val profile: Profile? = null,
+    /** The outfit she wears now (the server picks it when automatic). */
+    val wearing: String = "base",
     val runtime: Runtime? = null,
     val threadId: String? = null,
     val messages: List<Message> = emptyList(),
@@ -119,7 +121,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val info = api.companionInfo()
-                _state.update { it.copy(gate = Gate.Ready, username = session.username, profile = info.profile, runtime = info.runtime, offline = false) }
+                _state.update { it.copy(gate = Gate.Ready, username = session.username, profile = info.profile, wearing = info.wearing, runtime = info.runtime, offline = false) }
                 resync()
                 startPolling()
             } catch (error: ApiException) {
@@ -131,16 +133,23 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     fun setVisible(value: Boolean) {
         visible = value
-        if (value && _state.value.gate == Gate.Ready) { viewModelScope.launch { guarded { resync() } }; startPolling() }
+        if (value && _state.value.gate == Gate.Ready) { viewModelScope.launch { guarded { resync() }; refreshWearing() }; startPolling() }
     }
 
-    fun saveProfile(name: String, character: String, color: String, done: () -> Unit) {
+    private var wearingAt = 0L
+    /** Her outfit follows the time of day: asked again when the app comes back and every 10 minutes. */
+    private suspend fun refreshWearing() {
+        wearingAt = System.currentTimeMillis()
+        guarded { val info = api.companionInfo(); _state.update { it.copy(wearing = info.wearing, runtime = info.runtime) } }
+    }
+
+    fun saveProfile(name: String, character: String, color: String, outfit: String, done: () -> Unit) {
         val timezone = _state.value.profile?.timezone ?: ZoneId.systemDefault().id
         _state.update { it.copy(saving = true) }
         viewModelScope.launch {
             guarded {
-                val profile = api.setProfile(Profile(name.trim(), character, color, timezone))
-                _state.update { it.copy(profile = profile) }
+                val saved = api.setProfile(Profile(name.trim(), character, color, timezone, outfit))
+                _state.update { it.copy(profile = saved.profile, wearing = saved.wearing) }
                 done()
             }
             _state.update { it.copy(saving = false) }
@@ -212,6 +221,14 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         return if (hour >= 23 || hour < 7) Mood.Sleepy else Mood.Idle
     }
 
+    /** The face the companion chose for the reply it is writing or has just written. */
+    fun feeling(now: Long = System.currentTimeMillis()): String? {
+        val state = _state.value
+        val turn = state.turn ?: return null
+        if (turn.state != "streaming" && !(turn.state == "complete" && now < state.happyUntil)) return null
+        return state.messages.lastOrNull { it.role == "assistant" && it.requestId == turn.requestId }?.feeling
+    }
+
     // ---- Sync ----
 
     private fun startPolling() {
@@ -220,6 +237,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             while (isActive && _state.value.gate == Gate.Ready) {
                 if (!visible) { delay(1000); continue }
                 guarded { sync() }
+                if (System.currentTimeMillis() - wearingAt > 10 * 60_000L) refreshWearing()
                 delay(if (_state.value.replying || _state.value.sending) 500 else 3000)
             }
         }
@@ -270,7 +288,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                     val happy = turn.state == "complete" && (state.turn?.requestId == turn.requestId || state.waitingFor == turn.requestId)
                     state.copy(turn = turn,
                         waitingFor = state.waitingFor?.takeIf { it != turn.requestId },
-                        happyUntil = if (happy && finished) System.currentTimeMillis() + 3500 else state.happyUntil)
+                        happyUntil = if (happy && finished) System.currentTimeMillis() + 5000 else state.happyUntil)
                 }
                 else -> state
             }

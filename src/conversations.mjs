@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { RunnerError } from './runner.mjs';
+import { splitFeeling } from './wardrobe.mjs';
 
 // Real conversations (M1, ticket #8). Everything is scoped by the server-side companion ID;
 // nothing the browser sends selects another companion, provider home or session.
@@ -96,6 +97,8 @@ export class Conversations {
     const columns = new Set(this.#db.prepare('PRAGMA table_info(conv_threads)').all().map(column => column.name));
     if (!columns.has('session_turns')) this.#db.exec('ALTER TABLE conv_threads ADD COLUMN session_turns INTEGER NOT NULL DEFAULT 0');
     if (!columns.has('session_at')) this.#db.exec('ALTER TABLE conv_threads ADD COLUMN session_at INTEGER NOT NULL DEFAULT 0');
+    const messageColumns = new Set(this.#db.prepare('PRAGMA table_info(conv_messages)').all().map(column => column.name));
+    if (!messageColumns.has('feeling')) this.#db.exec('ALTER TABLE conv_messages ADD COLUMN feeling TEXT');
   }
 
   // The next turn of every thread of this companion starts a new provider session
@@ -161,7 +164,8 @@ export class Conversations {
   }
 
   #message(row) {
-    return { id: row.id, threadId: row.thread_id, role: row.role, text: row.text, ...(row.request_id ? { requestId: row.request_id } : {}) };
+    return { id: row.id, threadId: row.thread_id, role: row.role, text: row.text, ...(row.request_id ? { requestId: row.request_id } : {}),
+      ...(row.feeling ? { feeling: row.feeling } : {}) };
   }
 
   #snapshot(companionId, threadId, runtime) {
@@ -222,7 +226,7 @@ export class Conversations {
         const busy = this.#db.prepare("SELECT 1 FROM conv_turns WHERE thread_id=? AND state IN ('queued','running')").get(thread.id);
         if (busy) throw new ConversationError('BUSY', 409);
         const messageId = randomUUID();
-        this.#db.prepare('INSERT INTO conv_messages VALUES (?,?,?,?,?,?)').run(messageId, thread.id, 'user', op.text, op.requestId, now);
+        this.#db.prepare('INSERT INTO conv_messages (id, thread_id, role, text, request_id, created_at) VALUES (?,?,?,?,?,?)').run(messageId, thread.id, 'user', op.text, op.requestId, now);
         this.#db.prepare("INSERT INTO conv_turns VALUES (?,?,?,?,NULL,'queued',NULL,?,?)").run(thread.id, op.requestId, companionId, messageId, now, now);
         if (thread.title === DEFAULT_TITLE) this.#db.prepare('UPDATE conv_threads SET title=? WHERE id=?').run(titleFrom(op.text), thread.id);
         this.#append(thread.id, { type: 'message', messageId });
@@ -273,16 +277,21 @@ export class Conversations {
     const controller = new AbortController(), key = `${threadId}:${requestId}`;
     this.#active.set(key, controller);
     let assistantId = null, text = '', written = '', timer = null;
-    const flush = () => {
+    // The reply may start with a feeling tag ([feeling:laugh], AGENTS.md): it is kept apart and never shown.
+    const flush = (final = false) => {
       timer = null;
       if (text === written) return;
-      const value = text.slice(0, LIMITS.assistantChars);
+      const split = splitFeeling(text);
+      if (split.pending && !final) return;
+      const value = (split.pending ? text : split.text).slice(0, LIMITS.assistantChars), feeling = split.feeling;
+      if (!assistantId && !value) return;
       this.#tx(() => {
         if (!assistantId) {
           assistantId = randomUUID();
-          this.#db.prepare('INSERT INTO conv_messages VALUES (?,?,?,?,?,?)').run(assistantId, threadId, 'assistant', value, requestId, this.#now());
+          this.#db.prepare('INSERT INTO conv_messages (id, thread_id, role, text, request_id, created_at, feeling) VALUES (?,?,?,?,?,?,?)')
+            .run(assistantId, threadId, 'assistant', value, requestId, this.#now(), feeling);
           this.#db.prepare('UPDATE conv_turns SET assistant_message_id=? WHERE thread_id=? AND request_id=?').run(assistantId, threadId, requestId);
-        } else this.#db.prepare('UPDATE conv_messages SET text=? WHERE id=?').run(value, assistantId);
+        } else this.#db.prepare('UPDATE conv_messages SET text=?, feeling=? WHERE id=?').run(value, feeling, assistantId);
         this.#append(threadId, { type: 'message', messageId: assistantId });
       });
       written = text;
@@ -305,10 +314,10 @@ export class Conversations {
       this.#db.prepare('UPDATE conv_threads SET session_turns=session_turns+1, session_at=? WHERE id=?').run(this.#now(), threadId);
       clearTimeout(timer);
       text = reply.text || text;
-      flush();
+      flush(true);
       this.#finish(turn, 'complete');
     } catch (error) {
-      clearTimeout(timer); flush();
+      clearTimeout(timer); flush(true);
       if (this.#closing) this.#finish(turn, 'error', { code: 'INTERRUPTED', message: ERROR_MESSAGES.INTERRUPTED });
       else if (error instanceof RunnerError && error.code === 'CANCELLED') this.#finish(turn, 'cancelled');
       else this.#finish(turn, 'error', describe(error));

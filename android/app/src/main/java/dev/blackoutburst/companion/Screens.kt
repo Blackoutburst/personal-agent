@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -122,7 +123,7 @@ fun CompanionApp(model: CompanionModel, tones: Tones, openBrowser: (android.net.
 @Composable
 private fun Gentle(state: UiState, mood: Mood, text: String) {
     Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        CompanionCharacter(state.profile?.character ?: "pip", state.profile?.color ?: "peach", mood, Modifier.size(180.dp))
+        CompanionCharacter(state.profile?.character ?: "pip", state.profile?.color ?: "peach", mood, Modifier.size(180.dp), outfit = state.wearing)
         Spacer(Modifier.height(16.dp))
         Text(text, color = Soft, fontSize = 17.sp, textAlign = TextAlign.Center)
     }
@@ -177,7 +178,8 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
     LaunchedEffect(shown.size, shown.lastOrNull()?.text?.length) { if (shown.isNotEmpty()) list.animateScrollToItem(shown.size - 1) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            CompanionCharacter(state.profile!!.character, state.profile.color, mood, Modifier.size(96.dp), label = "${state.name}, ${MOOD_TEXT[mood]}")
+            CompanionCharacter(state.profile!!.character, state.profile.color, mood, Modifier.size(96.dp), label = "${state.name}, ${MOOD_TEXT[mood]}",
+                outfit = state.wearing, feeling = remember(state, tick) { model.feeling() })
             Spacer(Modifier.size(12.dp))
             Column {
                 Text(state.name, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
@@ -307,12 +309,14 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
     var name by rememberSaveable { mutableStateOf(profile?.name ?: "") }
     var character by rememberSaveable { mutableStateOf(profile?.character ?: "pip") }
     var color by rememberSaveable { mutableStateOf(profile?.color ?: "peach") }
+    var outfit by rememberSaveable { mutableStateOf(profile?.outfit ?: "auto") }
     var saved by remember { mutableStateOf(false) }
+    val shownOutfit = if (outfit == "auto") state.wearing else outfit
     val shownName = name.ifBlank { CHARACTERS.first { it.id == character }.label }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(if (first) "Meet your companion" else "${profile?.name ?: shownName}’s look", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
         if (first) Text("Pick how it looks and give it a name. You can change this any time.", color = Soft, fontSize = 15.sp, textAlign = TextAlign.Center)
-        CompanionCharacter(character, color, Mood.Happy, Modifier.size(200.dp).padding(8.dp), label = shownName)
+        CompanionCharacter(character, color, Mood.Happy, Modifier.size(200.dp).padding(8.dp), label = shownName, outfit = shownOutfit)
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (option in CHARACTERS) {
                 val selected = option.id == character
@@ -320,7 +324,7 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
                     .border(2.dp, if (selected) COLORS.getValue(color).shade else Color.Transparent, RoundedCornerShape(20.dp))
                     .clickable(role = Role.RadioButton) { character = option.id; saved = false }.padding(8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally) {
-                    CompanionCharacter(option.id, color, Mood.Idle, Modifier.size(58.dp), label = "${option.label}, ${option.hint}", still = true)
+                    CompanionCharacter(option.id, color, Mood.Idle, Modifier.size(58.dp), label = "${option.label}, ${option.hint}", still = true, outfit = shownOutfit)
                     Text(option.label, fontSize = 14.sp, color = Ink, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
                 }
             }
@@ -335,6 +339,26 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
                     .semantics { contentDescription = id })
             }
         }
+        if (hasOutfits(character)) {
+            Spacer(Modifier.height(20.dp))
+            Text("Outfit", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Ink, modifier = Modifier.fillMaxWidth())
+            Text("Automatic changes with the time of day, the seasons and special days.", color = Soft, fontSize = 14.sp, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for ((id, label) in listOf("auto" to "Automatic") + OUTFITS) {
+                    val selected = id == outfit
+                    Column(Modifier.width(84.dp).clip(RoundedCornerShape(16.dp)).background(if (selected) Card else Color.Transparent)
+                        .border(2.dp, if (selected) COLORS.getValue(color).shade else Color.Transparent, RoundedCornerShape(16.dp))
+                        .clickable(role = Role.RadioButton) { outfit = id; saved = false }.padding(6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally) {
+                        CompanionCharacter(character, color, Mood.Idle, Modifier.size(64.dp), label = label, still = true,
+                            outfit = if (id == "auto") state.wearing else id)
+                        Text(label, fontSize = 12.sp, color = Ink, textAlign = TextAlign.Center, maxLines = 2,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(20.dp))
         OutlinedTextField(name, { if (it.length <= 40) { name = it; saved = false } }, Modifier.fillMaxWidth(),
             label = { Text("Name") }, placeholder = { Text(CHARACTERS.first { it.id == character }.label) }, singleLine = true,
@@ -342,7 +366,7 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
             colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Card, unfocusedContainerColor = Card))
         Spacer(Modifier.height(20.dp))
         Pill(if (state.saving) "Saving…" else if (first) "Say hello" else if (saved) "Saved" else "Save", enabled = !state.saving) {
-            model.saveProfile(shownName, character, color) { saved = true; if (!first) done() }
+            model.saveProfile(shownName, character, color, outfit) { saved = true; if (!first) done() }
         }
         AnimatedVisibility(state.offline) { Text("Connection lost. Trying again…", color = Soft, modifier = Modifier.padding(top = 10.dp)) }
         if (!first) {

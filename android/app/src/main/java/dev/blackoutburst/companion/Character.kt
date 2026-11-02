@@ -158,6 +158,20 @@ private fun DrawScope.extras(mood: Mood, c: Palette, pulse: Float) {
     }
 }
 
+val FEELINGS = setOf("happy", "laugh", "wink", "surprised", "sad", "worried", "teary-smile", "embarrassed", "pout", "proud",
+    "excited", "confused", "determined", "tender", "love", "focused", "thinking", "sleepy")
+private val NEAREST = mapOf("happy" to Mood.Happy, "laugh" to Mood.Happy, "wink" to Mood.Happy, "proud" to Mood.Happy,
+    "excited" to Mood.Happy, "tender" to Mood.Happy, "love" to Mood.Happy, "teary-smile" to Mood.Happy,
+    "thinking" to Mood.Thinking, "confused" to Mood.Thinking, "focused" to Mood.Thinking, "sleepy" to Mood.Sleepy)
+
+/** Claude-chan's outfits (the server picks one when automatic). */
+val OUTFITS = listOf("base" to "Signature", "cozy-home" to "Cozy at home", "pajamas" to "Pajamas", "spring" to "Spring",
+    "summer" to "Summer", "sunny" to "Sunny day", "autumn" to "Autumn", "windy" to "Windy day", "winter" to "Winter", "rain" to "Rain",
+    "snow" to "Snow", "halloween" to "Halloween", "christmas" to "Christmas", "party" to "New Year's Eve", "new-year" to "New Year",
+    "lunar-new-year" to "Lunar New Year", "valentine" to "Valentine's", "easter" to "Easter", "summer-festival" to "Summer festival",
+    "birthday" to "Birthday")
+fun hasOutfits(character: String) = character in PORTRAITS
+
 /** Illustrated characters: an outfit picture with a face patch over it (assets/characters/<id>/). */
 private val PORTRAITS = setOf("claude")
 private val pictures = HashMap<String, ImageBitmap?>()
@@ -175,7 +189,7 @@ private fun picture(path: String): ImageBitmap? {
 }
 
 @Composable
-private fun Portrait(character: String, outfit: String, mood: Mood, modifier: Modifier, label: String, still: Boolean) {
+private fun Portrait(character: String, outfit: String, mood: Mood, feeling: String?, modifier: Modifier, label: String, still: Boolean) {
     val motion = rememberInfiniteTransition(label = "portrait")
     val breath by motion.animateFloat(0f, 1f, infiniteRepeatable(tween(2000), RepeatMode.Reverse), label = "breath")
     // 1 while the overlay shows: a short blink every 5 s, or the open mouth every other 250 ms.
@@ -185,7 +199,9 @@ private fun Portrait(character: String, outfit: String, mood: Mood, modifier: Mo
     val talk by motion.animateFloat(0f, 1f, infiniteRepeatable(keyframes {
         durationMillis = 500; 0f at 249; 1f at 250; 1f at 499
     }), label = "talk")
+    val felt = feeling?.takeIf { it in FEELINGS && (mood == Mood.Talking || mood == Mood.Happy) }
     val face = when {
+        felt != null -> felt
         mood == Mood.Listening -> "listening"; mood == Mood.Thinking -> "thinking"
         mood == Mood.Happy -> "happy"; mood == Mood.Sleepy -> "sleepy"
         still -> null
@@ -211,8 +227,11 @@ private fun Portrait(character: String, outfit: String, mood: Mood, modifier: Mo
 
 /** The companion, gently alive: it breathes, blinks, talks and thinks. */
 @Composable
-fun CompanionCharacter(character: String, color: String, mood: Mood, modifier: Modifier = Modifier, label: String = "", still: Boolean = false, outfit: String = "base") {
-    if (character in PORTRAITS) return Portrait(character, outfit, mood, modifier, label, still)
+fun CompanionCharacter(character: String, color: String, mood: Mood, modifier: Modifier = Modifier, label: String = "", still: Boolean = false,
+                       outfit: String = "base", feeling: String? = null) {
+    if (character in PORTRAITS) return Portrait(character, outfit, mood, feeling, modifier, label, still)
+    // The drawn characters have fewer faces: the nearest one.
+    @Suppress("NAME_SHADOWING") val mood = if (feeling != null && (mood == Mood.Talking || mood == Mood.Happy)) NEAREST[feeling] ?: mood else mood
     val body = BODIES[character] ?: BODIES.getValue("pip")
     val palette = COLORS[color] ?: COLORS.getValue("peach")
     val motion = rememberInfiniteTransition(label = "character")

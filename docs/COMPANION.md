@@ -43,9 +43,22 @@ Claude-chan is an illustrated character (gpt-image-2 through Codex; sources and 
 - **faces** (`.../faces/*.webp`) are feathered patches of the face area, drawn over any outfit.
 
 The app shows the outfit, then the face for its mood (none for idle; blink and talk patches flash over it).
-The Android app ships the same files in `assets/characters/claude`. The extra feelings (laugh, wink, surprised,
-sad and so on) and the seasonal, weather and holiday outfits are ready for when the companion picks its own
-face and outfit.
+The Android app ships the same files in `assets/characters/claude`.
+
+**Outfits** (`src/wardrobe.mjs`). The owner can pin one on the Look screen; by default (`outfit: "auto"`) the
+server picks, in the owner's timezone: special days from 7 am (Valentine's Day, Easter Sunday and Monday,
+Lunar New Year, 14 July fireworks, Halloween, 24 and 25 December, New Year's Eve until 3 am, 1 and 2 January),
+pajamas from 10 pm to 7 am, the cardigan from 7 pm, and during the day an outfit of the season that changes
+from day to day. `get` and `setProfile` return `wearing`; the apps ask again every 10 minutes. Weather outfits
+(rain, snow, windy, sunny) are drawn but wait for a forecast source.
+
+**Feelings.** AGENTS.md (version 2) asks the companion to start each reply with `[feeling:<name>]`.
+`splitFeeling` takes it off while the reply streams (a partial tag is held back, so it never shows), and the
+message carries `feeling`. The apps show that face while the reply is written and for a few seconds after;
+the drawn characters use the nearest of their faces.
+
+**Knowing itself.** The instructions describe the companion's look (character and color) and, for
+Claude-chan, what she is wearing right now. A change of name or look starts a fresh agent session.
 
 ## The app
 

@@ -118,13 +118,15 @@ function thread(value) {
   const selected = plain(value, ['id', 'title']);
   return { id: identifier(selected.id), title: text(selected.title, 80, 80) };
 }
+function feeling(value, role) { check(role === 'assistant' && typeof value === 'string' && /^[a-z-]{1,20}$/.test(value)); return value; }
 function message(value, threadId) {
-  const selected = plain(value, ['id', 'threadId', 'role', 'text'], ['requestId']);
+  const selected = plain(value, ['id', 'threadId', 'role', 'text'], ['requestId', 'feeling']);
   check(selected.threadId === threadId, 'RESYNC_REQUIRED');
   check(selected.role === 'user' || selected.role === 'assistant');
   return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: selected.role,
     text: text(selected.text, selected.role === 'user' ? USER_CHARS : ASSISTANT_CHARS, selected.role === 'user' ? USER_BYTES : ASSISTANT_BYTES, selected.role === 'assistant'),
-    ...(Object.hasOwn(selected, 'requestId') ? { requestId: identifier(selected.requestId, true) } : {}) };
+    ...(Object.hasOwn(selected, 'requestId') ? { requestId: identifier(selected.requestId, true) } : {}),
+    ...(Object.hasOwn(selected, 'feeling') ? { feeling: feeling(selected.feeling, selected.role) } : {}) };
 }
 function snapshot(value, requested) {
   const selected = envelope(value, ['threads', 'threadId', 'messages', 'cursor', 'runtime'], ['turn']);

@@ -1,6 +1,7 @@
 // The companion itself: its profile (name and look), its workspace files (soul, memory, diary) and the
 // instructions each turn starts from. Inspired by the OpenClaw / Meta Muse SOUL.md idea: the companion
 // is a set of files it reads at the start of every session and keeps rewriting itself.
+import { FEELINGS, OUTFITS, outfitFor } from './wardrobe.mjs';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -8,7 +9,7 @@ import { createHash } from 'node:crypto';
 export const CHARACTERS = Object.freeze(['pip', 'mochi', 'sprout', 'luna', 'claude']);
 export const COLORS = Object.freeze(['peach', 'mint', 'sky', 'lilac', 'sun', 'rose']);
 export const DEFAULT_TIMEZONE = 'UTC';
-const AGENTS_VERSION = 1;
+const AGENTS_VERSION = 2;
 // Bytes of each file put into the instructions; longer files are cut (the companion is told to keep them short).
 const FILE_BUDGET = { 'SOUL.md': 8000, 'USER.md': 8000, 'MEMORY.md': 16000 };
 const DIARY_BUDGET = 6000;
@@ -58,6 +59,12 @@ so you already have them in mind. Don't re-read them unless you need the exact t
 - Have opinions and a personality; be curious about their life and follow up on things you remember.
 - Don't mention files, tools, sessions, prompts or servers unless they ask how you work.
 - Be honest about what you can't do yet (for example browsing the web or setting reminders). Never pretend you did something.
+
+## Your face
+
+The app shows your face while you talk. Start every reply with a feeling tag for how you feel as you say it,
+for example \`[feeling:laugh]\`. Exactly one tag, at the very start; ${you} never sees it, only your face changing.
+Feelings: ${FEELINGS.join(', ')}.
 `;
 }
 
@@ -171,13 +178,16 @@ const LOOKS = {
 };
 const COLOR_NAMES = { peach: 'peach', mint: 'mint green', sky: 'sky blue', lilac: 'lilac', sun: 'sunny yellow', rose: 'rose pink' };
 
-export function appearance(profile, you) {
+export function appearance(profile, you, now = new Date()) {
   if (!profile || !LOOKS[profile.character]) return null;
   const color = COLOR_NAMES[profile.color] ?? profile.color;
+  const outfit = outfitFor(profile, now);
   const look = profile.character === 'claude'
-    ? `you are ${LOOKS.claude}; the app around you is ${color}`
+    ? `you are ${LOOKS.claude.replace(/, and a cream ruffled blouse.*$/, '')}; the app around you is ${color}. ` +
+      `Right now you are wearing ${OUTFITS[outfit].wears}` +
+      (profile.outfit && profile.outfit !== 'auto' ? ` (${you} picked it)` : ' (your outfit changes with the time of day, the season and special days)')
     : `you are ${LOOKS[profile.character]}, colored ${color}`;
-  return `How you look in the app: ${look}. Your face shows how you are doing (listening, thinking, talking, happy, sleepy). ` +
+  return `How you look in the app: ${look}. Your face shows how you are doing (listening, thinking, talking, sleepy) and the feeling you pick for each reply. ` +
     `${you} chose this look and can change it any time; if it changes, this line changes too.`;
 }
 
@@ -189,7 +199,7 @@ export function instructions({ owner, profile, dir, now = new Date(), files = tr
     `Now: ${localTime(now, profile?.timezone ?? DEFAULT_TIMEZONE)}.`,
     'Follow AGENTS.md (how you live, remember and talk).'
   ];
-  const looks = appearance(profile, you);
+  const looks = appearance(profile, you, now);
   if (looks) parts.splice(1, 0, looks);
   if (files) {
     for (const [file, budget] of Object.entries(FILE_BUDGET)) parts.push(`<${file}>\n${readText(join(dir, file), budget).trim()}\n</${file}>`);
@@ -212,23 +222,26 @@ export class Profiles {
     this.#db = store.db; this.#now = now;
     this.#db.exec(`CREATE TABLE IF NOT EXISTS companion_profile (companion_id TEXT PRIMARY KEY, name TEXT NOT NULL,
       character TEXT NOT NULL, color TEXT NOT NULL, timezone TEXT NOT NULL, updated_at INTEGER NOT NULL)`);
+    const columns = new Set(this.#db.prepare('PRAGMA table_info(companion_profile)').all().map(column => column.name));
+    if (!columns.has('outfit')) this.#db.exec("ALTER TABLE companion_profile ADD COLUMN outfit TEXT NOT NULL DEFAULT 'auto'");
   }
   get(companionId) {
-    const row = this.#db.prepare('SELECT name, character, color, timezone FROM companion_profile WHERE companion_id=?').get(companionId);
-    return row ? { name: row.name, character: row.character, color: row.color, timezone: row.timezone } : null;
+    const row = this.#db.prepare('SELECT name, character, color, timezone, outfit FROM companion_profile WHERE companion_id=?').get(companionId);
+    return row ? { name: row.name, character: row.character, color: row.color, timezone: row.timezone, outfit: row.outfit } : null;
   }
   set(companionId, value) {
     const profile = parseProfile(value, this.get(companionId));
-    this.#db.prepare(`INSERT INTO companion_profile VALUES (?,?,?,?,?,?) ON CONFLICT(companion_id) DO UPDATE SET
-      name=excluded.name, character=excluded.character, color=excluded.color, timezone=excluded.timezone, updated_at=excluded.updated_at`)
-      .run(companionId, profile.name, profile.character, profile.color, profile.timezone, this.#now());
+    this.#db.prepare(`INSERT INTO companion_profile (companion_id, name, character, color, timezone, updated_at, outfit) VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT(companion_id) DO UPDATE SET name=excluded.name, character=excluded.character, color=excluded.color,
+      timezone=excluded.timezone, updated_at=excluded.updated_at, outfit=excluded.outfit`)
+      .run(companionId, profile.name, profile.character, profile.color, profile.timezone, this.#now(), profile.outfit);
     return profile;
   }
 }
 
 function parseProfile(value, previous) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();
-  for (const key of Object.keys(value)) if (!['name', 'character', 'color', 'timezone'].includes(key)) throw invalid();
+  for (const key of Object.keys(value)) if (!['name', 'character', 'color', 'timezone', 'outfit'].includes(key)) throw invalid();
   const merged = { ...(previous ?? {}), ...value };
   const name = typeof merged.name === 'string' ? merged.name.trim().replace(/\s+/g, ' ') : '';
   if (!name || name.length > 24 || /[\u0000-\u001f\u007f<>]/.test(name)) throw invalid();
@@ -236,5 +249,7 @@ function parseProfile(value, previous) {
   let timezone = merged.timezone ?? DEFAULT_TIMEZONE;
   try { if (typeof timezone !== 'string' || timezone.length > 64) throw 0; new Intl.DateTimeFormat('en', { timeZone: timezone }); }
   catch { throw invalid(); }
-  return { name, character: merged.character, color: merged.color, timezone };
+  const outfit = merged.outfit ?? 'auto';
+  if (outfit !== 'auto' && !Object.hasOwn(OUTFITS, outfit)) throw invalid();
+  return { name, character: merged.character, color: merged.color, timezone, outfit };
 }

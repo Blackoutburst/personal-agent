@@ -67,8 +67,12 @@ test('profiles validate name, character, color and timezone', t => {
   const profiles = new Profiles({ store, now: () => 1 });
   assert.equal(profiles.get('c1'), null);
   assert.deepEqual(profiles.set('c1', { name: '  Nova   Star ', character: 'mochi', color: 'mint', timezone: 'Europe/Paris' }),
-    { name: 'Nova Star', character: 'mochi', color: 'mint', timezone: 'Europe/Paris' });
+    { name: 'Nova Star', character: 'mochi', color: 'mint', timezone: 'Europe/Paris', outfit: 'auto' });
   assert.deepEqual(profiles.set('c1', { color: 'sky' }).color, 'sky');
+  assert.equal(profiles.set('c1', { character: 'claude', outfit: 'halloween' }).outfit, 'halloween');
+  assert.equal(profiles.get('c1').outfit, 'halloween');
+  assert.throws(() => profiles.set('c1', { outfit: 'tuxedo' }));
+  profiles.set('c1', { character: 'mochi', outfit: 'auto' });
   assert.equal(profiles.get('c1').name, 'Nova Star');
   for (const bad of [{ name: '' }, { name: 'x'.repeat(25) }, { name: '<b>' }, { character: 'dragon' }, { color: 'black' },
     { timezone: 'Mars/Base' }, { admin: true }, null, []]) assert.throws(() => profiles.set('c1', bad), { code: 'INVALID_REQUEST' });
@@ -86,6 +90,12 @@ test('the companion knows how it looks, and the line follows its look', () => {
     const girl = instructions({ owner, dir, profile: { name: 'Claude', character: 'claude', color: 'peach', timezone: 'UTC' } });
     assert.match(girl, /anime girl with long wavy orange hair/);
     assert.match(girl, /the app around you is peach/);
+    assert.match(girl, /Right now you are wearing .*changes with the time of day/);
+    const witch = instructions({ owner, dir, now: new Date('2026-10-31T12:00:00Z'), profile: { name: 'Claude', character: 'claude', color: 'peach', timezone: 'UTC' } });
+    assert.match(witch, /wearing a cute witch outfit/);
+    const pinned = instructions({ owner, dir, profile: { name: 'Claude', character: 'claude', color: 'peach', timezone: 'UTC', outfit: 'rain' } });
+    assert.match(pinned, /yellow raincoat.*\(Blackout picked it\)/);
+    assert.doesNotMatch(cat, /wearing/);
     assert.doesNotMatch(girl, /soft round cat/);
     assert.equal(appearance(null, 'Blackout'), null);
     assert.doesNotMatch(instructions({ owner, dir, profile: null }), /How you look/);

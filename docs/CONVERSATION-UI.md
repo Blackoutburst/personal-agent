@@ -30,7 +30,8 @@ mode (16 KiB otherwise). Responses carry `version:1` and `synthetic` (`false` in
 
 Events per thread are contiguous:
 
-- `message` holds the full current text of a message (the client upserts by id);
+- `message` holds the full current text of a message (the client upserts by id); an assistant message may
+  carry `feeling`, the face the companion chose (COMPANION.md);
 - `noop` is an earlier event of a message whose newer text appears later in the same page;
 - `turn` holds `requestId` and `state`: `streaming`, `complete`, `error` or `cancelled`. On
   `error` it adds `error:{code, message, resetsAt?}`. `resetsAt` is ISO 8601. Codes include

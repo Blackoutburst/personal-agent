@@ -173,7 +173,7 @@ test('a restart marks an interrupted running turn, never repeats it, and runs a 
   // Simulate a crash: drop the server without letting the turn settle.
   const other = await newThread(app, A, 'other');
   const { store } = app;
-  store.db.exec("INSERT INTO conv_messages VALUES ('11111111-1111-4111-8111-111111111111','" + other + "','user','queued while down','q1',0)");
+  store.db.exec("INSERT INTO conv_messages (id, thread_id, role, text, request_id, created_at) VALUES ('11111111-1111-4111-8111-111111111111','" + other + "','user','queued while down','q1',0)");
   store.db.exec("INSERT INTO conv_turns VALUES ('" + other + "','q1','" + store.db.prepare('SELECT companion_id FROM conv_threads WHERE id=?').get(other).companion_id +
     "','11111111-1111-4111-8111-111111111111',NULL,'queued',NULL,0,0)");
   app.server.close(); app.server.closeAllConnections();
@@ -264,8 +264,14 @@ test('the companion: profile, memory view and forget, file-based instructions an
     return { status: response.status, body: await response.json() };
   };
   const workspace = join(dirname(f.home('blackout')), 'workspace');
-  assert.deepEqual((await api({ action: 'get' })).body, { profile: null, runtime: { state: 'ready', provider: 'claude' } });
+  const empty = (await api({ action: 'get' })).body;
+  assert.deepEqual({ ...empty, wearing: undefined }, { profile: null, runtime: { state: 'ready', provider: 'claude' }, wearing: undefined });
+  assert.equal(typeof empty.wearing, 'string');
   assert.equal((await api({ action: 'setProfile', profile: { name: 'Nova', character: 'pip', color: 'peach', timezone: 'Europe/Paris' } })).status, 200);
+  const pinned = (await api({ action: 'setProfile', profile: { character: 'claude', outfit: 'christmas' } })).body;
+  assert.deepEqual([pinned.profile.outfit, pinned.wearing], ['christmas', 'christmas']);
+  assert.equal((await api({ action: 'get' })).body.wearing, 'christmas');
+  assert.equal((await api({ action: 'setProfile', profile: { character: 'pip', outfit: 'auto' } })).status, 200);
   assert.equal((await api({ action: 'setProfile', profile: { name: 'Nova', character: 'robot', color: 'peach' } })).status, 400);
   assert.equal((await api({ action: 'get' }, B)).body.profile, null); // each owner has their own companion
   assert.equal((await api({ action: 'get' }, null)).status, 401);
@@ -302,4 +308,24 @@ test('the companion: profile, memory view and forget, file-based instructions an
   assert.ok(!system(calls[2]).includes('Secret crush'));
   assert.ok(!system(calls[2]).split('<recent_chat')[1].includes('third')); // the new message is the prompt, not context
   assert.ok(existsSync(join(workspace, 'AGENTS.md')) && existsSync(join(workspace, 'CLAUDE.md')));
+});
+
+test('the feeling tag picks the face and never shows in the reply', async t => {
+  const f = setup(t), app = await f.open(); await ready(f, app);
+  const threadId = await newThread(app);
+  await post(app, { action: 'submit', requestId: 'feel', threadId, text: 'FEELING joke' });
+  const { events } = await settle(app, A, threadId);
+  const replies = events.filter(e => e.type === 'message' && e.message.role === 'assistant').map(e => e.message);
+  assert.ok(replies.length >= 1);
+  for (const reply of replies) assert.doesNotMatch(reply.text, /feel|\[/, 'no part of the tag is ever shown');
+  assert.deepEqual([replies.at(-1).text, replies.at(-1).feeling], ['Ha, yes!', 'laugh']);
+  const snapshot = (await post(app, { action: 'snapshot', threadId })).body;
+  assert.deepEqual(snapshot.messages.at(-1), { id: replies.at(-1).id, threadId, role: 'assistant', text: 'Ha, yes!', requestId: 'feel', feeling: 'laugh' });
+  assert.equal(snapshot.messages[0].feeling, undefined, 'user messages have no feeling');
+  // The instructions ask for the tag and tell the companion how it looks.
+  const prompt = f.calls('blackout')[0].args[f.calls('blackout')[0].args.indexOf('--append-system-prompt') + 1];
+  assert.match(prompt, /Follow AGENTS\.md/);
+  const agents = readFileSync(join(f.home('blackout'), '..', 'workspace', 'AGENTS.md'), 'utf8');
+  assert.match(agents, /\[feeling:laugh\]/);
+  assert.match(agents, /version 2/);
 });

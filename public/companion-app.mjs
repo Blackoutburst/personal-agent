@@ -1,13 +1,13 @@
 // The companion web app: one ongoing chat with your companion, what it remembers, and how it looks.
 import { createConversationClient, USER_CHARS } from './conversation-client.mjs';
-import { renderCharacter, CHARACTERS, COLORS } from './companion-character.mjs';
+import { renderCharacter, CHARACTERS, COLORS, OUTFITS, HAS_OUTFITS } from './companion-character.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
 const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
 let profile = null, runtime = null, view = 'loading', chatOpened = false, state = client.getState();
-let draftLook = null, pollTimer = null, polling = false, happyUntil = 0, lastTurnKey = null, memory = null, confirming = null;
+let wearing = 'base', draftLook = null, pollTimer = null, polling = false, happyUntil = 0, lastTurnKey = null, memory = null, confirming = null;
 const messageNodes = new Map();
 
 // ---------- Small helpers ----------
@@ -27,8 +27,11 @@ function applyColors(look) {
   root.setProperty('--body', colors.body); root.setProperty('--shade', colors.shade); root.setProperty('--light', colors.light);
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', colors.light);
 }
-function draw(element, look, mood) {
-  const markup = renderCharacter({ character: look?.character ?? 'pip', color: look?.color ?? 'peach', mood, title: look?.name ?? '' });
+// The outfit shown: a pinned one, else what the server says she wears now.
+function outfitOf(look) { return look?.outfit && look.outfit !== 'auto' ? look.outfit : wearing; }
+function draw(element, look, mood, feeling = null) {
+  const markup = renderCharacter({ character: look?.character ?? 'pip', color: look?.color ?? 'peach', mood, title: look?.name ?? '',
+    outfit: outfitOf(look), feeling });
   if (element.dataset.markup !== markup) { element.innerHTML = markup; element.dataset.markup = markup; }
 }
 // Text with clickable links and simple **bold** / *italic*, built from text nodes only.
@@ -89,7 +92,7 @@ function route() {
 async function start() {
   try {
     const data = await api({ action: 'get' });
-    profile = data.profile; runtime = data.runtime;
+    profile = data.profile; runtime = data.runtime; wearing = data.wearing ?? 'base';
     applyColors(profile);
     route();
   } catch (error) {
@@ -110,6 +113,13 @@ function mood() {
   const hour = new Date().getHours();
   if (hour >= 23 || hour < 7) return 'sleepy';
   return 'idle';
+}
+// The face the companion chose for the reply it is writing, or has just written.
+function feeling() {
+  const turn = state.turn;
+  if (!turn) return null;
+  if (turn.state === 'streaming' || (turn.state === 'complete' && Date.now() < happyUntil)) return lastAssistantFor(turn.requestId)?.feeling ?? null;
+  return null;
 }
 const MOOD_TEXT = { idle: 'Here with you', listening: 'Listening…', thinking: 'Thinking…', talking: 'Writing to you…', happy: 'Happy to see you', sleepy: 'A bit sleepy' };
 
@@ -135,7 +145,7 @@ function schedulePoll() {
     try {
       await client.poll();
       if (before?.state === 'streaming' && state.turn?.requestId === before.requestId && state.turn.state !== 'streaming') {
-        if (state.turn.state === 'complete') happyUntil = Date.now() + 3500;
+        if (state.turn.state === 'complete') happyUntil = Date.now() + 5000;
       }
     } catch { /* state shows it */ }
     polling = false;
@@ -301,6 +311,14 @@ function startLook() {
     return button;
   }));
   if (first && !$('name').value) $('name').value = 'Pip';
+  $('pick-outfit').replaceChildren(...[['auto', 'Automatic']].concat(OUTFITS).map(([id, label]) => {
+    const button = Object.assign(document.createElement('button'), { type: 'button' });
+    button.dataset.outfit = id;
+    const pic = document.createElement('span'); pic.className = 'pic'; pic.setAttribute('aria-hidden', 'true');
+    button.append(pic, Object.assign(document.createElement('span'), { textContent: label }));
+    button.addEventListener('click', () => { draftLook.outfit = id; renderLook(); });
+    return button;
+  }));
   $('theme-pick').hidden = first;
   renderThemePick();
 }
@@ -335,6 +353,15 @@ function renderLook() {
     draw(button.querySelector('.pic'), { character: button.dataset.character, color: draftLook.color }, 'idle');
   }
   for (const button of $('pick-color').children) button.setAttribute('aria-pressed', String(button.dataset.color === draftLook.color));
+  $('outfit-field').hidden = !HAS_OUTFITS(draftLook.character);
+  if (!$('outfit-field').hidden) {
+    const chosen = draftLook.outfit ?? 'auto';
+    for (const button of $('pick-outfit').children) {
+      button.setAttribute('aria-pressed', String(button.dataset.outfit === chosen));
+      const outfit = button.dataset.outfit === 'auto' ? wearing : button.dataset.outfit;
+      draw(button.querySelector('.pic'), { character: draftLook.character, color: draftLook.color, outfit }, 'idle');
+    }
+  }
   applyColors(draftLook);
 }
 
@@ -348,7 +375,7 @@ function renderAll() {
   draw($('mini-avatar'), look ?? { character: 'pip', color: 'peach' }, current === 'talking' ? 'talking' : current === 'thinking' ? 'thinking' : 'idle');
   document.title = profile ? companionName() : 'Your companion';
   if (view === 'chat') {
-    draw($('stage-character'), profile, current);
+    draw($('stage-character'), profile, current, feeling());
     $('stage-name').textContent = companionName();
     $('stage-mood').textContent = MOOD_TEXT[current];
     renderChat();
@@ -360,7 +387,7 @@ function renderAll() {
 
 client.subscribe(next => {
   const key = next.turn ? `${next.turn.requestId}:${next.turn.state}` : null;
-  if (key && key !== lastTurnKey && next.turn.state === 'complete' && lastTurnKey?.startsWith(next.turn.requestId)) happyUntil = Date.now() + 3500;
+  if (key && key !== lastTurnKey && next.turn.state === 'complete' && lastTurnKey?.startsWith(next.turn.requestId)) happyUntil = Date.now() + 5000;
   lastTurnKey = key;
   state = next;
   renderAll();
@@ -397,7 +424,9 @@ $('look-form').addEventListener('submit', async event => {
   $('save-look').disabled = true;
   try {
     const first = !profile;
-    profile = (await api({ action: 'setProfile', profile: { name, character: draftLook.character, color: draftLook.color, timezone } })).profile;
+    const saved = await api({ action: 'setProfile', profile: { name, character: draftLook.character, color: draftLook.color, timezone,
+      outfit: draftLook.outfit ?? 'auto' } });
+    profile = saved.profile; wearing = saved.wearing ?? wearing;
     applyColors(profile);
     if (first || location.hash !== '#chat') location.hash = '#chat'; else route();
   } catch {
@@ -407,8 +436,16 @@ $('look-form').addEventListener('submit', async event => {
 $('name').addEventListener('input', () => { if (draftLook) draftLook.name = $('name').value; $('look-error').hidden = true; });
 
 window.addEventListener('hashchange', () => { if (view !== 'loading' && view !== 'gate') route(); });
+// Her outfit follows the time of day: check again every 10 minutes and when the page comes back.
+async function refreshWearing() {
+  if (!profile || document.visibilityState === 'hidden') return;
+  try { const data = await api({ action: 'get' }); wearing = data.wearing ?? wearing; runtime = data.runtime ?? runtime; renderAll(); }
+  catch { /* the chat shows connection problems */ }
+}
+setInterval(refreshWearing, 10 * 60 * 1000);
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'hidden') { clearTimeout(pollTimer); pollTimer = null; return; }
+  refreshWearing();
   if (chatOpened && state.opened && state.connection !== 'loading' && !polling) { try { await client.refresh(); } catch { /* state */ } }
   schedulePoll();
 });
