@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -44,6 +44,17 @@ const STATIC = new Map([
 
 // runtimeFile / runtimeDir: the per-owner agent runtime (docs/RUNTIME.md). Without them, account
 // mode still serves conversations but every reply reports that no agent is configured.
+// The published Android release, or null. android.json: {"version":"0.3.1","file":"companion-0.3.1.apk"}.
+function androidRelease(dataDir) {
+  try {
+    const dir = join(dataDir, 'downloads'), info = JSON.parse(readFileSync(join(dir, 'android.json'), 'utf8'));
+    if (typeof info?.version !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(info.version)
+        || typeof info.file !== 'string' || !/^[A-Za-z0-9._-]{1,80}\.apk$/.test(info.file)) return null;
+    const path = join(dir, info.file), { size } = statSync(path);
+    return size > 0 ? { version: info.version, path, size } : null;
+  } catch { return null; }
+}
+
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
   pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
@@ -149,6 +160,14 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       if (path === '/api/contract-preview') {
         if (mode !== 'demo') return fail(503, 'FOUNDATIONS_UNAVAILABLE', 'Explicit demo mode is required for the synthetic preview.');
         return send(200, store.get('development', 'contract-preview'));
+      }
+      // The Android app download (docs/COMPANION.md): <dataDir>/downloads/android.json names the current APK.
+      if ((path === '/android.json' || path === '/companion.apk') && ['GET', 'HEAD'].includes(req.method)) {
+        const release = androidRelease(dataDir);
+        if (!release) return fail(404, 'NOT_FOUND', 'The Android app is not available yet.');
+        if (path === '/android.json') return send(200, { version: release.version, size: release.size });
+        res.setHeader('content-disposition', `attachment; filename="companion-${release.version}.apk"`);
+        return send(200, readFileSync(release.path), 'application/vnd.android.package-archive');
       }
       if (STATIC.has(path)) {
         const [file, type] = STATIC.get(path);

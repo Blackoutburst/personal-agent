@@ -79,3 +79,13 @@ Claude-chan, what she is wearing right now. A change of name or look starts a fr
 (CONVERSATION-UI.md). Every request revalidates the platform session.
 
 Voice comes later, with speech recognition and voices running on the server.
+
+## Android app download
+
+The Look page shows a "Download for Android" card when a release is published on the server. To publish one, put the APK and a small `android.json` in `<COMPANION_DATA_DIR>/downloads/`:
+
+```json
+{"version":"0.3.1","file":"companion-0.3.1.apk"}
+```
+
+`/android.json` returns `{version, size}`, and `/companion.apk` serves the file as an attachment named `companion-<version>.apk`. Both answer 404 when nothing valid is published. The file name must be a plain `.apk` name inside `downloads/`. APKs are never committed to git.

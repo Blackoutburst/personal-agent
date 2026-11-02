@@ -325,7 +325,19 @@ function startLook() {
   $('theme-pick').hidden = first;
   renderThemePick();
   $('discord-pick').hidden = first;
-  if (!first) loadDiscord();
+  if (!first) { loadDiscord(); loadAndroid(); }
+}
+
+// The Android app card shows only when a release is published on the server.
+async function loadAndroid() {
+  try {
+    const response = await fetch('android.json', { cache: 'no-store' });
+    const release = response.ok ? await response.json() : null;
+    if (!release?.version) { $('android-pick').hidden = true; return; }
+    const megabytes = release.size ? ` · ${(release.size / 1048576).toFixed(1)} MB` : '';
+    $('android-download').textContent = `Download for Android (${release.version}${megabytes})`;
+    $('android-pick').hidden = false;
+  } catch { $('android-pick').hidden = true; }
 }
 
 // App theme: System (default), Light or Dark. companion-theme.js applies and stores it.
