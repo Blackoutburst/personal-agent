@@ -38,7 +38,8 @@ const STATIC = new Map([
   // Old address of the chat page: it now redirects to the companion.
   ['/conversation.html', ['conversation.html', 'text/html; charset=utf-8']],
   // Illustrated characters.
-  ...PORTRAIT_FACES.map(face => `faces/${face}`).concat(PORTRAIT_OUTFITS.map(outfit => `outfits/${outfit}`))
+  ...PORTRAIT_FACES.map(face => `faces/${face}`).concat(PORTRAIT_OUTFITS.map(outfit => `outfits/${outfit}`),
+    PORTRAIT_OUTFITS.filter(outfit => outfit !== 'base').map(outfit => `fronts/${outfit}`))
     .map(name => [`/characters/claude/${name}.webp`, [`characters/claude/${name}.webp`, 'image/webp']])
 ]);
 

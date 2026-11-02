@@ -40,9 +40,11 @@ Claude-chan is an illustrated character (gpt-image-2 through Codex; sources and 
 `~/companion-art/claude-chan`). Every picture is an edit of one base picture with the same framing, so:
 
 - **outfits** (`public/characters/claude/outfits/*.webp`) are whole pictures with her resting face;
-- **faces** (`.../faces/*.webp`) are feathered patches of the face area, drawn over any outfit.
+- **faces** (`.../faces/*.webp`) are feathered patches of the face area (eyes and eyebrows fully covered), drawn over any outfit.
+- **fronts** (`.../fronts/<outfit>.webp`, every outfit but base) hold what the outfit has in front of the face area
+  (a brim, other bangs, a collar), drawn over the face so hats stay in front. The ahoge only shows without a hat.
 
-The app shows the outfit, then the face for its mood (none for idle; blink and talk patches flash over it).
+The app shows the outfit, then the face for its mood and the outfit's front layer (none for idle; blink and talk patches flash over it).
 The Android app ships the same files in `assets/characters/claude`.
 
 **Outfits** (`src/wardrobe.mjs`). The owner can pin one on the Look screen; by default (`outfit: "auto"`) the
