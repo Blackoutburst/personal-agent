@@ -1,14 +1,15 @@
 // Codex adapter. Runs `codex exec --json` with the owner's own CODEX_HOME. Sign-in happens
 // only through OpenAI's own flow (`codex login --device-auth`), run by the owner.
 // Event names differ slightly between Codex releases; both known spellings are accepted.
-// Not yet verified against a real codex binary on this server (see docs/RUNTIME.md).
+// Verified against codex-cli 0.166.0 (signed-out paths; signed-in turn pending owner sign-in).
 
 export const name = 'codex';
 
 export function command({ binary = 'codex', home, resume, model, systemPrompt }) {
   const args = ['exec'];
   if (resume) args.push('resume', resume);
-  args.push('--json', '--skip-git-repo-check', '--sandbox', 'read-only');
+  // `exec resume` has no --sandbox flag; the config override works for both forms.
+  args.push('--json', '--skip-git-repo-check', '-c', 'sandbox_mode="read-only"');
   if (model) args.push('--model', model);
   // Codex has no append-system-prompt flag; the caller's persona is prepended to the prompt.
   args.push('-');
@@ -45,6 +46,8 @@ export function parseLine(line) {
   if (type === 'turn.completed') return [{ type: 'done', text: null, sessionId: null, usage: value.usage ?? null }];
   if (type === 'turn.failed' || type === 'error') {
     const text = String(value.error?.message ?? value.message ?? '');
+    // Transient transport retries ("Reconnecting... 2/5 (...)") are not failures.
+    if (type === 'error' && /^Reconnecting\b/.test(text)) return [];
     const code = NOT_SIGNED_IN.test(text) ? 'NOT_SIGNED_IN' : USAGE_LIMIT.test(text) ? 'USAGE_LIMIT' : 'PROVIDER_ERROR';
     return [{ type: 'error', code, detail: text.slice(0, 300) }];
   }

@@ -55,6 +55,7 @@ node manage.mjs ask <label> "hello"  # one smoke-test turn, streamed
 - Claude: `claude -p --output-format stream-json --verbose --include-partial-messages`, prompt on
   stdin. Verified against Claude Code 2.1.316. Using the official CLI with your own
   subscription is what Anthropic's terms allow; the Agent SDK with claude.ai sign-in is not.
-- Codex: `codex exec --json --sandbox read-only -`, persona prepended to the prompt. Not yet
-  verified against a real `codex` install on this server.
+- Codex: `codex exec [resume <id>] --json -c sandbox_mode="read-only" -`, persona prepended to
+  the prompt. codex-cli 0.166.0 is installed in the user npm prefix (no sudo). Transient
+  "Reconnecting…" error events are ignored; the final `turn.failed` decides.
 - Tests (`test/runner.test.mjs`) use fake provider binaries; no credentials or usage involved.

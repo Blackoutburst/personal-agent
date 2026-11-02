@@ -185,4 +185,8 @@ test('claude parser matches recorded CLI output', () => {
   assert.deepEqual(claude.parseLine('{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}')[0].code, 'NOT_SIGNED_IN');
   assert.deepEqual(claude.parseLine('not json'), []);
   assert.deepEqual(codex.parseLine('{"type":"turn.failed","error":{"message":"usage limit reached"}}')[0].code, 'USAGE_LIMIT');
+  assert.deepEqual(codex.parseLine('{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized)"}'), []);
+  assert.equal(codex.parseLine('{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Missing bearer"}}')[0].code, 'NOT_SIGNED_IN');
+  assert.ok(codex.parseStatus('Not logged in').signedIn === false && codex.parseStatus('Logged in using ChatGPT').signedIn);
+  assert.ok(!codex.command({ home: '/h', resume: 't1' }).args.includes('--sandbox'));
 });
