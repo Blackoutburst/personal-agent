@@ -212,6 +212,8 @@ private fun Portrait(character: String, outfit: String, mood: Mood, feeling: Str
     val root = "characters/$character"
     val body = picture("$root/outfits/$outfit.webp") ?: picture("$root/outfits/base.webp")
     val patch = face?.let { picture("$root/faces/$it.webp") }
+    // What the outfit has in front of the face area (a brim, bangs): drawn over the face patch.
+    val front = if (patch != null && outfit != "base") picture("$root/fronts/$outfit.webp") else null
     val lift = if (still) 0f else breath
     Canvas(modifier.semantics { if (label.isNotEmpty()) contentDescription = label }.graphicsLayer {
         translationY = -lift * 2.dp.toPx()
@@ -220,7 +222,7 @@ private fun Portrait(character: String, outfit: String, mood: Mood, feeling: Str
     }) {
         val side = size.minDimension.toInt()
         val at = androidx.compose.ui.unit.IntOffset(((size.width - side) / 2).toInt(), ((size.height - side) / 2).toInt())
-        for (image in listOfNotNull(body, patch)) drawImage(image, dstOffset = at, dstSize = androidx.compose.ui.unit.IntSize(side, side),
+        for (image in listOfNotNull(body, patch, front)) drawImage(image, dstOffset = at, dstSize = androidx.compose.ui.unit.IntSize(side, side),
             filterQuality = androidx.compose.ui.graphics.FilterQuality.High)
     }
 }

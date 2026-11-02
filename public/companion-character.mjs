@@ -78,7 +78,8 @@ function extras(mood, c) {
 }
 
 // Illustrated characters: an outfit picture with a face patch drawn over it (same framing), in
-// characters/<id>/outfits and characters/<id>/faces. Idle uses the outfit's own resting face and
+// characters/<id>/outfits and characters/<id>/faces, then the outfit's front layer (characters/<id>/fronts:
+// a brim, bangs or collar the patch area overlaps; every outfit but base has one). Idle uses the outfit's own resting face and
 // blinks; talking alternates the resting face with the open-mouth patch.
 const PORTRAITS = { claude: true };
 const FACE_FOR = { idle: null, listening: 'listening', thinking: 'thinking', talking: null, happy: 'happy', sleepy: 'sleepy' };
@@ -91,7 +92,7 @@ function portrait(character, mood, label, outfit = 'base', feeling = null) {
   const face = felt ? picture(`faces/${felt}`) : FACE_FOR[mood] ? picture(`faces/${FACE_FOR[mood]}`) : '';
   const overlay = felt ? '' : mood === 'talking' ? picture('faces/talk', 'frame-talk') : mood === 'idle' ? picture('faces/blink', 'frame-blink') : '';
   return `<svg class="char char-portrait char-${character} mood-${mood}" viewBox="0 0 200 200" role="img" aria-label="${label}" xmlns="http://www.w3.org/2000/svg">
-  <g class="char-body">${picture(`outfits/${outfit}`)}${face}${overlay}</g>
+  <g class="char-body">${picture(`outfits/${outfit}`)}${face}${overlay}${outfit !== 'base' && (face || overlay) ? picture(`fronts/${outfit}`) : ''}</g>
 </svg>`;
 }
 
