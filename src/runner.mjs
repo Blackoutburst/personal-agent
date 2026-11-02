@@ -93,8 +93,8 @@ export class CompanionRunner {
 
   // prompt: user text. resume: provider session id from a previous turn of the same thread.
   // onEvent receives {type:'session'|'delta'|'rate'} events while the reply streams.
-  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, onEvent = () => {}, signal } = {}) {
-    return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, onEvent, signal });
+  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal } = {}) {
+    return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, images, appServers, onEvent, signal });
   }
 
   // Server-side admin tooling only (manage.mjs smoke test): select the owner by config label.
@@ -102,16 +102,18 @@ export class CompanionRunner {
     return this.#enqueue(this.owners.find(owner => owner.label === label) ?? null, options);
   }
 
-  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, onEvent = () => {}, signal } = {}) {
+  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal } = {}) {
     if (!owner) return Promise.reject(new RunnerError('NO_RUNTIME'));
     let toolPolicy;
     try {
-      const appServers = this.mcpServersFor(owner);
-      if (appServers && typeof appServers.then === 'function') {
-        Promise.resolve(appServers).catch(() => {});
+      const configured = this.mcpServersFor(owner);
+      if (configured && typeof configured.then === 'function') {
+        Promise.resolve(configured).catch(() => {});
         throw new TypeError('mcpServersFor must return synchronously');
       }
-      toolPolicy = narrowToolPolicy({ tools: owner.tools, board: owner.board }, allowedTools, appServers, toolFilter);
+      if (!Array.isArray(configured) || !Array.isArray(appServers) || !Array.isArray(images) || images.length > 8
+          || images.some(path => typeof path !== 'string' || !path || path.length > 4096 || /[\x00-\x1f]/.test(path))) throw new TypeError('Invalid turn input');
+      toolPolicy = narrowToolPolicy({ tools: owner.tools, board: owner.board }, allowedTools, [...configured, ...appServers], toolFilter);
       if (owner.provider === 'codex' && toolPolicy.tools.length
           && (toolPolicy.tools.length !== WEB_TOOLS.length || !WEB_TOOLS.every(tool => toolPolicy.tools.includes(tool)))) {
         throw new TypeError('Codex web tools must be selected together');
@@ -120,16 +122,16 @@ export class CompanionRunner {
       return Promise.reject(new RunnerError('TOOL_POLICY_REFUSED'));
     }
     const previous = this.queues.get(owner.label) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(() => this.#turn(owner, { prompt, resume, systemPrompt, toolPolicy, onEvent, signal }));
+    const current = previous.catch(() => {}).then(() => this.#turn(owner, { prompt, resume, systemPrompt, toolPolicy, images: [...images], onEvent, signal }));
     this.queues.set(owner.label, current);
     current.finally(() => { if (this.queues.get(owner.label) === current) this.queues.delete(owner.label); }).catch(() => {});
     return current;
   }
 
-  async #turn(owner, { prompt, resume, systemPrompt, toolPolicy, onEvent, signal }) {
+  async #turn(owner, { prompt, resume, systemPrompt, toolPolicy, images, onEvent, signal }) {
     if (signal?.aborted) throw new RunnerError('CANCELLED');
     const adapter = ADAPTERS[owner.provider], { home, workspace } = this.paths(owner);
-    const spec = adapter.command({ binary: this.binaries[owner.provider], home, resume, model: owner.model, systemPrompt, toolPolicy });
+    const spec = adapter.command({ binary: this.binaries[owner.provider], home, resume, model: owner.model, systemPrompt, toolPolicy, images });
     const child = this.#run(spec, workspace);
     child.stdin.on('error', () => {});
     child.stdin.end((spec.promptPrefix ?? '') + prompt);

@@ -41,6 +41,9 @@ a { color: var(--shade); }
 .who:hover { background: var(--glass); }
 .mini-avatar { width: 46px; height: 46px; display: block; }
 .who-text { display: flex; flex-direction: column; line-height: 1.2; }
+.who, .who-text { min-width: 0; }
+.who-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini-avatar, .nav { flex-shrink: 0; }
 .who-text strong { font-size: 18px; }
 .top-mood { font-size: 13px; color: var(--soft); }
 .nav { display: flex; gap: 4px; background: var(--glass); padding: 4px; border-radius: 999px; box-shadow: 0 2px 10px rgba(120,80,90,.08); }
@@ -92,6 +95,37 @@ main { flex: 1; min-height: 0; display: flex; }
 
 .composer { display: flex; align-items: flex-end; gap: 8px; margin: 10px 14px 14px; padding: 6px 6px 6px 16px; background: var(--card); border-radius: 26px; box-shadow: 0 3px 14px rgba(120,80,90,.1); }
 .composer textarea { flex: 1; border: 0; outline: none; resize: none; background: transparent; padding: 10px 0; font-size: 16px; line-height: 1.4; max-height: 160px; }
+.composer textarea { min-width: 0; }
+.attach { background: var(--bg2); color: var(--ink); font-size: 28px; }
+.conversation-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin: 4px 20px 0; }
+.text-button { border: 0; background: transparent; color: var(--soft); padding: 7px 5px; font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.text-button:disabled { opacity: .5; cursor: default; }
+.text-button:focus-visible, .shared-file a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 4px; }
+.uploads { list-style: none; padding: 0; margin: 8px 20px 0; max-height: 220px; overflow-y: auto; }
+.upload { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.upload-info { flex: 1; min-width: 0; display: grid; gap: 4px; font-size: 12px; overflow-wrap: anywhere; }
+.upload-info strong { font-weight: 600; }
+.upload-info progress { width: 100%; max-width: 240px; height: 6px; accent-color: var(--body); }
+.upload-info .shared-file { max-width: 250px; }
+.upload-info .shared-file img, .upload-info .shared-file video { max-height: 90px; width: auto; }
+.upload-info .shared-file audio { height: 32px; }
+.upload-error { color: var(--note-ink); }
+.shared-file { display: grid; gap: 6px; max-width: 100%; margin-top: 6px; white-space: normal; }
+.shared-file img, .shared-file video { display: block; max-width: 100%; max-height: 360px; border-radius: 12px; object-fit: contain; }
+.shared-file audio { display: block; width: 300px; max-width: 100%; }
+.file-download { font-size: 12px; overflow-wrap: anywhere; }
+.file-caption { margin: 0; font-size: 14px; white-space: pre-wrap; }
+.file-image { display: block; border: 0; padding: 0; background: transparent; max-width: 100%; cursor: zoom-in; }
+.file-image:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 12px; }
+.full-image-dialog { max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: var(--card); color: var(--ink); }
+.full-image-dialog[open] { display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.full-image-dialog::backdrop { background: rgb(0 0 0 / .75); }
+.full-image-heading { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; }
+.full-image-heading strong { min-width: 0; overflow-wrap: anywhere; }
+.full-image-heading button { flex-shrink: 0; }
+.full-image-dialog > img { display: block; max-width: 100%; max-height: 75dvh; object-fit: contain; }
+.full-image-dialog > p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.chat.file-drag { outline: 3px dashed var(--ink); outline-offset: -5px; }
 .composer textarea::placeholder { color: var(--placeholder); }
 .round { flex: none; width: 44px; height: 44px; border-radius: 50%; border: 0; display: grid; place-items: center; cursor: pointer; }
 .round svg { width: 22px; height: 22px; }

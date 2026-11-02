@@ -102,7 +102,7 @@ test('authenticated conversations inherit owner file/web/Board and app MCP polic
     assert.equal(native.includes('WebSearch'), label === 'blackout');
     assert.equal(args[args.indexOf('--permission-mode') + 1], 'acceptEdits');
     const servers = JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers;
-    assert.deepEqual(Object.keys(servers), label === 'blackout' ? ['board', 'appdocs', 'scheduler'] : ['appdocs', 'scheduler']);
+    assert.deepEqual(Object.keys(servers), label === 'blackout' ? ['board', 'appdocs', 'scheduler', 'files'] : ['appdocs', 'scheduler', 'files']);
     assert.ok(args.includes('mcp__scheduler__create_schedule'));
     assert.match(servers.scheduler.env.COMPANION_SCHEDULER_TOKEN, /^[a-f0-9]{64}$/);
     assert.equal(servers.scheduler.env.COMPANION_SCHEDULER_URL, app.url + '/internal/scheduler');
@@ -389,7 +389,7 @@ test('the feeling tag picks the face and never shows in the reply', async t => {
   assert.match(prompt, /Follow AGENTS\.md/);
   const agents = readFileSync(join(f.home('blackout'), '..', 'workspace', 'AGENTS.md'), 'utf8');
   assert.match(agents, /\[feeling:laugh\]/);
-  assert.match(agents, /version 5/);
+  assert.match(agents, /version 6/);
   assert.match(agents, /## Board work/);
   assert.match(agents, /## Following Board work/);
 });

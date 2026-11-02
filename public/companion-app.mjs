@@ -1,16 +1,18 @@
 // The companion web app: one ongoing chat with your companion, what it remembers, and how it looks.
-import { createConversationClient, USER_CHARS } from './conversation-client.mjs';
+import { createConversationClient, createFileTransport, AttachmentError, USER_CHARS } from './conversation-client.mjs';
 import { renderCharacter, CHARACTERS, COLORS, OUTFITS, HAS_OUTFITS } from './companion-character.mjs';
 import { createRemindersUI } from './reminders-ui.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
+const fileTransport = createFileTransport();
 const remindersUI = createRemindersUI({ document });
 const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
 let profile = null, runtime = null, view = 'loading', chatOpened = false, state = client.getState();
 let wearing = 'base', draftLook = null, pollTimer = null, polling = false, happyUntil = 0, lastTurnKey = null, memory = null, confirming = null;
 const messageNodes = new Map();
+let uploads = [], uploadEpoch = 0, fileNotice = '', uploadsKey = '';
 
 // ---------- Small helpers ----------
 
@@ -169,15 +171,20 @@ function renderMessages() {
   const keep = new Set();
   let index = 0;
   for (const message of state.messages) {
-    if (!message.text) continue;
+    if (!message.text && !message.attachments?.length) continue;
     keep.add(message.id);
     let node = messageNodes.get(message.id);
     if (!node) {
       node = document.createElement('li');
       node.className = `bubble ${message.role === 'user' ? 'user' : 'companion'}`;
+      node.append(el('div', { className: 'message-text' }), el('div', { className: 'message-files' }));
       messageNodes.set(message.id, node);
     }
-    if (node.dataset.text !== message.text) { textWithLinks(node, message.text); node.dataset.text = message.text; }
+    if (node.dataset.text !== message.text) { textWithLinks(node.querySelector('.message-text'), message.text); node.dataset.text = message.text; }
+    const filesKey = JSON.stringify(message.attachments ?? []);
+    if (node.dataset.files !== filesKey) {
+      node.querySelector('.message-files').replaceChildren(...(message.attachments ?? []).map(fileView)); node.dataset.files = filesKey;
+    }
     if (list.children[index] !== node) list.insertBefore(node, list.children[index] ?? null);
     index++;
   }
@@ -224,11 +231,126 @@ function renderChat() {
   $('send').hidden = streaming;
   const input = $('input');
   if (input.value !== state.draft && document.activeElement !== input) input.value = state.draft;
-  $('send').disabled = !ready || Boolean(state.pending) || streaming || !input.value.trim() || input.value.length > USER_CHARS;
+  const completed = uploads.filter(item => item.status === 'ready');
+  const waiting = uploads.some(item => item.status !== 'ready' || item.removing);
+  $('send').disabled = !ready || Boolean(state.pending) || streaming || waiting || (!input.value.trim() && !completed.length) || input.value.length > USER_CHARS;
+  $('attach').disabled = !ready || Boolean(state.pending) || streaming || uploads.length >= 8;
+  $('file-picker').disabled = $('attach').disabled;
+  $('retry-send').hidden = state.pending?.status !== 'uncertain';
+  $('delete-conversation').disabled = !ready || state.synthetic || (state.pending && state.pending.status !== 'accepted');
   input.placeholder = `Write to ${companionName()}…`;
+  renderUploads();
 }
 
 function grow() { const input = $('input'); input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; }
+
+// ---------- Conversation files ----------
+
+function fileSize(size) { return size < 1024 ? `${size} B` : size < 1024 * 1024 ? `${(size / 1024).toFixed(1)} KiB` : `${(size / (1024 * 1024)).toFixed(1)} MiB`; }
+function clearFullImage() {
+  const dialog = $('full-image-dialog'); if (dialog.open) dialog.close();
+  $('full-image').removeAttribute('src'); $('full-image').alt = '';
+  $('full-image-title').textContent = ''; $('full-image-caption').textContent = '';
+}
+function showFullImage(file) {
+  $('full-image-title').textContent = file.name; $('full-image').alt = file.name;
+  $('full-image').src = file.url.slice(1);
+  $('full-image-caption').textContent = file.caption ?? ''; $('full-image-caption').hidden = !file.caption;
+  $('full-image-dialog').showModal();
+}
+function fileView(file) {
+  const box = el('div', { className: 'shared-file' });
+  // DTO paths are validated /api/files/<id>; strip the leading slash to preserve the app's proxy mount.
+  const url = file.url.slice(1);
+  let media;
+  if (['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.mime)) {
+    const image = el('img', { src: url, alt: file.name, loading: 'lazy', decoding: 'async' });
+    media = el('button', { type: 'button', className: 'file-image', ariaLabel: `Open image ${file.name}` }, image);
+    media.addEventListener('click', () => showFullImage(file));
+  } else if (['video/mp4', 'video/webm'].includes(file.mime)) {
+    media = el('video', { src: url, controls: true, preload: 'metadata', playsInline: true });
+    media.setAttribute('aria-label', file.name);
+  } else if (['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/flac', 'audio/mp4'].includes(file.mime)) {
+    media = el('audio', { src: url, controls: true, preload: 'metadata' }); media.setAttribute('aria-label', file.name);
+  }
+  if (media) box.append(media);
+  box.append(el('a', { href: url, download: file.name, className: 'file-download', textContent: `${file.name} · ${fileSize(file.size)}` }));
+  if (file.caption) box.append(el('p', { className: 'file-caption', textContent: file.caption }));
+  return box;
+}
+function syncFiles() {
+  if (state.opened && state.threadId && state.connection === 'ready') client.setFiles(uploads.filter(item => item.status === 'ready').map(item => item.dto));
+}
+function fileAccessDenied() {
+  client.clear(); remindersUI.clear();
+  gate('Your session ended', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true });
+}
+function clearUploads() {
+  uploadEpoch++;
+  for (const item of uploads) item.controller?.abort();
+  uploads = []; fileNotice = ''; renderUploads();
+}
+function renderUploads() {
+  const root = $('uploads'); root.hidden = !uploads.length;
+  $('file-note').hidden = !fileNotice; $('file-note').textContent = fileNotice;
+  const key = JSON.stringify([Boolean(state.pending), uploads.map(item => [item.requestId, item.status, item.progress, item.error, item.dto?.id, item.removing]), fileNotice]);
+  if (key === uploadsKey) return;
+  uploadsKey = key;
+  root.replaceChildren(...uploads.map(item => {
+    const row = el('li', { className: 'upload' }), info = el('div', { className: 'upload-info' });
+    info.append(el('strong', { textContent: item.file.name }));
+    if (item.status === 'ready') info.append(fileView(item.dto));
+    else if (item.status === 'uploading') info.append(el('span', { textContent: `Uploading ${item.progress}% · ${fileSize(item.file.size)}` }),
+      el('progress', { max: 100, value: item.progress, ariaLabel: `Uploading ${item.file.name}` }));
+    else info.append(el('span', { className: 'upload-error', textContent: item.error ?? 'Upload cancelled.' }));
+    row.append(info);
+    if (['error', 'cancelled'].includes(item.status)) {
+      const retry = el('button', { type: 'button', className: 'text-button', textContent: 'Retry', disabled: Boolean(state.pending) });
+      retry.addEventListener('click', () => uploadFile(item)); row.append(retry);
+    }
+    const remove = el('button', { type: 'button', className: 'text-button', textContent: item.removing ? 'Removing…' : item.status === 'uploading' ? 'Cancel' : 'Remove', disabled: Boolean(state.pending) || Boolean(item.removing) });
+    remove.addEventListener('click', async () => {
+      if (item.status === 'uploading') { item.controller.abort(); return; }
+      const version = uploadEpoch; item.removing = true; renderChat();
+      try {
+        if (item.dto) await fileTransport.remove(item.dto.id, { knownPending: true });
+        if (version !== uploadEpoch) return;
+        uploads = uploads.filter(value => value !== item); fileNotice = ''; syncFiles(); renderChat();
+      } catch (error) {
+        if (version !== uploadEpoch) return;
+        if (error?.code === 'ACCESS_DENIED') { fileAccessDenied(); return; }
+        fileNotice = 'That file could not be removed. Try Remove again.'; renderChat();
+      } finally { if (version === uploadEpoch) { item.removing = false; renderChat(); } }
+    });
+    row.append(remove); return row;
+  }));
+}
+async function uploadFile(item) {
+  if (!uploads.includes(item) || state.connection !== 'ready' || state.pending || state.threadId !== item.threadId) return;
+  const version = uploadEpoch; item.controller = new AbortController(); item.status = 'uploading'; item.progress = 0; item.error = null; renderChat();
+  try {
+    const dto = await fileTransport.upload(item.file, { threadId: item.threadId, requestId: item.requestId, signal: item.controller.signal,
+      onProgress: value => { if (version === uploadEpoch && uploads.includes(item)) { item.progress = value; renderUploads(); } } });
+    if (version !== uploadEpoch || state.threadId !== item.threadId || !uploads.includes(item)) return;
+    item.dto = dto; item.status = 'ready'; item.progress = 100; syncFiles();
+  } catch (error) {
+    if (version !== uploadEpoch || !uploads.includes(item)) return;
+    if (error?.code === 'ACCESS_DENIED') { fileAccessDenied(); return; }
+    item.status = error?.code === 'CANCELLED' ? 'cancelled' : 'error';
+    item.error = error instanceof AttachmentError ? error.message : 'The upload could not be confirmed. Retry the same file.';
+  }
+  renderChat();
+}
+function addFiles(files) {
+  if ($('attach').disabled) { fileNotice = 'Wait for the current request before attaching files.'; renderUploads(); return; }
+  const selected = [...files];
+  if (selected.length + uploads.length > 8) { fileNotice = 'You can send up to 8 files per message.'; renderUploads(); return; }
+  fileNotice = '';
+  for (const file of selected) {
+    const item = { file, requestId: crypto.randomUUID(), threadId: state.threadId, status: 'uploading', progress: 0 };
+    uploads.push(item); uploadFile(item);
+  }
+}
 
 // ---------- Memories ----------
 
@@ -406,7 +528,13 @@ client.subscribe(next => {
   const key = next.turn ? `${next.turn.requestId}:${next.turn.state}` : null;
   if (key && key !== lastTurnKey && next.turn.state === 'complete' && lastTurnKey?.startsWith(next.turn.requestId)) happyUntil = Date.now() + 5000;
   lastTurnKey = key;
-  state = next;
+  const previousThread = state.threadId; state = next;
+  if (previousThread !== next.threadId || !next.opened) clearFullImage();
+  if (previousThread !== next.threadId || next.connection === 'denied' || (!next.opened && next.connection !== 'loading')) clearUploads();
+  if (!next.opened) { messageNodes.clear(); $('messages').replaceChildren(); }
+  if (uploads.length && uploads.every(item => item.dto) &&
+      ((next.pending?.action === 'submit' && next.pending.status === 'accepted' && uploads.every(item => next.pending.attachments?.includes(item.dto.id))) ||
+       next.messages.some(message => message.role === 'user' && uploads.every(item => message.attachments?.some(file => file.id === item.dto.id))))) clearUploads();
   if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') remindersUI.clear();
   renderAll();
   if (!polling) schedulePoll();
@@ -416,10 +544,31 @@ setInterval(() => { if (view === 'chat') renderAll(); }, 1000);
 $('composer').addEventListener('submit', async event => {
   event.preventDefault();
   const text = $('input').value;
-  if ($('send').disabled || !text.trim()) return;
+  if ($('send').disabled) return;
+  const files = uploads.filter(item => item.status === 'ready').map(item => item.dto.id);
   $('input').value = ''; grow();
-  try { client.setDraft(''); await client.send(text); }
+  try { syncFiles(); client.setDraft(''); await client.send(text, files); }
   catch { $('input').value = text; grow(); }
+  schedulePoll();
+});
+$('attach').addEventListener('click', () => $('file-picker').click());
+$('full-image-close').addEventListener('click', clearFullImage);
+$('full-image-dialog').addEventListener('close', clearFullImage);
+$('file-picker').addEventListener('change', event => { addFiles(event.target.files); event.target.value = ''; });
+const chatArea = document.querySelector('.chat');
+chatArea.addEventListener('dragover', event => { if ([...event.dataTransfer.types].includes('Files')) { event.preventDefault(); chatArea.classList.add('file-drag'); } });
+chatArea.addEventListener('dragleave', event => { if (!chatArea.contains(event.relatedTarget)) chatArea.classList.remove('file-drag'); });
+chatArea.addEventListener('drop', event => { event.preventDefault(); chatArea.classList.remove('file-drag'); if (event.dataTransfer.files.length) addFiles(event.dataTransfer.files); });
+$('input').addEventListener('paste', event => { if (event.clipboardData.files.length) { event.preventDefault(); addFiles(event.clipboardData.files); } });
+$('retry-send').addEventListener('click', async () => {
+  await client.retry();
+  if (state.connection === 'ready' && state.threadId === null) await client.create('Companion');
+  schedulePoll();
+});
+$('delete-conversation').addEventListener('click', async () => {
+  if ($('delete-conversation').disabled || !confirm('Delete this conversation and all its files? This cannot be undone.')) return;
+  clearUploads(); await client.deleteThread();
+  if (state.connection === 'ready' && state.threadId === null) await client.create('Companion');
   schedulePoll();
 });
 $('input').addEventListener('input', () => { grow(); try { client.setDraft($('input').value); } catch { /* too long: send stays disabled */ } renderAll(); });

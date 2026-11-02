@@ -1,4 +1,5 @@
 const ID = /^[A-Za-z0-9._:-]{1,128}$/, REQUEST_ID = /^[A-Za-z0-9._-]{1,80}$/;
+const FILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const LIMIT = 16777216;
 // Mirrors src/conversations.mjs LIMITS.
 export const USER_CHARS = 8000, USER_BYTES = 32768;
@@ -58,16 +59,37 @@ function text(value, maximum, bytes, empty = false, code = 'INVALID_RESPONSE') {
 function cursor(value, code = 'INVALID_RESPONSE') {
   check(typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) && Number.isSafeInteger(Number(value)), code); return Number(value);
 }
+function attachmentIds(value, code = 'INVALID_REQUEST') {
+  try {
+    const ids = array(value, 8);
+    check(ids.every(id => typeof id === 'string' && FILE_ID.test(id)) && new Set(ids).size === ids.length, code);
+    return ids;
+  } catch { throw new ConversationError(code); }
+}
+// The URL is derived from the authenticated file ID, never accepted as a remote media source.
+export function parseAttachment(value) {
+  const file = plain(value, ['id', 'name', 'mime', 'size', 'sha256', 'direction', 'url'], ['caption']);
+  check(typeof file.id === 'string' && FILE_ID.test(file.id) && file.url === `/api/files/${file.id}`);
+  text(file.name, 200, 800); check(!/[\\/\u0000-\u001f\u007f]/.test(file.name));
+  check(typeof file.mime === 'string' && /^[a-z0-9][a-z0-9!#$&^_.+-]{0,99}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,99}$/.test(file.mime));
+  check(Number.isSafeInteger(file.size) && file.size >= 0 && file.size <= 100 * 1024 * 1024 &&
+    typeof file.sha256 === 'string' && /^[0-9a-f]{64}$/.test(file.sha256) && ['user', 'companion'].includes(file.direction));
+  if (Object.hasOwn(file, 'caption')) text(file.caption, 1000, 4000, true);
+  return { ...file };
+}
 function request(action, payload) {
   const selected = plain(payload, action === 'snapshot' ? [] : action === 'createThread' ? ['requestId', 'title'] :
     action === 'submit' ? ['requestId', 'threadId', 'text'] : action === 'events' ? ['threadId', 'cursor'] :
-    action === 'cancel' ? ['requestId', 'threadId'] : ['invalid-action'],
-  action === 'snapshot' ? ['threadId'] : [], 'INVALID_REQUEST');
-  check(['snapshot', 'createThread', 'submit', 'events', 'cancel'].includes(action), 'INVALID_REQUEST');
+    ['cancel', 'deleteThread'].includes(action) ? ['requestId', 'threadId'] : ['invalid-action'],
+  action === 'snapshot' ? ['threadId'] : action === 'submit' ? ['attachments'] : [], 'INVALID_REQUEST');
+  check(['snapshot', 'createThread', 'submit', 'events', 'cancel', 'deleteThread'].includes(action), 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'threadId')) identifier(selected.threadId, false, 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'requestId')) identifier(selected.requestId, true, 'INVALID_REQUEST');
   if (action === 'createThread') text(selected.title, 80, 80, false, 'INVALID_REQUEST');
-  if (action === 'submit') text(selected.text, USER_CHARS, USER_BYTES, false, 'INVALID_REQUEST');
+  if (action === 'submit') {
+    const ids = Object.hasOwn(selected, 'attachments') ? attachmentIds(selected.attachments) : [];
+    text(selected.text, USER_CHARS, USER_BYTES, ids.length > 0, 'INVALID_REQUEST');
+  }
   if (action === 'events') cursor(selected.cursor, 'INVALID_REQUEST');
   return { action, ...selected };
 }
@@ -85,6 +107,7 @@ export function createConversationTransport({ fetchImpl = globalThis.fetch } = {
       response = await fetchImpl('api/conversation', { method: 'POST', credentials: 'same-origin', mode: 'same-origin', redirect: 'error',
         cache: 'no-store', signal: controller.signal, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body });
       if (response.status === 401 || response.status === 403) throw new ConversationError('ACCESS_DENIED', response.status);
+      if (response.status === 404) throw new ConversationError('RESYNC_REQUIRED', response.status);
       if (!response.ok) throw new ConversationError(response.status === 409 ? 'CONFLICT' : response.status >= 500 ? 'UNAVAILABLE' : 'INVALID_REQUEST', response.status);
       check(!response.redirected && /^application\/json(?:\s*;.*)?$/i.test(response.headers.get('content-type') || ''));
       const length = response.headers.get('content-length');
@@ -110,6 +133,76 @@ export function createConversationTransport({ fetchImpl = globalThis.fetch } = {
     }
   };
 }
+const FILE_ERRORS = {
+  INVALID_REQUEST: 'Choose a valid file (up to 100 MiB; most files are limited to 25 MiB).',
+  TOO_LARGE: 'That file exceeds the server limit: 25 MiB, or 100 MiB for supported video.',
+  QUOTA: 'Your file storage is full. Delete an old conversation and its files to make room.',
+  ACCESS_DENIED: 'Your session ended. Sign in again before uploading.',
+  CONFLICT: 'This upload could not be matched. Remove it and choose the file again.',
+  NETWORK_ERROR: 'The upload could not be confirmed. Retry to reuse the same upload request.',
+  INVALID_RESPONSE: 'The upload response could not be verified. Retry the same file.',
+  CANCELLED: 'Upload cancelled.'
+};
+export class AttachmentError extends Error {
+  constructor(code) { super(FILE_ERRORS[code] ?? FILE_ERRORS.NETWORK_ERROR); this.name = 'AttachmentError'; this.code = Object.hasOwn(FILE_ERRORS, code) ? code : 'NETWORK_ERROR'; }
+}
+// XHR supplies upload progress; cookies and Origin are browser-managed, never placed in a URL.
+export function createFileTransport({ xhrFactory = () => new XMLHttpRequest(), fetchImpl = globalThis.fetch } = {}) {
+  return Object.freeze({
+    upload(file, { threadId, requestId, signal, onProgress = () => {} } = {}) {
+      return new Promise((resolve, reject) => {
+        let xhr, finished = false;
+        const finish = (error, value) => { if (finished) return; finished = true; signal?.removeEventListener('abort', abort); error ? reject(error) : resolve(value); };
+        const abort = () => { xhr?.abort(); finish(new AttachmentError('CANCELLED')); };
+        try {
+          check(file instanceof Blob && Number.isSafeInteger(file.size) && file.size <= 100 * 1024 * 1024, 'INVALID_REQUEST');
+          check(typeof threadId === 'string' && FILE_ID.test(threadId) && typeof requestId === 'string' && REQUEST_ID.test(requestId), 'INVALID_REQUEST');
+          text(file.name, 200, 800); check(!/[\\/\u0000-\u001f\u007f]/.test(file.name), 'INVALID_REQUEST');
+          if (signal?.aborted) { abort(); return; }
+          xhr = xhrFactory(); xhr.open('POST', 'api/files'); xhr.withCredentials = true; xhr.timeout = 120000;
+          xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+          xhr.setRequestHeader('X-Thread-Id', threadId); xhr.setRequestHeader('X-Request-Id', requestId);
+          xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name)); xhr.setRequestHeader('Accept', 'application/json');
+          xhr.upload.onprogress = event => { if (!finished && event.lengthComputable) onProgress(Math.min(100, Math.round(event.loaded / Math.max(1, event.total) * 100))); };
+          xhr.onerror = xhr.ontimeout = () => finish(new AttachmentError('NETWORK_ERROR'));
+          xhr.onabort = () => finish(new AttachmentError('CANCELLED'));
+          xhr.onload = () => {
+            if (xhr.status === 401 || xhr.status === 403) return finish(new AttachmentError('ACCESS_DENIED'));
+            if (xhr.status === 413) {
+              let quota = false;
+              try { quota = xhr.responseText.length <= 16384 && JSON.parse(xhr.responseText)?.error?.code === 'FILE_QUOTA'; } catch { /* Fixed size failure. */ }
+              return finish(new AttachmentError(quota ? 'QUOTA' : 'TOO_LARGE'));
+            }
+            if (xhr.status === 409) return finish(new AttachmentError('CONFLICT'));
+            if (xhr.status === 507 || xhr.status === 429) return finish(new AttachmentError('QUOTA'));
+            try {
+              check(xhr.responseText.length <= 16384 && /^application\/json(?:\s*;.*)?$/i.test(xhr.getResponseHeader('Content-Type') ?? ''));
+              const result = JSON.parse(xhr.responseText);
+              if (xhr.status !== 200) {
+                if (/QUOTA|STORAGE_FULL/.test(result?.error?.code ?? '')) return finish(new AttachmentError('QUOTA'));
+                return finish(new AttachmentError(xhr.status >= 500 ? 'NETWORK_ERROR' : 'INVALID_REQUEST'));
+              }
+              const selected = plain(result, ['file']), received = parseAttachment(selected.file);
+              check(received.direction === 'user'); finish(null, received);
+            } catch { finish(new AttachmentError('INVALID_RESPONSE')); }
+          };
+          signal?.addEventListener('abort', abort, { once: true }); xhr.send(file);
+        } catch { finish(new AttachmentError('INVALID_REQUEST')); }
+      });
+    },
+    async remove(id, { signal, knownPending = false } = {}) {
+      check(typeof id === 'string' && FILE_ID.test(id), 'INVALID_REQUEST');
+      const response = await fetchImpl('api/files/remove', { method: 'POST', credentials: 'same-origin', mode: 'same-origin', redirect: 'error', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ id }), signal });
+      if (response.status === 401 || response.status === 403) throw new AttachmentError('ACCESS_DENIED');
+      if (response.status === 404 && knownPending === true) return true;
+      if (!response.ok || response.redirected) throw new AttachmentError(response.status === 409 ? 'CONFLICT' : 'NETWORK_ERROR');
+      check(/^application\/json(?:\s*;.*)?$/i.test(response.headers.get('content-type') ?? '') && Number(response.headers.get('content-length') ?? 0) <= 1024);
+      const body = await response.text(); check(body.length <= 1024);
+      const result = plain(JSON.parse(body), ['removed']); check(result.removed === true); return true;
+    }
+  });
+}
 function envelope(value, required, optional = []) {
   const selected = plain(value, ['version', 'synthetic', ...required], optional);
   check(selected.version === 1 && typeof selected.synthetic === 'boolean'); return selected;
@@ -120,12 +213,15 @@ function thread(value) {
 }
 function feeling(value, role) { check(role === 'assistant' && typeof value === 'string' && /^[a-z-]{1,20}$/.test(value)); return value; }
 function message(value, threadId) {
-  const selected = plain(value, ['id', 'threadId', 'role', 'text'], ['requestId', 'feeling']);
+  const selected = plain(value, ['id', 'threadId', 'role', 'text'], ['requestId', 'feeling', 'attachments']);
   check(selected.threadId === threadId, 'RESYNC_REQUIRED');
   check(selected.role === 'user' || selected.role === 'assistant');
+  const files = Object.hasOwn(selected, 'attachments') ? array(selected.attachments, 8).map(parseAttachment) : [];
+  check(new Set(files.map(file => file.id)).size === files.length && files.every(file => file.direction === (selected.role === 'user' ? 'user' : 'companion')));
   return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: selected.role,
-    text: text(selected.text, selected.role === 'user' ? USER_CHARS : ASSISTANT_CHARS, selected.role === 'user' ? USER_BYTES : ASSISTANT_BYTES, selected.role === 'assistant'),
+    text: text(selected.text, selected.role === 'user' ? USER_CHARS : ASSISTANT_CHARS, selected.role === 'user' ? USER_BYTES : ASSISTANT_BYTES, selected.role === 'assistant' || files.length > 0),
     ...(Object.hasOwn(selected, 'requestId') ? { requestId: identifier(selected.requestId, true) } : {}),
+    ...(Object.hasOwn(selected, 'attachments') ? { attachments: files } : {}),
     ...(Object.hasOwn(selected, 'feeling') ? { feeling: feeling(selected.feeling, selected.role) } : {}) };
 }
 function snapshot(value, requested) {
@@ -181,7 +277,15 @@ function upsert(messages, next) {
   if (index === -1) { check(messages.length < 500); messages.push(next); }
   else { const before = messages[index]; check(before.threadId === next.threadId && before.role === next.role &&
     (!before.requestId || !next.requestId || before.requestId === next.requestId) &&
-    (before.role !== 'user' || before.text === next.text)); messages[index] = { ...before, ...next }; }
+    (before.role !== 'user' || (before.text === next.text && sameFiles(before.attachments ?? [], next.attachments ?? [])))); messages[index] = { ...before, ...next }; }
+}
+function sameFiles(before, after) {
+  return before.length === after.length && before.every(file => after.some(other => file.id === other.id));
+}
+function confirms(message, pending) {
+  if (pending?.action !== 'submit' || message.role !== 'user' || message.requestId !== pending.requestId) return false;
+  check(message.text === pending.text && sameFiles(message.attachments ?? [], (pending.attachments ?? []).map(id => ({ id }))));
+  return true;
 }
 const initial = () => ({ opened: false, synthetic: false, runtime: null, threads: [], threadId: null, messages: [], cursor: null,
   lastSeq: 0, hasMore: false, turn: null, connection: 'disconnected', pending: null, draft: '', error: null });
@@ -189,12 +293,12 @@ const initial = () => ({ opened: false, synthetic: false, runtime: null, threads
 // pending is a submit {threadId,text} or createThread {title}, plus stable requestId/status.
 // Drafts, pending writes and display data live only in memory. There is no scheduler or automatic resubmission.
 export function createConversationClient({ transport = createConversationTransport(), requestId = () => globalThis.crypto.randomUUID() } = {}) {
-  let state = initial(), epoch = 0, polling = null;
+  let state = initial(), epoch = 0, polling = null, files = new Map();
   const listeners = new Set(), active = new Set(), copy = () => structuredClone(state);
   const emit = () => { for (const listener of listeners) { try { listener(copy()); } catch { /* A view cannot bypass display clearing. */ } } };
   const current = version => version === epoch;
   function begin() { epoch++; for (const controller of active) controller.abort(); active.clear(); polling = null; return epoch; }
-  function clear(connection = 'disconnected', error = null) { begin(); state = { ...initial(), connection, error }; emit(); return copy(); }
+  function clear(connection = 'disconnected', error = null) { begin(); files.clear(); state = { ...initial(), connection, error }; emit(); return copy(); }
   async function call(action, payload, version) {
     if (!current(version)) return undefined;
     const controller = new AbortController(); active.add(controller);
@@ -217,7 +321,7 @@ export function createConversationClient({ transport = createConversationTranspo
       if (!current(version)) return;
       const data = snapshot(received, threadId);
       let pending = retained;
-      const confirmed = pending?.action === 'submit' && data.messages.some(item => item.role === 'user' && item.requestId === pending.requestId);
+      const confirmed = data.messages.some(item => confirms(item, pending));
       const draft = confirmed && state.draft === pending.text ? '' : state.draft;
       if (confirmed) pending = null;
       state = { ...state, ...data, opened: true, connection: 'ready', hasMore: false, pending, draft, error: null }; emit();
@@ -227,7 +331,7 @@ export function createConversationClient({ transport = createConversationTranspo
   async function open(options = {}) {
     const selected = plain(options, [], ['threadId'], 'INVALID_REQUEST');
     if (Object.hasOwn(selected, 'threadId')) identifier(selected.threadId, false, 'INVALID_REQUEST');
-    const version = begin(); state = { ...initial(), connection: 'loading', threadId: selected.threadId ?? null }; emit();
+    const version = begin(); files.clear(); state = { ...initial(), connection: 'loading', threadId: selected.threadId ?? null }; emit();
     await load(selected.threadId, version); return copy();
   }
   // Reload the open thread's snapshot (thread titles, final text) without dropping the draft or a pending action.
@@ -238,9 +342,15 @@ export function createConversationClient({ transport = createConversationTranspo
   async function submitPending(pending, version) {
     try {
       const payload = pending.action === 'submit' ? { requestId: pending.requestId, threadId: pending.threadId, text: pending.text } :
-        { requestId: pending.requestId, title: pending.title };
+        pending.action === 'deleteThread' ? { requestId: pending.requestId, threadId: pending.threadId } : { requestId: pending.requestId, title: pending.title };
+      if (pending.action === 'submit' && pending.attachments?.length) payload.attachments = [...pending.attachments];
       const received = await call(pending.action, payload, version);
       if (!current(version)) return;
+      if (pending.action === 'deleteThread') {
+        const body = envelope(received, ['deletedThreadId', 'requestId']);
+        check(body.deletedThreadId === pending.threadId && body.requestId === pending.requestId);
+        files.clear(); state = { ...initial(), connection: 'loading' }; emit(); await load(undefined, version); return;
+      }
       if (pending.action === 'createThread') {
         const body = envelope(received, ['thread']), created = thread(body.thread);
         check(created.title === pending.title);
@@ -250,7 +360,10 @@ export function createConversationClient({ transport = createConversationTranspo
       check(accepted.requestId === pending.requestId && accepted.threadId === pending.threadId); identifier(accepted.messageId);
       if (state.pending?.requestId !== pending.requestId) return; // Events may already have completed this turn.
       const messages = [...state.messages];
-      upsert(messages, { id: accepted.messageId, threadId: pending.threadId, role: 'user', text: pending.text, requestId: pending.requestId });
+      const attachments = (pending.attachments ?? []).map(id => files.get(id));
+      if (attachments.some(file => !file)) { await load(pending.threadId, version, pending); return; }
+      upsert(messages, { id: accepted.messageId, threadId: pending.threadId, role: 'user', text: pending.text, requestId: pending.requestId,
+        ...(attachments.length ? { attachments } : {}) });
       state = { ...state, messages, pending: { ...pending, status: 'accepted' }, draft: state.draft === pending.text ? '' : state.draft, connection: 'ready', error: null,
         turn: state.turn?.requestId === pending.requestId ? state.turn : { requestId: pending.requestId, state: 'streaming' } }; emit();
     } catch (error) {
@@ -262,18 +375,25 @@ export function createConversationClient({ transport = createConversationTranspo
   }
   async function create(title) {
     text(title, 80, 80, false, 'INVALID_REQUEST'); check(!state.pending, 'BUSY'); check(state.opened && state.connection === 'ready', 'NOT_READY');
-    const pending = { action: 'createThread', requestId: nextId(), title, status: 'submitting' }, version = begin();
+    const pending = { action: 'createThread', requestId: nextId(), title, status: 'submitting' }, version = begin(); files.clear();
     state = { ...initial(), connection: 'loading', pending }; emit(); await submitPending(pending, version); return copy();
   }
-  async function send(value = state.draft) {
-    text(value, USER_CHARS, USER_BYTES, false, 'INVALID_REQUEST'); check(!state.pending && state.turn?.state !== 'streaming', 'BUSY');
+  async function send(value = state.draft, attachments = []) {
+    const ids = attachmentIds(attachments);
+    text(value, USER_CHARS, USER_BYTES, ids.length > 0, 'INVALID_REQUEST'); check(!state.pending && state.turn?.state !== 'streaming', 'BUSY');
     check(state.opened && state.connection === 'ready' && state.threadId !== null, 'NOT_READY');
-    const pending = { action: 'submit', requestId: nextId(), threadId: state.threadId, text: value, status: 'submitting' }, version = epoch;
+    const pending = { action: 'submit', requestId: nextId(), threadId: state.threadId, text: value,
+      ...(ids.length ? { attachments: [...ids] } : {}), status: 'submitting' }, version = epoch;
     state = { ...state, pending, error: null }; emit(); await submitPending(pending, version); return copy();
   }
   async function retry() {
     check(state.pending?.status === 'uncertain', 'NOT_READY');
     const pending = { ...state.pending, status: 'submitting' }, version = epoch;
+    state = { ...state, pending, error: null }; emit(); await submitPending(pending, version); return copy();
+  }
+  async function deleteThread() {
+    check(state.opened && !state.synthetic && state.threadId !== null && state.connection === 'ready' && (!state.pending || state.pending.status === 'accepted'), 'NOT_READY');
+    const pending = { action: 'deleteThread', requestId: nextId(), threadId: state.threadId, status: 'submitting' }, version = begin();
     state = { ...state, pending, error: null }; emit(); await submitPending(pending, version); return copy();
   }
   // Stop the running reply of the open thread. The final turn state arrives as an event.
@@ -306,7 +426,7 @@ export function createConversationClient({ transport = createConversationTranspo
         let turn = state.turn, pending = state.pending, draft = state.draft;
         for (const event of page.events) {
           if (event.type === 'message') { upsert(messages, event.message);
-            if (pending?.action === 'submit' && event.message.role === 'user' && event.message.requestId === pending.requestId) {
+            if (confirms(event.message, pending)) {
               if (draft === pending.text) draft = ''; pending = { ...pending, status: 'accepted' };
             }
           } else if (event.type === 'turn') { turn = { requestId: event.requestId, state: event.state, ...(event.error ? { error: event.error } : {}) };
@@ -328,6 +448,12 @@ export function createConversationClient({ transport = createConversationTranspo
   return Object.freeze({ getState: copy,
     subscribe(listener) { check(typeof listener === 'function', 'INVALID_REQUEST'); listeners.add(listener); listener(copy()); return () => listeners.delete(listener); },
     open, select(threadId) { identifier(threadId, false, 'INVALID_REQUEST'); return open({ threadId }); }, create, send, retry, poll,
-    cancel, refresh, setDraft(value) { text(value, USER_CHARS, USER_BYTES, true, 'INVALID_REQUEST'); state = { ...state, draft: value }; emit(); return copy(); },
+    cancel, refresh, deleteThread,
+    setFiles(value) {
+      check(state.opened && state.threadId !== null && state.connection === 'ready', 'NOT_READY');
+      const selected = array(value, 8).map(parseAttachment); check(selected.every(file => file.direction === 'user') && new Set(selected.map(file => file.id)).size === selected.length, 'INVALID_REQUEST');
+      files = new Map(selected.map(file => [file.id, file]));
+    },
+    setDraft(value) { text(value, USER_CHARS, USER_BYTES, true, 'INVALID_REQUEST'); state = { ...state, draft: value }; emit(); return copy(); },
     clear: () => clear(), disconnect: () => clear() });
 }

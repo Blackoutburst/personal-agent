@@ -3,6 +3,8 @@ package dev.blackoutburst.companion
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -11,6 +13,9 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
@@ -26,7 +31,8 @@ import kotlinx.serialization.json.put
 @Serializable data class MemoryFile(val file: String, val sections: List<MemorySection>)
 @Serializable data class Memories(val files: List<MemoryFile>)
 @Serializable data class ChatThread(val id: String, val title: String)
-@Serializable data class Message(val id: String, val threadId: String, val role: String, val text: String, val requestId: String? = null, val feeling: String? = null)
+@Serializable data class Message(val id: String, val threadId: String, val role: String, val text: String, val requestId: String? = null,
+    val feeling: String? = null, val attachments: List<Attachment> = emptyList())
 @Serializable data class TurnError(val code: String, val message: String, val resetsAt: String? = null)
 @Serializable data class Turn(val requestId: String, val state: String, val error: TurnError? = null)
 @Serializable data class Snapshot(
@@ -52,19 +58,21 @@ import kotlinx.serialization.json.put
 
 /** code: the server's error code (e.g. AUTHENTICATION_REQUIRED), or NETWORK when nothing came back. */
 class ApiException(val code: String, val status: Int = 0) : IOException(code) {
-    val signedOut get() = status == 401 || code == "AUTHENTICATION_REQUIRED" || code == "INVITATION_REQUIRED"
+    val signedOut get() = status == 401 || status == 403 || code == "AUTHENTICATION_REQUIRED" || code == "INVITATION_REQUIRED"
 }
 
 /**
  * JSON over HTTPS to blackoutburst.com. Requests carry the app session as the platform cookie and
  * the site origin, which is what the companion service and the platform accept.
  */
-class Api(private val session: () -> Session?) {
+class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }, private val session: () -> Session?) {
     val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+    private val fileJson = Json { explicitNulls = false }
     private val companion = BuildConfig.SITE + BuildConfig.COMPANION_PATH
+    private val transfers = FileTransfers(session, open)
 
     suspend fun companionInfo(): CompanionInfo = call("api/companion", buildJsonObject { put("action", "get") })
-    suspend fun setProfile(profile: Profile): SavedProfile = json.decodeFromJsonElement(
+    suspend fun setProfile(profile: Profile): SavedProfile = decode(
         post(companion + "api/companion", buildJsonObject {
             put("action", "setProfile")
             put("profile", json.encodeToJsonElement(Profile.serializer(), profile))
@@ -79,20 +87,73 @@ class Api(private val session: () -> Session?) {
         call<DiscordReply>("api/companion", buildJsonObject { put("action", "discordLink"); put("token", token) }).discord
     suspend fun discordUnlink(): DiscordStatus = call<DiscordReply>("api/companion", buildJsonObject { put("action", "discordUnlink") }).discord
 
-    suspend fun snapshot(threadId: String? = null): Snapshot = call("api/conversation", buildJsonObject {
-        put("action", "snapshot"); threadId?.let { put("threadId", it) }
-    })
-    suspend fun createThread(requestId: String, title: String): ChatThread = json.decodeFromJsonElement(
-        post(companion + "api/conversation", buildJsonObject {
+    suspend fun snapshot(threadId: String? = null): Snapshot {
+        val raw = post(companion + "api/conversation", buildJsonObject {
+            put("action", "snapshot"); threadId?.let { put("threadId", it) }
+        })
+        val result = decode<Snapshot>(raw)
+        validateMessages(raw.jsonObject["messages"])
+        return checkedSnapshot(result, threadId)
+    }
+    suspend fun createThread(requestId: String, title: String): ChatThread {
+        val raw = post(companion + "api/conversation", buildJsonObject {
             put("action", "createThread"); put("requestId", requestId); put("title", title)
-        }).jsonObject.getValue("thread"))
-    suspend fun submit(requestId: String, threadId: String, text: String): String =
-        post(companion + "api/conversation", buildJsonObject {
+        })
+        return verified { decode(raw.jsonObject.getValue("thread")) }
+    }
+    suspend fun submit(requestId: String, threadId: String, text: String, attachments: List<String> = emptyList()): String {
+        checkedFileIds(attachments)
+        if (!requestKey(requestId) || !fileId(threadId) || !validText(text, 8000, 32768) || text.isBlank() && attachments.isEmpty()) throw ApiException("INVALID_REQUEST")
+        val raw = post(companion + "api/conversation", buildJsonObject {
             put("action", "submit"); put("requestId", requestId); put("threadId", threadId); put("text", text)
-        }).jsonObject.getValue("accepted").jsonObject.getValue("messageId").jsonPrimitive.content
-    suspend fun events(threadId: String, cursor: String): EventPage = call("api/conversation", buildJsonObject {
-        put("action", "events"); put("threadId", threadId); put("cursor", cursor)
-    })
+            if (attachments.isNotEmpty()) put("attachments", buildJsonArray { attachments.forEach { add(it) } })
+        })
+        return verified {
+            val accepted = raw.jsonObject.getValue("accepted").jsonObject
+            val id = accepted.getValue("messageId").jsonPrimitive.content
+            if (accepted["requestId"]?.jsonPrimitive?.content != requestId || accepted["threadId"]?.jsonPrimitive?.content != threadId || !fileId(id)) throw ApiException("INVALID_RESPONSE")
+            id
+        }
+    }
+    suspend fun events(threadId: String, cursor: String): EventPage {
+        val raw = post(companion + "api/conversation", buildJsonObject {
+            put("action", "events"); put("threadId", threadId); put("cursor", cursor)
+        })
+        val result = decode<EventPage>(raw)
+        (raw.jsonObject["events"] as? JsonArray)?.forEach { event -> event.jsonObject["message"]?.let { validateMessages(JsonArray(listOf(it))) } }
+        return checkedEventPage(result, threadId, cursor)
+    }
+    suspend fun deleteThread(threadId: String, requestId: String) {
+        if (!fileId(threadId) || !requestKey(requestId)) throw ApiException("INVALID_REQUEST")
+        val raw = post(companion + "api/conversation", buildJsonObject {
+            put("action", "deleteThread"); put("threadId", threadId); put("requestId", requestId)
+        })
+        verified {
+            val result = raw.jsonObject
+            if (result.keys != setOf("version", "synthetic", "deletedThreadId", "requestId") ||
+                result["version"].toString() != "1" || result["synthetic"].toString() != "false" ||
+                result["deletedThreadId"]?.jsonPrimitive?.content != threadId || result["requestId"]?.jsonPrimitive?.content != requestId) throw ApiException("INVALID_RESPONSE")
+        }
+    }
+    suspend fun upload(threadId: String, key: String, name: String, source: java.io.File,
+        cancel: TransferCancellation, progress: (Long) -> Unit): Attachment = transfers.upload(threadId, key, name, source, cancel, progress)
+    suspend fun download(file: Attachment, destination: java.io.File, cancel: TransferCancellation,
+        progress: (Long) -> Unit = {}): java.io.File = transfers.download(file, destination, cancel, progress)
+    suspend fun removeFile(id: String) {
+        if (!fileId(id)) throw ApiException("INVALID_REQUEST")
+        val raw = post(companion + "api/files/remove", buildJsonObject { put("id", id) })
+        verified { if (raw.jsonObject["removed"].toString() != "true") throw ApiException("INVALID_RESPONSE") }
+    }
+    private fun validateMessages(value: JsonElement?) = verified {
+        val messages = value as? JsonArray ?: throw ApiException("INVALID_RESPONSE")
+        messages.forEach { message ->
+            val files = message.jsonObject["attachments"] ?: return@forEach
+            val decoded = try { fileJson.decodeFromJsonElement<List<Attachment>>(files) } catch (_: Exception) { throw ApiException("INVALID_RESPONSE") }
+            checkedFiles(decoded)
+            val direction = if (message.jsonObject["role"]?.jsonPrimitive?.content == "user") "user" else "companion"
+            if (decoded.any { it.direction != direction }) throw ApiException("INVALID_RESPONSE")
+        }
+    }
     suspend fun cancel(requestId: String, threadId: String) {
         post(companion + "api/conversation", buildJsonObject {
             put("action", "cancel"); put("requestId", requestId); put("threadId", threadId)
@@ -100,7 +161,7 @@ class Api(private val session: () -> Session?) {
     }
 
     /** Exchanges the one-time code from the account page for the app's own session. */
-    suspend fun exchange(code: String, verifier: String): AppSession = json.decodeFromJsonElement(
+    suspend fun exchange(code: String, verifier: String): AppSession = decode(
         post(BuildConfig.SITE + "/api/account/app/session", buildJsonObject {
             put("app", SignIn.APP); put("code", code); put("verifier", verifier)
         }, authenticated = false))
@@ -111,11 +172,18 @@ class Api(private val session: () -> Session?) {
     }
 
     private suspend inline fun <reified T> call(path: String, body: JsonObject): T =
-        json.decodeFromJsonElement(post(companion + path, body))
+        decode(post(companion + path, body))
 
-    private suspend fun post(url: String, body: JsonObject, authenticated: Boolean = true): JsonElement =
-        withContext(Dispatchers.IO) {
-            val connection = try { URL(url).openConnection() as HttpURLConnection } catch (_: Exception) { throw ApiException("NETWORK") }
+    private inline fun <reified T> decode(value: JsonElement): T = try { json.decodeFromJsonElement(value) }
+        catch (_: Exception) { throw ApiException("INVALID_RESPONSE") }
+    private inline fun <T> verified(block: () -> T): T = try { block() }
+        catch (error: ApiException) { throw error }
+        catch (_: Exception) { throw ApiException("INVALID_RESPONSE") }
+
+    private suspend fun post(url: String, body: JsonObject, authenticated: Boolean = true): JsonElement {
+        val owner = if (authenticated) session()?.takeUnless { it.expired } ?: throw ApiException("AUTHENTICATION_REQUIRED", 401) else null
+        return withContext(Dispatchers.IO) {
+            val connection = try { open(URL(url)) } catch (_: Exception) { throw ApiException("NETWORK") }
             try {
                 connection.requestMethod = "POST"
                 connection.connectTimeout = 15_000
@@ -125,14 +193,14 @@ class Api(private val session: () -> Session?) {
                 connection.setRequestProperty("Content-Type", "application/json")
                 connection.setRequestProperty("Accept", "application/json")
                 connection.setRequestProperty("Origin", BuildConfig.SITE)
-                if (authenticated) session()?.let { connection.setRequestProperty("Cookie", "${it.cookie}=${it.token}") }
+                owner?.let { connection.setRequestProperty("Cookie", "${it.cookie}=${it.token}") }
                 val status = try {
                     connection.outputStream.use { it.write(body.toString().toByteArray()) }
                     connection.responseCode
                 } catch (_: IOException) { throw ApiException("NETWORK") }
                 val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-                val text = stream?.use { input -> input.readNBytes(LIMIT + 1).also { if (it.size > LIMIT) throw ApiException("TOO_LARGE", status) } }
-                    ?.toString(Charsets.UTF_8).orEmpty()
+                val bytes = stream?.use { input -> input.readNBytes(LIMIT + 1).also { if (it.size > LIMIT) throw ApiException("TOO_LARGE", status) } } ?: ByteArray(0)
+                val text = verified { Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString() }
                 val parsed = runCatching { json.parseToJsonElement(text) }.getOrNull()
                 if (status !in 200..299) throw ApiException(errorCode(parsed) ?: "HTTP_$status", status)
                 parsed ?: throw ApiException("INVALID_RESPONSE", status)
@@ -144,6 +212,7 @@ class Api(private val session: () -> Session?) {
                 connection.disconnect()
             }
         }
+    }
 
     // The companion answers {error:{code}}, the platform {error:"code"}.
     private fun errorCode(body: JsonElement?): String? {

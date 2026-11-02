@@ -73,7 +73,15 @@
               <small id="schedule-zone"></small>
             </form>
           </details>
+          <div class="conversation-actions">
+            <button id="retry-send" class="text-button" type="button" hidden>Retry pending request</button>
+            <button id="delete-conversation" class="text-button" type="button" disabled>Delete conversation</button>
+          </div>
+          <p id="file-note" class="note" role="status" hidden></p>
+          <ul id="uploads" class="uploads" aria-label="Files to send" hidden></ul>
           <form id="composer" class="composer">
+            <input id="file-picker" class="sr-only" type="file" multiple aria-label="Choose files">
+            <button id="attach" class="round attach" type="button" aria-label="Attach files" title="Attach files (or drop or paste them here)" disabled><span aria-hidden="true">＋</span></button>
             <label class="sr-only" for="input">Your message</label>
             <textarea id="input" rows="1" maxlength="8000" placeholder="Write a message…" enterkeyhint="send"></textarea>
             <button id="stop" class="round stop" type="button" aria-label="Stop" hidden><span aria-hidden="true">■</span></button>
@@ -126,5 +134,10 @@
     </main>
     <p id="announce" class="sr-only" role="status" aria-live="polite"></p>
   </div>
+  <dialog id="full-image-dialog" class="full-image-dialog" aria-labelledby="full-image-title">
+    <div class="full-image-heading"><strong id="full-image-title"></strong><button id="full-image-close" class="button" type="button" autofocus>Close image</button></div>
+    <img id="full-image" alt="">
+    <p id="full-image-caption" hidden></p>
+  </dialog>
 </body>
 </html>

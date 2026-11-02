@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -71,6 +72,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
@@ -179,45 +182,71 @@ private fun Home(model: CompanionModel, state: UiState) {
 
 @Composable
 private fun ChatScreen(model: CompanionModel, state: UiState) {
-    var draft by rememberSaveable { mutableStateOf("") }
+    var draft by rememberSaveable(state.scope) { mutableStateOf("") }
+    var confirmDelete by remember(state.scope) { mutableStateOf(false) }
+    var pickerScope by remember { mutableLongStateOf(state.scope) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> model.attachFiles(uris, pickerScope) }
     var tick by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) { while (true) { delay(1000); tick = System.currentTimeMillis() } }
     val mood = remember(state, draft.isNotBlank(), tick) { model.mood(draft.isNotBlank()) }
     val list = rememberLazyListState()
-    val shown = state.messages.filter { it.text.isNotEmpty() }
+    val shown = state.messages.filter { it.text.isNotEmpty() || it.attachments.isNotEmpty() }
     LaunchedEffect(shown.size, shown.lastOrNull()?.text?.length) { if (shown.isNotEmpty()) list.animateScrollToItem(shown.size - 1) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
             CompanionCharacter(state.profile!!.character, state.profile.color, mood, Modifier.size(96.dp), label = "${state.name}, ${MOOD_TEXT[mood]}",
                 outfit = state.wearing, feeling = remember(state, tick) { model.feeling() })
             Spacer(Modifier.size(12.dp))
-            Column {
+            Column(Modifier.weight(1f)) {
                 Text(state.name, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
                 Text(MOOD_TEXT.getValue(mood), color = Soft, fontSize = 15.sp)
             }
+            TextButton(enabled = state.threadId != null && !state.deleting && !state.chatLoading, onClick = { confirmDelete = true }) { Text("Delete") }
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)) {
             if (shown.isEmpty()) item {
                 Text("Say hello to ${state.name}!", Modifier.fillMaxWidth().padding(top = 40.dp), color = Soft, textAlign = TextAlign.Center, fontSize = 17.sp)
             }
-            items(shown, key = { it.id }) { Bubble(it) }
+            items(shown, key = { it.id }) { Bubble(model, it, state.scope) }
         }
         note(state)?.let {
             Text(it, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), color = Soft, fontSize = 14.sp, textAlign = TextAlign.Center)
         }
+        state.fileError?.let { Text(it, Modifier.fillMaxWidth().padding(horizontal = 16.dp), color = Danger, fontSize = 14.sp) }
+        if (state.uploads.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+            state.uploads.forEach { upload ->
+                Column(Modifier.width(260.dp).heightIn(max = 220.dp).verticalScroll(rememberScrollState())) {
+                    UploadCard(model, upload, state.scope, state.sending || state.sendFailed)
+                }
+            }
+        }
+        if (state.deleteFailed) TextButton(onClick = { model.deleteThread(state.scope) }) { Text("Retry deletion") }
+        if (state.deleting) Text("Deleting conversation and files…", Modifier.padding(horizontal = 16.dp), color = Soft)
         Row(Modifier.fillMaxWidth().padding(12.dp, 6.dp), verticalAlignment = Alignment.Bottom) {
+            TextButton(enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.replying && !state.deleting && !state.deleteFailed && state.uploads.size < MAX_FILES,
+                onClick = { pickerScope = state.scope; picker.launch(arrayOf("*/*")) }) { Text("Attach") }
             OutlinedTextField(draft, { if (it.length <= 8000) draft = it }, Modifier.weight(1f),
                 placeholder = { Text("Write a message…") }, shape = RoundedCornerShape(24.dp), maxLines = 5,
+                enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.deleting && !state.deleteFailed,
                 textStyle = TextStyle(fontSize = 17.sp, color = Ink),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Default),
                 colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Card, unfocusedContainerColor = Card,
                     focusedBorderColor = Line, unfocusedBorderColor = Line))
             Spacer(Modifier.size(8.dp))
-            if (state.replying) RoundButton("Stop", "■") { model.stop() }
-            else RoundButton("Send", "↑", enabled = draft.isNotBlank() && !state.sending) { model.send(draft) { draft = "" } }
+            if (state.replying) RoundButton("Stop", "■") { model.stop(state.scope) }
+            else RoundButton(if (state.sendFailed) "Retry send" else "Send", if (state.sendFailed) "↻" else "↑",
+                enabled = (draft.isNotBlank() || state.uploads.isNotEmpty() || state.sendFailed) && !state.chatLoading && !state.sending && !state.deleting && !state.deleteFailed && state.uploads.all { it.state == "ready" }) {
+                val submitted = draft
+                model.send(submitted, state.scope) { if (draft == submitted) draft = "" }
+            }
         }
     }
+    if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false },
+        title = { Text("Delete conversation?") },
+        text = { Text("This removes this conversation and its stored files. Your companion's memories and any history retained by the AI provider are not erased.") },
+        confirmButton = { TextButton(onClick = { confirmDelete = false; model.deleteThread(state.scope) }) { Text("Delete conversation", color = Danger) } },
+        dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Keep conversation") } })
 }
 
 private val MOOD_TEXT = mapOf(Mood.Idle to "Here with you", Mood.Listening to "Listening…", Mood.Thinking to "Thinking…",
@@ -254,17 +283,19 @@ private fun note(state: UiState): String? {
 }
 
 @Composable
-private fun Bubble(message: Message) {
+private fun Bubble(model: CompanionModel, message: Message, scope: Long) {
     val mine = message.role == "user"
     val bubbleShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = if (mine) 20.dp else 6.dp, bottomEnd = if (mine) 6.dp else 20.dp)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
-        Text(message.text,
+        Column(
             Modifier.widthIn(max = 320.dp)
                 .clip(bubbleShape)
                 .background(if (mine) Mine else LocalTones.current.bubble)
                 .border(1.dp, if (mine) Color.Transparent else LocalTones.current.bubbleLine, bubbleShape)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            color = Ink, fontSize = 17.sp, lineHeight = 23.sp)
+                .padding(horizontal = 16.dp, vertical = 10.dp)) {
+            if (message.text.isNotEmpty()) Text(message.text, color = Ink, fontSize = 17.sp, lineHeight = 23.sp)
+            message.attachments.forEach { file -> AttachmentView(model, file, scope) }
+        }
     }
 }
 

@@ -7,7 +7,7 @@ import { mcpServersFor } from '../tool-policy.mjs';
 
 export const name = 'codex';
 
-export function command({ binary = 'codex', home, resume, model, systemPrompt, toolPolicy = { tools: [], board: null } }) {
+export function command({ binary = 'codex', home, resume, model, systemPrompt, images = [], toolPolicy = { tools: [], board: null } }) {
   if (toolPolicy.tools.length === 1) throw new Error('Codex web search and fetch must be configured together');
   const args = ['exec'];
   if (resume) args.push('resume', resume);
@@ -25,6 +25,8 @@ export function command({ binary = 'codex', home, resume, model, systemPrompt, t
   }
   // MCP tables deep-merge in 0.166; these overrides do not clear other config layers.
   if (model) args.push('--model', model);
+  // Both exec and exec resume accept repeated --image paths (qualified CLI help, no shell interpolation).
+  for (const image of images) args.push('--image', image);
   // Codex has no append-system-prompt flag; the caller's persona is prepended to the prompt.
   args.push('-');
   return { binary, args, env: { CODEX_HOME: home }, promptPrefix: systemPrompt ? systemPrompt + '\n\n' : '' };

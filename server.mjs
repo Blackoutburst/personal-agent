@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { BootstrapStore } from './src/store.mjs';
 import { adapterStatus, syntheticPreview } from './src/adapters.mjs';
 import { createAccountValidator } from './src/account-validator.mjs';
@@ -19,6 +19,8 @@ import { createCompanionHttp } from './src/companion-http.mjs';
 import { SchedulerStore, SchedulerService } from './src/scheduler.mjs';
 import { createSchedulerHttp, schedulerOperation } from './src/scheduler-http.mjs';
 import { DiscordLinks, DiscordBridge } from './src/discord.mjs';
+import { FileStore, FileError, FILE_LIMITS } from './src/files.mjs';
+import { createFileHttp, fileFailure } from './src/file-http.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 // Claude-chan art (docs/COMPANION.md): outfits are whole pictures, faces are patches drawn over them.
@@ -57,7 +59,7 @@ function androidRelease(dataDir) {
 }
 
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {} } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -83,6 +85,8 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let agentsConfigured = false;
   let companionHttp;
   let schedulerHttp, schedulerService, schedulerStore, discord = null;
+  let files = null, fileHttp;
+  const fileTurns = new Map();
   const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
   const tokenFor = companionId => {
     if (!schedulerOwnerTokens.has(companionId)) {
@@ -94,7 +98,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let refreshWorkspaceInstructions = () => {};
   const allowedOrigins = () => new Set(publicOrigin ? [publicOrigin] :
     [`http://127.0.0.1:${server.address().port}`, `http://localhost:${server.address().port}`]);
-  const server = createServer({ maxHeaderSize: 16384, requestTimeout: 5000, headersTimeout: 5000 }, async (req, res) => {
+  const server = createServer({ maxHeaderSize: 16384, requestTimeout: 120000, headersTimeout: 5000 }, async (req, res) => {
     const send = (status, body, type = 'application/json; charset=utf-8') => {
       if (res.destroyed || res.headersSent) return;
       const encoded = req.method === 'HEAD' ? undefined : (type.startsWith('application/json') ? JSON.stringify(body) : body);
@@ -111,6 +115,30 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       }
       // Exact raw paths only: queries cannot enable demo and traversal is rejected.
       const path = req.url;
+      if (path === '/internal/files' && mode === 'account') {
+        if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'POST is required.');
+        const token = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? '')?.[1];
+        const turn = token && fileTurns.get(token);
+        if (!turn?.current()) return fail(401, 'FILE_TURN_ENDED', 'This file tool reply is no longer active.');
+        if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '')) return fail(415, 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json.');
+        const parsed = await readJsonBody(req, 16384);
+        if (parsed.failure) return send(parsed.failure.status, parsed.failure.body);
+        const input = parsed.value;
+        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['requestId', 'path', 'caption'].includes(key))
+            || typeof input.requestId !== 'string' || !/^[A-Za-z0-9._-]{1,80}$/.test(input.requestId)) return fail(400, 'INVALID_FILE', 'Invalid file tool arguments.');
+        let file;
+        try {
+          if (!turn.current()) throw new FileError('FILE_TURN_ENDED', 409);
+          const requestId = createHash('sha256').update(JSON.stringify([turn.threadId, turn.requestId, input.requestId])).digest('hex');
+          file = await files.outgoing(turn.companionId, { ...input, requestId, threadId: turn.threadId }, turn.current);
+          turn.attach(file);
+          return send(200, { file });
+        } catch (error) {
+          try { if (file) files.discardUnbound(turn.companionId, file.id); } catch (cleanup) { error = cleanup; }
+          const result = fileFailure(error); return send(result.status, result.body);
+        }
+      }
+      if ((path === '/api/files' || path.startsWith('/api/files/')) && mode === 'account') return fileHttp(req, res, headers);
       if (path === '/internal/scheduler' && mode === 'account') {
         // The provider's stdio adapter receives an ephemeral token for exactly one owner.
         // This path never accepts cookies, companion selectors or settings changes.
@@ -209,6 +237,15 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         const owner = runner?.ownerFor(companionId);
         return owner ? { owner, dir: runner.paths(owner).workspace } : null;
       };
+      files = new FileStore({ store, dataDir, workspaceFor, ...fileOptions });
+      fileHttp = createFileHttp({ access, files });
+      const fileToolsForTurn = (companionId, context) => {
+        const token = randomBytes(32).toString('hex');
+        fileTurns.set(token, { companionId, ...context });
+        return { servers: [{ name: 'files', command: process.execPath, args: [join(ROOT, 'src', 'file-mcp.mjs')],
+          env: { COMPANION_FILE_URL: `http://127.0.0.1:${server.address().port}/internal/files`, COMPANION_FILE_TOKEN: token },
+          allowedTools: ['send_file'] }], dispose: () => fileTurns.delete(token) };
+      };
       // Claude gets the companion's files in every turn's system prompt (not kept in its history);
       // Codex only when a new session starts, since its instructions become part of the conversation.
       const systemPrompt = (companionId, { fresh = true, recent = [] } = {}) => {
@@ -219,7 +256,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           files: workspace.owner.provider === 'claude' || fresh, recent }) +
           '\n\nUse your scheduler tools for reminders the owner asks for. Check list_schedules for the current time and owner timezone, then resolve an explicit ISO timestamp. Never claim a reminder was saved without a successful tool result. Do not create unsolicited reminders or enable periodic checks for the owner.';
       };
-      conversations = new Conversations({ store, runner, systemPrompt, wakePolicy: {
+      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, wakePolicy: {
         beforeStart: (companionId, id) => Boolean(runner?.ownerFor(companionId)) && schedulerStore.startInTransaction(companionId, id),
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id) },
         onSettled: event => discord?.settled(event),
@@ -262,6 +299,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     });
     // A competing process must bind its socket before it can recover another process's turns.
     refreshWorkspaceInstructions();
+    files?.recover();
     conversations?.recover();
     schedulerService?.start();
     if (discordOptions.connect !== false) discord?.start();
@@ -274,7 +312,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   }
   return {
     server, store, url: `http://127.0.0.1:${server.address().port}`,
-    conversations, scheduler: schedulerService, discord,
+    conversations, files, scheduler: schedulerService, discord,
     async close() {
       discord?.stop();
       await schedulerService?.stop();
@@ -293,6 +331,8 @@ if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === pat
       port: Number(process.env.COMPANION_PORT || 4318), pilotFile: process.env.COMPANION_PILOT_FILE,
       publicOrigin: process.env.COMPANION_PUBLIC_ORIGIN, runtimeFile: process.env.COMPANION_RUNTIME_FILE,
       runtimeDir: process.env.COMPANION_RUNTIME_DIR,
+      fileOptions: { limits: { normal: Number(process.env.COMPANION_FILE_MAX_BYTES ?? FILE_LIMITS.normal),
+        video: Number(process.env.COMPANION_VIDEO_MAX_BYTES ?? FILE_LIMITS.video), quota: Number(process.env.COMPANION_FILE_QUOTA_BYTES ?? FILE_LIMITS.quota) } },
       binaries: { claude: process.env.COMPANION_CLAUDE_BIN || undefined, codex: process.env.COMPANION_CODEX_BIN || undefined } });
     console.log(`Personal Agent local bootstrap: ${app.url} (${process.env.COMPANION_MODE || 'unavailable'})`);
     let stopping = false;

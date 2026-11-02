@@ -1,0 +1,37 @@
+# Private conversation files
+
+Files are stored on the companion server and belong to the signed-in owner. Web supports picker, drop and pasted images. Android uses the system picker. A message can contain text, up to eight files, or files alone. Received files and successfully sent companion files appear in conversation snapshots/events and persist across reloads and devices.
+
+PNG, JPEG, GIF and WebP render as images; MP4/WebM video and MPEG/WAV/Ogg/FLAC/MP4 audio have players. PDF/ZIP are identified by bytes and download; unknown files, SVG and HTML always download. Original names and claimed content types never select inline behavior. Images open full size when selected. Android downloads verified bytes into an epoch-scoped app-private cache before native playback, showing progress; it does not claim streaming before download. No media engine or external intent receives account credentials.
+
+## Limits and API
+
+Defaults are 25 MiB per nonvideo file, 100 MiB per sniffed video, 1 GiB per companion (pending/reserved/bound/deleting bytes count), 1000 stored/reserved files and 8 files per message. Trusted server startup can set COMPANION_FILE_MAX_BYTES, COMPANION_VIDEO_MAX_BYTES and COMPANION_FILE_QUOTA_BYTES to positive integer byte counts. Limits apply to incoming and outgoing files.
+
+The proposed ops/personal-agent-preview.conf adds an exact private upload location with a 100m proxy body limit and 120-second inactivity timeouts; the app retains its own request bounds and all other conversation routes retain the 64k limit. The installed proxy must be inspected, backed up, tested and reloaded by the authorized server operator before large real uploads can work. This source change does not install or reload nginx. If startup limits are increased beyond 100 MiB, the operator must review the corresponding proxy limit too.
+
+Do not rerun the archived task5 SHA-pinned installer or ops/account-preview/*.template.py for this update. They retain their original release, manifest and rollback assumptions. The authorized operator updates only the current preview include after installed-vhost review and backup, runs nginx -t, reloads, and rechecks existing account denials plus authenticated file routes.
+
+POST api/files sends raw application/octet-stream with a known Content-Length, X-Thread-Id for an existing own thread, stable X-Request-Id and encodeURIComponent UTF8 X-File-Name. The fresh platform Cookie and exact Origin are required. Declared bytes are reserved atomically before reading, streamed to a private temporary file with SHA256 and magic sniffing, then published. Exact key/name/thread/bytes retries return the original ID; changed reuse conflicts. The two-minute request bound and file/quota bounds remain finite. Pending unbound uploads expire after24h; interrupted reservations/orphans are reconciled only after this process successfully binds its socket, and expired ready uploads are also collected during new upload admission.
+
+The response is {file:{id,name,mime,size,sha256,direction,url,caption?}}. url is the logical /api/files/<id> path; clients resolve it beneath the configured companion mount, e.g. /personal-agent-preview/api/files/<id>. Never place private files in the public STATIC allowlist or put session credentials in URLs.
+
+GET/HEAD api/files/<id> validates the account afresh, returns401 for anonymous/expired sessions and404 for another owner's or missing files. It streams bytes, supports one normal/open/suffix Range with206/416, and sets nosniff, no-store and safe Content-Disposition. POST api/files/remove with JSON{id} removes an own unbound pending upload. A404 retry for a previously known pending ID confirms absence; a503 cleanup failure remains retryable and quota-counted. Bound files are removed by deleting their conversation.
+
+## Turns and send_file
+
+Submit adds optional attachments:[fileId,...] to the existing conversation action; IDs are included in the request digest and must be same-owner, same-thread, ready, unbound user uploads. The binding and accepted user message commit together. File names/contents are untrusted data, not tool instructions or permission.
+
+Incoming bytes are copied to generated per-thread inbox paths in the owner's workspace. The turn receives name/type/size/path metadata. Codex receives actual --image arguments for safe images on both fresh and resumed exec; both CLI help forms were checked without starting a model. Claude is directed to use its existing native Read tool for image paths. Fake-provider integration proves the paths, bytes, arguments and continuity; a real Claude image-description review remains part of server acceptance, not a claimed PC model result. Video and unsupported content are described only to the extent the runtime can inspect them.
+
+The app-owned stdio MCP send_file(requestId,path,caption?) is available only in a normal active conversation turn. Its ephemeral token binds that owner/thread/turn and expires on completion/cancel/deletion; it is absent from background/admin turns. It accepts regular, unshared files strictly inside the current owner's workspace, rejects links/FIFOs/escapes, applies the same magic/caps/quota and copies bytes into storage. Caption is optional, at most1000characters/4000UTF8bytes. Reuse the same logical key/path/caption for exact retry; it creates neither a second file nor a second message event. Success binds the file to the assistant reply before reporting success. A failed attachment admission cleans up the unbound copy. AGENTSv6 explains these rules; the existing instruction/session refresh preserves native memory files.
+
+## Deletion, recovery and rollback
+
+Delete conversation requires explicit user confirmation and a stable deleteThread request. Logical deletion cancels active/deferred turns, invalidates file capabilities, deletes messages/events/turns/resume mapping and old per-thread receipts, and hides file rows before filesystem cleanup. Empty cancelled wake tombstones prevent scheduler retries resurrecting deleted private prompts. It then removes stored binaries, temporary bytes and recorded safe inbox copies. Failed cleanup remains hidden, quota-counted and retryable through the same delete request; startup recovery completes it. No claim is made to erase a provider service's retention or the owner's independent native memory files.
+
+conv_files is an additive table; existing identity/conversation table shapes and positional writers stay intact. Files live under <dataDir>/files/<companionId>/<UUID>, outside source/public paths. Back up the DB together with that files tree before deployment. Rollback to the previous release ignores new metadata and cannot send files through these new routes; preserve both DB and files for forward recovery. Older clients may require an update before reopening a conversation containing attachments.
+
+## Review checks
+
+Use Node24.22.1 for canonical tests. Storage/account/stdio/fake-provider cases cover owner isolation, auth/Origin, body bounds, magic types, quota reservations, Range, exact retries, workspace confinement, cancellation/deletion and source upgrades. Web browser QA uses synthetic intercepted account/media routes; Android builds/tests are unsigned and synthetic. Actual server runtime/image review, user-device media review, final backup/migration, merge and deployment belong to Claude; no live account, private file, pairing/grant or provider activation is performed on PC.

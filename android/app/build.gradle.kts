@@ -37,6 +37,10 @@ android {
     }
 
     buildTypes {
+        // Source-only QA can compile an APK without opening or creating any signing key.
+        if (providers.gradleProperty("companionUnsignedDebug").orNull == "true") {
+            getByName("debug") { signingConfig = null }
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true

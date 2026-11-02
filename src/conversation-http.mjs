@@ -1,5 +1,7 @@
 import { ConversationDemo, ConversationDemoError } from './conversation-demo.mjs';
 import { ConversationError } from './conversations.mjs';
+import { FileError } from './files.mjs';
+import { fileFailure } from './file-http.mjs';
 
 const UNAVAILABLE = { status: 503, body: { error: { code: 'CONVERSATION_UNAVAILABLE',
   message: 'Personal Codex is not connected. Your account connection is separate.' } } };
@@ -39,6 +41,7 @@ export function createConversationHttp({ access, store, mode, conversations = nu
         const companionId = admitted.companionId;
         return { status: 200, body: await conversations.handle(companionId, parsed.value, { runtime: () => runtimeStatus(companionId) }) };
       } catch (error) {
+        if (error instanceof FileError) return fileFailure(error);
         const code = error instanceof ConversationError && Object.hasOwn(ACCOUNT_ERRORS, error.code) ? error.code : null;
         if (!code) return { status: 503, body: { error: { code: 'CONVERSATION_UNAVAILABLE', message: 'The conversation service is unavailable.' } } };
         const [status, message] = ACCOUNT_ERRORS[code];

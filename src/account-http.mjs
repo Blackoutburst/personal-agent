@@ -81,26 +81,26 @@ export function readJsonBody(request, maximum) {
 
 // Local candidate boundary; its caller owns routing, host checks and response headers.
 export function createAccountAccess({ store, validateAccount, pilotSubjects, allowedOrigins }) {
+  function admit(request, binary = false) {
+    if (request.method !== 'POST') return fail('METHOD_NOT_ALLOWED', true);
+    let allowed;
+    try { allowed = allowedOrigins(); if (!(allowed instanceof Set)) throw new Error(); }
+    catch { return fail('ACCOUNT_VALIDATION_UNAVAILABLE', true); }
+    const origins = rawValues(request, 'origin');
+    let valid = false;
+    try { const parsed = new URL(origins[0]); valid = origins.length === 1 && ['http:', 'https:'].includes(parsed.protocol)
+      && parsed.origin === origins[0] && allowed.has(origins[0]); } catch { /* rejected */ }
+    if (!valid || rawValues(request, 'sec-fetch-site').some(value => value.split(',').some(part => part.trim().toLowerCase() === 'cross-site'))) return fail('ORIGIN_REJECTED', true);
+    const types = rawValues(request, 'content-type');
+    const accepted = binary ? /^application\/octet-stream$/i : /^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?$/i;
+    if (types.length !== 1 || !accepted.test(types[0])) return fail('UNSUPPORTED_MEDIA_TYPE', true);
+    return null;
+  }
   return {
+    admit,
     async read(request, maximum = 1024) {
-      if (request.method !== 'POST') return { failure: fail('METHOD_NOT_ALLOWED', true) };
-      let allowed;
-      try { allowed = allowedOrigins(); if (!(allowed instanceof Set)) throw new Error(); }
-      catch { return { failure: fail('ACCOUNT_VALIDATION_UNAVAILABLE', true) }; }
-      const origins = rawValues(request, 'origin');
-      let originValid = false;
-      try {
-        const origin = origins[0];
-        const parsed = new URL(origin);
-        originValid = origins.length === 1 && ['http:', 'https:'].includes(parsed.protocol) && parsed.origin === origin && allowed.has(origin);
-      } catch { /* Missing, null and malformed origins stay denied. */ }
-      if (!originValid || rawValues(request, 'sec-fetch-site').some(value => value.split(',').some(part => part.trim().toLowerCase() === 'cross-site'))) {
-        return { failure: fail('ORIGIN_REJECTED', true) };
-      }
-      const contentTypes = rawValues(request, 'content-type');
-      if (contentTypes.length !== 1 || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?$/i.test(contentTypes[0])) {
-        return { failure: fail('UNSUPPORTED_MEDIA_TYPE', true) };
-      }
+      const failure = admit(request);
+      if (failure) return { failure };
       return readJsonBody(request, maximum);
     },
     async authorize(request) {
