@@ -1,4 +1,7 @@
-# Personal Agent bootstrap
+# Personal Agent
+
+> **Restructured 2 November 2026.** The current plan is [docs/PLAN.md](docs/PLAN.md); the original v1 plan is archived in [docs/PLAN-V1-CODEX-ARCHIVE.md](docs/PLAN-V1-CODEX-ARCHIVE.md). The sections below describe the existing foundations (login, private store, conversation UI, goals, board boundary), which are kept and reused.
+
 
 A local candidate for the Blackoutburst personal companion. It contains a responsive account-preview client, a loopback HTTP server, account-to-companion integration and a private SQLite ledger/API. Personal Codex, Board access and model-backed conversation remain unavailable.
 
