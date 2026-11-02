@@ -101,3 +101,17 @@ test('the companion knows how it looks, and the line follows its look', () => {
     assert.doesNotMatch(instructions({ owner, dir, profile: null }), /How you look/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('Claude companions get AGENTS.md and their folder in the prompt; Codex reads AGENTS.md itself', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agents-prompt-'));
+  try {
+    const claude = { label: 'blackout', provider: 'claude' }, codex = { label: 'screamer', provider: 'codex' };
+    ensureWorkspace(dir, claude);
+    const prompt = instructions({ owner: claude, dir, profile: null });
+    assert.match(prompt, /<AGENTS\.md>\n# How you live/);
+    assert.match(prompt, /## Talking[\s\S]*Never sound like a service/);
+    assert.ok(prompt.includes(`Your own folder is ${dir}.`));
+    assert.doesNotMatch(prompt, /<!-- Written by/);
+    assert.doesNotMatch(instructions({ owner: codex, dir, profile: null }), /<AGENTS\.md>/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

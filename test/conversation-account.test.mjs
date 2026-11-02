@@ -162,7 +162,7 @@ test('the provider session is resumed for later turns of the same thread only', 
   assert.equal(calls.length, 3);
   assert.ok(!calls[0].args.includes('--resume') && !calls[2].args.includes('--resume'));
   assert.deepEqual(calls[1].args.slice(calls[1].args.indexOf('--resume'), calls[1].args.indexOf('--resume') + 2), ['--resume', 'sess-blackout']);
-  assert.ok(calls[0].args.includes('--append-system-prompt') && calls[0].args[calls[0].args.indexOf('--append-system-prompt') + 1].includes("Blackout's personal companion"));
+  assert.ok(calls[0].args.includes('--system-prompt') && calls[0].args[calls[0].args.indexOf('--system-prompt') + 1].includes("Blackout's personal companion"));
 });
 
 test('each owner only ever sees and reaches their own conversations and agent', async t => {
@@ -355,7 +355,7 @@ test('the companion: profile, memory view and forget, file-based instructions an
   assert.equal((await api({ action: 'forget', file: 'USER.md', id: memory.sections[0].items[1].id }, B)).body.removed, false); // B's own workspace
   await turn('t3', 'third');
 
-  const calls = f.calls('blackout'), system = call => call.args[call.args.indexOf('--append-system-prompt') + 1];
+  const calls = f.calls('blackout'), system = call => call.args[call.args.indexOf('--system-prompt') + 1];
   assert.equal(calls.length, 3);
   assert.ok(!calls[0].args.includes('--resume') && calls[1].args.includes('--resume') && !calls[2].args.includes('--resume'));
   for (const call of calls) {
@@ -385,11 +385,11 @@ test('the feeling tag picks the face and never shows in the reply', async t => {
   assert.deepEqual(snapshot.messages.at(-1), { id: replies.at(-1).id, threadId, role: 'assistant', text: 'Ha, yes!', requestId: 'feel', feeling: 'laugh' });
   assert.equal(snapshot.messages[0].feeling, undefined, 'user messages have no feeling');
   // The instructions ask for the tag and tell the companion how it looks.
-  const prompt = f.calls('blackout')[0].args[f.calls('blackout')[0].args.indexOf('--append-system-prompt') + 1];
+  const prompt = f.calls('blackout')[0].args[f.calls('blackout')[0].args.indexOf('--system-prompt') + 1];
   assert.match(prompt, /Follow AGENTS\.md/);
   const agents = readFileSync(join(f.home('blackout'), '..', 'workspace', 'AGENTS.md'), 'utf8');
   assert.match(agents, /\[feeling:laugh\]/);
-  assert.match(agents, /version 4/);
+  assert.match(agents, /version 5/);
   assert.match(agents, /## Board work/);
   assert.match(agents, /## Following Board work/);
 });
@@ -434,7 +434,7 @@ test('account user and tagged wake turns share native continuity while outfit an
   assert.equal((await companion({ action: 'forget', file: 'USER.md', id: forgotten.id })).body.removed, true);
   await wakeTurn(); await userTurn('after-forget-wake', 'Thank you again.');
 
-  const calls = f.calls('blackout'), system = call => call.args[call.args.indexOf('--append-system-prompt') + 1];
+  const calls = f.calls('blackout'), system = call => call.args[call.args.indexOf('--system-prompt') + 1];
   assert.equal(calls.length, 7);
   for (const index of [1, 2, 4, 6]) assert.ok(calls[index].args.includes('--resume'));
   for (const index of [0, 3, 5]) assert.ok(!calls[index].args.includes('--resume'));

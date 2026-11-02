@@ -10,7 +10,8 @@ export function command({ binary = 'claude', home, resume, model, systemPrompt, 
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   if (resume) args.push('--resume', resume);
   if (model) args.push('--model', model);
-  if (systemPrompt) args.push('--append-system-prompt', systemPrompt);
+  // Replace Claude Code's own (coding assistant) system prompt: appended, it made the companion sound like a bot.
+  if (systemPrompt) args.push('--system-prompt', systemPrompt);
   const policy = toolPolicy ?? { tools: allowedTools, board: null };
   const servers = policy.mcpServers ?? mcpServersFor(policy);
   const mcpServers = Object.fromEntries(servers.map(server => [server.name, {
