@@ -13,22 +13,23 @@ Restructured on 2 November 2026 by Claude · Server, which now leads this projec
 Why the restructure: every remaining ticket was blocked behind #7, which waited on orchestration #66 (design only). After 10 commits nothing called a model. The new plan runs each owner's agent directly and ships something usable at every milestone.
 
 Product
-- One companion per user, strictly private: login comes from the Blackoutburst platform account. Blackoutburst cannot talk to TheScreamer's companion and vice versa. The two companions may discover and talk to each other (M6).
+- One companion per user. Through the clients, each owner can only talk to their own companion (login comes from the Blackoutburst platform account). That is the whole privacy model: both owners are trusted admins of the same server, so there is no need to protect one owner's data from the other at the OS level.
+- Companions living on the same server may discover and talk to each other (M6); that is welcome.
 - Underlying model: each owner's own subscription, Claude Code or Codex, chosen per owner and run headless on this server under that owner's own login. No shared credentials, no API-billing fallback.
 - Server holds everything: conversations, memory, personality, goals and watches. Clients (web, then Android, later iOS) are thin and interchangeable.
 - Proactive: it can start the conversation, run scheduled checks and watches ("notify me when Qwen4 is released"), give digests and nudge neglected goals.
-- Board: the companion can read and monitor board work and dispatch project tickets within the user's permission cards. Private conversation, memories and personal details never enter the board (#11 boundary).
+- Board: the companion can read and monitor board work and dispatch project tickets within the user's permission cards. Personal conversation, memories and details stay out of board tickets (#11 boundary), since the board is a shared workspace.
 - Owner priority order (31 Oct): 1. help with long-term goals, 2. be proactive, 3. remember shared experiences, 4. develop a personality.
 
 Architecture (target)
 - Web service (this repo, Node 24): platform-session check on every request, private store, conversation API, scheduler, push.
-- Runner per owner: a small service running as a dedicated Unix user (companion-blackout, companion-thescreamer) holding that owner's Claude/Codex login. The web service talks to it over a local Unix socket. Separate Unix users give real isolation between the two owners; host administrators (both owners) remain trusted.
+- Runner: runs the agents for both owners, each with its own provider config home (CLAUDE_CONFIG_DIR / CODEX_HOME) holding that owner's login, its own sessions and working directory. Routing by authenticated owner happens in the application. No dedicated Unix users needed.
 - Provider adapters: Claude Code headless (claude -p, stream-json, resumable sessions) and Codex (codex exec --json, resume). Same interface; owner picks one.
 - Tools via MCP: board MCP (owner-scoped profile), web search/fetch, memory, watches/scheduler, notify.
 - Memory and personality: the agent maintains its own persona, facts-about-you and journal records in the private store; the user can view, edit and forget them.
 
 Milestones (labels m1…m6)
-- M1 Talk to your agent: #7 runner + provider adapters, #8 real conversation in web, #27 base tools, #19 isolation tests, #20 deploy, #21 pilot on phone and PC.
+- M1 Talk to your agent: #7 runner + provider adapters, #8 real conversation in web, #27 base tools, #19 per-owner routing tests, #20 deploy, #21 pilot on phone and PC.
 - M2 It knows you: #16 memory, #17 personality, #18 workspace UX.
 - M3 It reaches out: #28 scheduler + proactive first messages, #15 watches, #14 digests/check-ins, #22 web push (installable PWA).
 - M4 It runs your projects: #12 dispatch, #13 follow-through.
@@ -39,8 +40,8 @@ Milestones (labels m1…m6)
 Accepted defaults kept from the v1 planning (31 Oct): daily 09:00 digest in the user's timezone, weekly check-in, neglected-goal nudge after 7 inactive days, one-shot release watches checked every 6 h and quiet while unchanged, editable opt-in memories, reviewable/reversible personality changes, goal permission cards bound automatic dispatch.
 
 Working rules
-- Ship working increments; tests per ticket; keep acceptance criteria concrete and checkable.
-- Anything needing sudo (Unix users, systemd units, nginx) goes to the owner as a Needs-you request with the exact command.
-- Each owner signs in to their own Claude/Codex account themselves; never handle another owner's credentials.
+- Ship working increments; tests per ticket; keep acceptance criteria concrete and checkable. No qualification gates beyond that.
+- Anything needing sudo (systemd units, nginx) goes to the owner as a Needs-you request with the exact command.
+- Each owner signs in to their own Claude/Codex account themselves.
 - Check each provider's terms for personal headless use of a subscription before enabling it (#7).
 - Codex · PC Blackout may be given coding tickets later; Claude · Server stays lead and reviewer.
