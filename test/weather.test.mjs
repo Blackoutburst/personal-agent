@@ -123,3 +123,50 @@ test('owners set and read their place through the companion endpoint; the outfit
   assert.equal(missing.body.error.code, 'PLACE_NOT_FOUND');
   assert.equal((await http({ action: 'setWeatherPlace', place: 'Lyon', extra: 1 })).status, 400);
 });
+
+test('weather handlers select only the admitted owner and clearing one place preserves the other', async t => {
+  const { createCompanionHttp } = await import('../src/companion-http.mjs');
+  const other = '4d317b44-1f1a-46f1-b515-822d93c8246c';
+  const { weather, fake } = fixture(t, { places: {
+    aster: { name: 'Aster', country: 'Synthetic A', latitude: 10, longitude: 20 },
+    boreal: { name: 'Boreal', country: 'Synthetic B', latitude: 30, longitude: 40 }
+  } });
+  const identities = new Map([['session-a', ID], ['session-b', other]]);
+  const profile = { name: 'Pip', character: 'pip', color: 'peach', timezone: 'UTC', outfit: 'auto' };
+  const http = createCompanionHttp({
+    access: { read: async request => ({ value: request.body }),
+      authorize: async request => ({ companionId: identities.get(request.session) }) },
+    profiles: { get: id => { assert.ok([...identities.values()].includes(id)); return profile; } },
+    workspaceFor: () => null, runtimeStatus: async () => ({ state: 'ready' }), weather,
+    now: () => new Date('2026-11-03T11:00:00Z')
+  });
+  const call = (session, body) => http({ session, body });
+  for (const session of identities.keys()) assert.deepEqual((await call(session, { action: 'weather' })).body, { place: null });
+  assert.equal((await call('session-a', { action: 'setWeatherPlace', place: 'Aster' })).status, 200);
+  assert.equal((await call('session-b', { action: 'setWeatherPlace', place: 'Boreal' })).status, 200);
+  const a = await call('session-a', { action: 'weather' }), b = await call('session-b', { action: 'weather' });
+  assert.equal(a.status, 200); assert.equal(b.status, 200);
+  assert.equal(a.body.place, 'Aster, Synthetic A'); assert.equal(b.body.place, 'Boreal, Synthetic B');
+  assert.ok(a.body.current); assert.ok(b.body.current);
+  assert.ok(!JSON.stringify(a.body).includes(b.body.place)); assert.ok(!JSON.stringify(b.body).includes(a.body.place));
+
+  const calls = fake.calls.length;
+  for (const [session, foreign] of [['session-a', other], ['session-b', ID]]) {
+    for (const input of [{ action: 'weather' }, { action: 'setWeatherPlace', place: '' }]) {
+      const refused = await call(session, { ...input, companionId: foreign });
+      assert.equal(refused.status, 400); assert.equal(refused.body.error.code, 'INVALID_REQUEST');
+    }
+  }
+  assert.equal(fake.calls.length, calls, 'Rejected selectors never reach the injected weather transport');
+  assert.deepEqual((await call('session-a', { action: 'weather' })).body, a.body);
+  assert.deepEqual((await call('session-b', { action: 'weather' })).body, b.body);
+  for (const [name, own, foreign] of [['Alice', a.body, b.body], ['Bob', b.body, a.body]]) {
+    const text = instructions({ owner: { name, provider: 'codex' }, profile, dir: '/unused-synthetic-workspace',
+      files: false, now: new Date('2026-11-03T11:00:00Z'), weather: own });
+    assert.ok(text.includes(`Weather where ${name} is (${own.place})`));
+    assert.ok(!text.includes(foreign.place));
+  }
+  assert.equal((await call('session-a', { action: 'setWeatherPlace', place: '' })).status, 200);
+  assert.deepEqual((await call('session-a', { action: 'weather' })).body, { place: null });
+  assert.deepEqual((await call('session-b', { action: 'weather' })).body, b.body);
+});

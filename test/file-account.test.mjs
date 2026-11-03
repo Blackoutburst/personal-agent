@@ -31,12 +31,16 @@ let prompt='';process.stdin.on('data',c=>prompt+=c);process.stdin.on('end',async
  else out({type:'result',is_error:false,result:text,session_id:'synthetic-session'});
 });`;
 
-async function setup(t, provider = 'claude', extra = {}) {
+async function setup(t, provider = 'claude', extra = {}, withBoard = false) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pa-file-account-'))), binary = join(dir, 'fake.cjs');
   writeFileSync(binary, FAKE);
   const runtimeFile = join(dir, 'owners.json'), runtimeDir = join(dir, 'runtime');
   const subjects = ['a', 'b'].map(subject => ({ issuer, subject }));
-  writeFileSync(runtimeFile, JSON.stringify({ owners: subjects.map((p, i) => ({ ...p, label: i ? 'bob' : 'alice', provider })) }));
+  writeFileSync(runtimeFile, JSON.stringify({ owners: subjects.map((p, i) => {
+    const label = i ? 'bob' : 'alice';
+    return { ...p, label, provider, ...(withBoard ? { board: { configDir: join(dir, 'board-' + label),
+      pythonPath: process.execPath, connectPath: join(dir, 'unused-board.py'), allowedTools: [] } } : {}) };
+  }) }));
   const app = await startServer({ dataDir: join(dir, 'data'), port: 0, mode: 'account', pilotSubjects: subjects,
     validateAccount: async token => token === A ? subjects[0] : token === B ? subjects[1] : null,
     runtimeFile, runtimeDir, binaries: { claude: binary, codex: binary },
@@ -124,6 +128,66 @@ test('cancel and deletion revoke an in-flight file capability and no late call c
     assert.equal(response.status,401);await f.app.conversations.idle();assert.equal(f.app.store.db.prepare('SELECT COUNT(*) AS n FROM conv_files').get().n,0);
     if(action==='deleteThread')assert.equal(f.app.store.db.prepare('SELECT COUNT(*) AS n FROM conv_messages WHERE thread_id=?').get(f.threadId).n,0);
   }
+});
+
+test('simultaneous owner-turn Board attachments bind each token to its own workspace and bridge', async t => {
+  const bridges = new Map(), uploads = { alice: [], bob: [] };
+  const f = await setup(t, 'claude', { boardOptions: { poll: false, clientFor: configured => {
+    assert.ok(bridges.has(configured.configDir), 'Only the two configured synthetic bridges may be used');
+    return bridges.get(configured.configDir);
+  } } }, true);
+  const entries = [
+    { label: 'alice', token: A, thread: f.threadId, home: f.home, workspace: f.workspace },
+    { label: 'bob', token: B, thread: f.otherThread, home: join(f.dir, 'runtime', 'bob', 'claude-home'), workspace: join(f.dir, 'runtime', 'bob', 'workspace') }
+  ];
+  for (const entry of entries) {
+    entry.bytes = Buffer.from('Explicit safe attachment bytes for ' + entry.label);
+    writeFileSync(join(entry.workspace, 'same.txt'), entry.bytes);
+    bridges.set(join(f.dir, 'board-' + entry.label), { close() {}, async call(name, args) {
+      assert.equal(name, 'upload_attachment'); uploads[entry.label].push(args);
+      return { id: 'attachment-' + entry.label };
+    } });
+  }
+  const started = await Promise.all(entries.map(entry => f.rpc({ action: 'submit', threadId: entry.thread,
+    requestId: 'board-' + entry.label, text: 'SLOW explicitly requested attachment' }, entry.token)));
+  assert.ok(started.every(result => result.status === 200));
+  for (const entry of entries) {
+    const marker = join(entry.home, 'active.json');
+    for (let i = 0; !existsSync(marker) && i < 200; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(existsSync(marker)); const args = JSON.parse(readFileSync(marker, 'utf8')).args;
+    entry.tool = JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers.files;
+    assert.equal(entry.tool.env.COMPANION_FILE_BOARD, '1');
+    entry.id = f.app.store.db.prepare('SELECT companion_id FROM conv_threads WHERE id=?').get(entry.thread).companion_id;
+  }
+  assert.notEqual(entries[0].tool.env.COMPANION_FILE_TOKEN, entries[1].tool.env.COMPANION_FILE_TOKEN);
+  const attach = async (entry, body) => {
+    const response = await fetch(entry.tool.env.COMPANION_FILE_URL, { method: 'POST', headers: {
+      'Content-Type': 'application/json', Authorization: 'Bearer ' + entry.tool.env.COMPANION_FILE_TOKEN }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  for (const [index, entry] of entries.entries()) {
+    const foreign = entries[1 - index], input = { action: 'board', path: 'same.txt', threadId: 'thread-' + entry.label };
+    for (const path of [join(foreign.workspace, 'same.txt'), join('..', '..', foreign.label, 'workspace', 'same.txt')]) {
+      const denied = await attach(entry, { ...input, path }); assert.equal(denied.status, 403); assert.equal(denied.body.error.code, 'FILE_PATH_REJECTED');
+    }
+    assert.equal((await attach(entry, { ...input, companionId: foreign.id })).status, 400);
+  }
+  assert.deepEqual(uploads, { alice: [], bob: [] }, 'Rejected paths and owner selectors must not reach either bridge');
+  for (const entry of entries) {
+    const sent = await attach(entry, { action: 'board', path: 'same.txt', threadId: 'thread-' + entry.label });
+    assert.equal(sent.status, 200); assert.equal(sent.body.attachment.id, 'attachment-' + entry.label);
+    const [upload] = uploads[entry.label]; assert.equal(uploads[entry.label].length, 1);
+    assert.equal(upload.thread_id, 'thread-' + entry.label); assert.equal(upload.filename, 'same.txt'); assert.equal(upload.content_type, 'text/plain');
+    assert.deepEqual(Buffer.from(upload.content_base64, 'base64'), entry.bytes);
+  }
+  assert.equal((await f.rpc({ action: 'cancel', threadId: f.threadId, requestId: 'board-alice' })).status, 200);
+  const late = await attach(entries[0], { action: 'board', path: 'same.txt', threadId: 'late-alice' });
+  assert.equal(late.status, 401); assert.equal(late.body.error.code, 'FILE_TURN_ENDED'); assert.equal(uploads.alice.length, 1);
+  const bob = await attach(entries[1], { action: 'board', path: 'same.txt', threadId: 'still-bob' }); assert.equal(bob.status, 200);
+  assert.equal(uploads.bob.length, 2); assert.equal(uploads.bob[1].thread_id, 'still-bob');
+  for (const upload of uploads.bob) assert.deepEqual(Buffer.from(upload.content_base64, 'base64'), entries[1].bytes);
+  assert.equal((await f.rpc({ action: 'cancel', threadId: f.otherThread, requestId: 'board-bob' }, B)).status, 200);
+  await f.app.conversations.idle();
 });
 
 test('Codex fresh and resumed turns receive trusted image paths as actual --image inputs', async t => {

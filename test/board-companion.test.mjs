@@ -99,6 +99,58 @@ test('each new open request for the owner becomes exactly one private board wake
   assert.equal(events.length, 2);
 });
 
+test('two configured owners keep Needs-you wakes, public profile updates and requested attachments on their own bridge', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-companion-two-owner-')), store = new BootstrapStore(dir, ROOT), events = [];
+  const entries = [
+    { label: 'alice', id: '9d23bd88-cc69-4067-b375-e32bf5d7b338', boardOwner: 'board-alice', name: 'Aria', character: 'claude' },
+    { label: 'bob', id: '4d317b44-1f1a-46f1-b515-822d93c8246c', boardOwner: 'board-bob', name: 'Bram', character: 'pip' }
+  ];
+  const requests = entries.map(entry => open('request-' + entry.label, { owner_id: entry.boardOwner,
+    ticket_id: 'ticket-' + entry.label, question: 'UNSHARED_QUESTION_' + entry.label }));
+  const clients = new Map(), profiles = new Map(), ids = new Map();
+  const owners = entries.map(entry => {
+    const selected = { ...board, configDir: '/tmp/board-' + entry.label }, calls = [];
+    clients.set(selected, { calls, close() {}, async call(name, args) {
+      calls.push([name, args]);
+      if (name === 'read_inbox') return { session: { owner_id: entry.boardOwner } };
+      if (name === 'list_human_requests') return { items: requests };
+      if (name === 'update_companion_profile') return { id: 'profile-' + entry.label, ...args };
+      if (name === 'upload_attachment') return { id: 'attachment-' + entry.label };
+      assert.fail('Unexpected synthetic Board call: ' + name);
+    } });
+    profiles.set(entry.id, { name: entry.name, character: entry.character }); ids.set(entry.label, entry.id);
+    return { label: entry.label, name: entry.label, board: selected };
+  });
+  const companion = new BoardCompanion({ store, owners, profiles: { get: id => profiles.get(id) },
+    scheduler: { enqueueEvent: (id, input) => events.push([id, input]) }, companionIdFor: owner => ids.get(owner.label),
+    clientFor: configured => { assert.ok(clients.has(configured)); return clients.get(configured); } });
+  t.after(() => { companion.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  await companion.tick(); await companion.tick();
+  assert.equal(events.length, 2, 'Both request lists contain both owners, but each request queues only for its own companion once');
+  for (const [index, entry] of entries.entries()) {
+    const foreign = entries[1 - index], own = events.filter(([id]) => id === entry.id);
+    assert.equal(own.length, 1); assert.equal(own[0][1].kind, 'board');
+    assert.ok(own[0][1].prompt.includes('request request-' + entry.label));
+    assert.ok(!own[0][1].prompt.includes('request-' + foreign.label));
+    assert.ok(!JSON.stringify(own).includes('UNSHARED_QUESTION_'));
+    const client = clients.get(owners[index].board), updates = client.calls.filter(([name]) => name === 'update_companion_profile');
+    assert.deepEqual(updates, [['update_companion_profile', { name: entry.name, avatar: entry.character === 'claude' ? '✳️' : '💬',
+      description: `${entry.name}, ${entry.label}'s personal companion. Acts on the Board for ${entry.label}.` }]]);
+    const bytes = Buffer.from('Explicitly requested attachment for ' + entry.label);
+    const result = await companion.attach(entry.id, { threadId: 'thread-' + entry.label, filename: entry.label + '.txt', contentType: 'text/plain', bytes });
+    assert.equal(result.id, 'attachment-' + entry.label);
+    const uploads = client.calls.filter(([name]) => name === 'upload_attachment'); assert.equal(uploads.length, 1);
+    const args = uploads[0][1]; assert.deepEqual(Object.keys(args).sort(), ['content_base64', 'content_type', 'filename', 'idempotency_key', 'thread_id']);
+    assert.equal(args.thread_id, 'thread-' + entry.label); assert.equal(args.filename, entry.label + '.txt'); assert.equal(args.content_type, 'text/plain');
+    assert.deepEqual(Buffer.from(args.content_base64, 'base64'), bytes);
+    assert.ok(!JSON.stringify(updates).includes(foreign.name));
+  }
+  for (const [index, selected] of owners.entries()) {
+    const uploads = clients.get(selected.board).calls.filter(([name]) => name === 'upload_attachment');
+    assert.equal(uploads.length, 1); assert.equal(uploads[0][1].thread_id, 'thread-' + entries[index].label);
+  }
+});
+
 test('the Board profile follows the companion look and skips unchanged values', async t => {
   const { companion, client, profile } = fixture(t);
   await companion.tick();

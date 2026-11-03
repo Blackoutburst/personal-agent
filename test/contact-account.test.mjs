@@ -79,6 +79,63 @@ for(const provider of ['claude','codex'])test(provider+' owner-turn contact tool
  assert.equal(f.app.store.db.prepare("SELECT COUNT(*) AS n FROM conv_messages WHERE role='peer'").get().n,1,'other owner retains its own delivered history');
 });
 
+for (const provider of ['claude', 'codex']) test(provider + ' contact reset reloads only recipient private context and the explicitly shared item', async t => {
+  const f = await fixture(t, provider), privateA = {}, privateB = {};
+  for (const [token, label, markers] of [[A, 'alice', privateA], [B, 'bob', privateB]]) {
+    assert.equal((await f.companion({ action: 'memory' }, token)).status, 200);
+    const workspace = join(f.dir, 'runtime', label, 'workspace');
+    for (const file of ['USER.md', 'MEMORY.md', 'SOUL.md']) {
+      const marker = label.toUpperCase() + '_PRIVATE_' + file.replace('.md', '') + '_' + randomUUID();
+      markers[file] = marker; writeFileSync(join(workspace, file), '# Synthetic private note\n' + marker + '\n');
+    }
+    markers.chat = label.toUpperCase() + '_UNSHARED_CHAT_' + randomUUID();
+  }
+  assert.equal((await f.rpc({ action: 'submit', threadId: f.aThread, requestId: 'private-chat-a', text: privateA.chat })).status, 200);
+  assert.equal((await f.rpc({ action: 'submit', threadId: f.bThread, requestId: 'private-chat-b', text: privateB.chat }, B)).status, 200);
+  await f.app.conversations.idle();
+  assert.equal((await f.rpc({ action: 'submit', threadId: f.bThread, requestId: 'resume-before-contact', text: 'Continue my own conversation.' }, B)).status, 200);
+  await f.app.conversations.idle();
+  const before = f.calls('bob'); assert.equal(before.length, 2);
+  assert.ok(before[1].args.includes(provider === 'claude' ? '--resume' : 'resume'), 'Positive control: B was using its own resumable session');
+  assert.ok(f.app.store.db.prepare('SELECT provider_session FROM conv_threads WHERE id=?').get(f.bThread).provider_session);
+
+  await f.enable();
+  assert.equal((await f.rpc({ action: 'submit', threadId: f.aThread, requestId: 'explicit-safe-contact', text: 'SEND the requested exact item' })).status, 200);
+  await f.app.conversations.idle();
+  const sent = JSON.parse(readFileSync(join(f.home('alice'), 'contact-result.json'), 'utf8'));
+  assert.equal(sent.first.status, 200); assert.equal(sent.retry.body.duplicate, true);
+  assert.equal(f.calls('bob').length, before.length, 'Receiving a card must not start a recipient model or reply');
+  assert.equal(f.app.store.db.prepare('SELECT provider_session FROM conv_threads WHERE id=?').get(f.bThread).provider_session, null);
+
+  const received = (await f.rpc({ action: 'snapshot', threadId: f.bThread }, B)).body.messages;
+  assert.equal(received.filter(message => message.role === 'peer').length, 1);
+  const card = received.find(message => message.role === 'peer');
+  assert.equal(card.text, sent.input.text); assert.equal(card.peer.direction, 'received');
+  assert.ok(!Object.values(privateA).some(marker => JSON.stringify(received).includes(marker)));
+  assert.equal((await f.rpc({ action: 'snapshot', threadId: f.aThread }, B)).status, 404);
+
+  assert.equal((await f.rpc({ action: 'submit', threadId: f.bThread, requestId: 'owner-asks-about-share', text: 'Tell me what was shared, using my own context.' }, B)).status, 200);
+  await f.app.conversations.idle();
+  const after = f.calls('bob'); assert.equal(after.length, before.length + 1);
+  const fresh = after.at(-1), input = [fresh.prompt, ...fresh.args].join('\n');
+  assert.ok(!fresh.args.includes(provider === 'claude' ? '--resume' : 'resume'), 'Contact reset forces a fresh B session rather than reusing the old one');
+  for (const marker of Object.values(privateB)) assert.ok(input.includes(marker), 'Fresh recipient instructions/history retain ' + marker);
+  for (const marker of Object.values(privateA)) assert.ok(!input.includes(marker), 'Fresh B input excludes unrelated A private context');
+  const envelope = /<untrusted_peer_card\b[^>]*>([\s\S]*?)<\/untrusted_peer_card>/.exec(input);
+  assert.ok(envelope, 'The specifically shared item stays an attributed untrusted card');
+  const peer = JSON.parse(envelope[1]); assert.equal(peer.text, sent.input.text); assert.equal(peer.peer.direction, 'received');
+  const ownerA = f.app.store.db.prepare('SELECT companion_id FROM conv_threads WHERE id=?').get(f.aThread).companion_id;
+  assert.equal(peer.peer.companionId, ownerA);
+
+  for (const [token, own, foreign] of [[A, privateA, privateB], [B, privateB, privateA]]) {
+    const exported = await f.companion({ action: 'exportMemory' }, token); assert.equal(exported.status, 200);
+    const soul = await f.companion({ action: 'personality' }, token); assert.equal(soul.status, 200);
+    assert.ok(JSON.stringify(exported.body).includes(own['USER.md'])); assert.ok(JSON.stringify(exported.body).includes(own['MEMORY.md']));
+    assert.ok(soul.body.content.includes(own['SOUL.md']));
+    for (const marker of Object.values(foreign)) { assert.ok(!JSON.stringify(exported.body).includes(marker)); assert.ok(!JSON.stringify(soul.body).includes(marker)); }
+  }
+});
+
 test('contact tools never reach background wakes, and cancellation/off/on invalidates an active normal-turn capability',async t=>{
  const f=await fixture(t);await f.enable();
  const owner=f.app.store.db.prepare('SELECT companion_id FROM conv_threads WHERE id=?').get(f.aThread).companion_id;
