@@ -117,11 +117,15 @@ export class PushNotifier {
   }
 
   async #deliver(tokens, data) {
+    const counts = { sent: 0, gone: 0, failed: 0 };
     for (const token of tokens) {
       let result = 'failed';
       try { result = await this.#sender.send(token, data); }
       catch (error) { this.#log(`Push failed: ${error.code ?? error.message}`); }
+      counts[result] = (counts[result] ?? 0) + 1;
       if (result === 'gone') this.#devices.forget(token);
     }
+    // Counts only (no ids, tokens or text), so delivery latency can be measured from the journal.
+    this.#log(`Push handed to FCM: sent ${counts.sent}, gone ${counts.gone}, failed ${counts.failed}`);
   }
 }
