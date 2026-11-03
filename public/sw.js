@@ -36,7 +36,7 @@ self.addEventListener('push', event => event.waitUntil((async () => {
   const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   const subscription = await self.registration.pushManager.getSubscription();
   // Skip it while the app is open and in front. Safari may revoke a subscription whose pushes show nothing, so on Apple's
-  // push service it is still shown; opening the app clears it.
+  // push service it is always shown: there the server holds pushes while the app is open on the chat (#49).
   const apple = /(^|\.)push\.apple\.com$/.test(new URL(subscription?.endpoint ?? 'https://invalid/').hostname);
   if (!apple && windows.some(client => client.visibilityState === 'visible' && client.focused)) return;
   await self.registration.showNotification(String(data.title || 'Your companion').slice(0, 60), {

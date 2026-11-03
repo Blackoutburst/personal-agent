@@ -89,3 +89,37 @@ export function createWebPushUI({ document, api }) {
   });
   return { show: () => show(), hide: () => { box.hidden = true; epoch++; } };
 }
+
+// #49: while the app is open and in front on the chat, the server holds this device's pushes (the chat already shows
+// the reply). Reported every 15 s; the server forgets it 40 s after the last report, or at once when the app is left.
+export function createPushPresence({ api, onChat }) {
+  let timer = null, endpoint = null, sent = false;
+  const active = () => document.visibilityState === 'visible' && onChat();
+  const enabled = () => supported() && Notification.permission === 'granted';
+  async function tick() {
+    try {
+      if (!enabled()) return stop();
+      const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+      if (!subscription) return stop();
+      if (!active()) return;
+      endpoint = subscription.endpoint; sent = true;
+      await api({ action: 'webPushPresence', endpoint, present: true });
+    } catch { /* the next report retries */ }
+  }
+  function stop() {
+    clearInterval(timer); timer = null;
+    if (!sent || !endpoint) return;
+    sent = false;
+    // keepalive: the request still goes out while the page is being hidden or closed.
+    fetch('api/companion', { method: 'POST', credentials: 'same-origin', keepalive: true, cache: 'no-store',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'webPushPresence', endpoint, present: false }) }).catch(() => {});
+  }
+  function update() {
+    if (!active()) return stop();
+    if (!timer) { timer = setInterval(tick, 15_000); void tick(); }
+  }
+  document.addEventListener('visibilitychange', update);
+  window.addEventListener('pagehide', stop);
+  return { update };
+}

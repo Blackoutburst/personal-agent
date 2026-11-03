@@ -154,6 +154,10 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
           if (!only(['action', 'endpoint', 'p256dh', 'auth', 'preview']) || !webPush) break;
           return { status: 200, body: webPush.subscriptions.subscribe(companionId, payload) };
         }
+        case 'webPushPresence': {
+          if (!only(['action', 'endpoint', 'present']) || !webPush) break;
+          return { status: 200, body: webPush.subscriptions.presence(companionId, payload.endpoint, payload.present) };
+        }
         case 'webPushUnsubscribe': {
           if (!only(['action', 'endpoint']) || !webPush) break;
           return { status: 200, body: webPush.subscriptions.unsubscribe(companionId, payload.endpoint) };

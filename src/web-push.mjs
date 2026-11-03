@@ -12,6 +12,8 @@ import { PushError } from './push.mjs';
 const MAX_SUBSCRIPTIONS = 10;
 const RECENT = 500;
 const PREVIEW = 180;
+// While the app is open on the chat it reports itself present every 15 s; that device gets no push for 40 s after.
+export const PRESENCE_MS = 40_000;
 // Only the browsers' own push services: an endpoint is a URL this server will POST to, so it must not point anywhere else.
 const PUSH_HOSTS = [/^web\.push\.apple\.com$/, /^fcm\.googleapis\.com$/, /^android\.googleapis\.com$/, /^jmt[0-9]{1,3}\.google\.com$/,
   /^([a-z0-9-]+\.)*push\.services\.mozilla\.com$/, /^([a-z0-9-]+\.)*notify\.windows\.com$/];
@@ -35,7 +37,7 @@ function decodeKey(value, length) {
 }
 
 export class WebPushSubscriptions {
-  #db; #now;
+  #db; #now; #present = new Map();
   constructor({ store, now = Date.now }) {
     this.#db = store.db; this.#now = now;
     this.#db.exec(`CREATE TABLE IF NOT EXISTS web_push_subscriptions(endpoint TEXT PRIMARY KEY, companion_id TEXT NOT NULL,
@@ -76,7 +78,25 @@ export class WebPushSubscriptions {
       .all(companionId).map(row => ({ endpoint: row.endpoint, p256dh: row.p256dh, auth: row.auth, preview: row.preview === 1 }));
   }
 
-  forget(endpoint) { this.#db.prepare('DELETE FROM web_push_subscriptions WHERE endpoint=?').run(endpoint); }
+  forget(endpoint) { this.#db.prepare('DELETE FROM web_push_subscriptions WHERE endpoint=?').run(endpoint); this.#present.delete(endpoint); }
+
+  // The app is open and in front on the chat (present) or just left it. Decided here rather than in the service worker
+  // because Safari may revoke a subscription whose pushes show nothing: the push is simply not sent. Memory only.
+  presence(companionId, endpoint, present) {
+    const url = pushEndpoint(endpoint);
+    if (!url || typeof present !== 'boolean') throw new PushError('INVALID_REQUEST');
+    const owned = this.#db.prepare('SELECT 1 FROM web_push_subscriptions WHERE endpoint=? AND companion_id=?').get(url, companionId);
+    if (owned && present) this.#present.set(url, this.#now() + PRESENCE_MS); else this.#present.delete(url);
+    return { present: Boolean(owned && present) };
+  }
+
+  isPresent(endpoint) {
+    const until = this.#present.get(endpoint);
+    if (until === undefined) return false;
+    if (until > this.#now()) return true;
+    this.#present.delete(endpoint);
+    return false;
+  }
 }
 
 // This server's VAPID key pair, created on first use (chmod 600). Replacing it invalidates every subscription.
@@ -155,7 +175,7 @@ export class WebPushNotifier {
     if (this.#recent.has(messageId)) return;
     this.#recent.add(messageId);
     if (this.#recent.size > RECENT) this.#recent.delete(this.#recent.values().next().value);
-    const subscriptions = this.#subscriptions.list(companionId);
+    const subscriptions = this.#subscriptions.list(companionId).filter(row => !this.#subscriptions.isPresent(row.endpoint));
     if (!subscriptions.length) return;
     const title = String(this.#nameFor(companionId) ?? '').slice(0, 60) || 'Your companion';
     let preview = previewText(text);

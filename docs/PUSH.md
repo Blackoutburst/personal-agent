@@ -43,6 +43,10 @@ needs no review and updates with every deploy. The same works on Android Chrome 
   loaded copy as an offline fallback; `api/` is never cached. It shows push notifications and opens the chat when one
   is tapped. While the app is open and in front it skips the notification, except on Apple's push service, which may
   revoke a subscription whose pushes show nothing. Opening the app clears its notifications.
+- **Open on the chat (#49)**: while the app is visible on the Chat tab it sends `webPushPresence {endpoint, present: true}`
+  every 15 s, and `present: false` (a keepalive request) when it is hidden, closed or leaves the chat. The server sends
+  that device no push until 40 s after the last report, so nothing is sent and Safari has nothing to revoke. Other
+  devices, and the same device on another tab or in the background, are notified as usual. Kept in memory only.
 - **Server** (`src/web-push.mjs`): `POST api/companion` actions `webPushKey` (this server's VAPID public key),
   `webPushSubscribe {endpoint, p256dh, auth, preview}`, `webPushStatus {endpoint}` and `webPushUnsubscribe {endpoint}`,
   always for the signed-in owner (`web_push_subscriptions`; re-subscribing from another account moves it; newest 10 per

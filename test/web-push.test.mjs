@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { BootstrapStore } from '../src/store.mjs';
-import { WebPushSubscriptions, WebPushSender, WebPushNotifier, encryptPayload, loadVapidKeys, previewText, pushEndpoint } from '../src/web-push.mjs';
+import { WebPushSubscriptions, WebPushSender, WebPushNotifier, encryptPayload, loadVapidKeys, previewText, pushEndpoint, PRESENCE_MS } from '../src/web-push.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const A = randomUUID(), B = randomUUID();
@@ -156,6 +156,33 @@ test('the HTTP actions act for the signed-in owner only', async t => {
   assert.deepEqual((await call('session-b', { action: 'webPushStatus', endpoint: phone.endpoint })).body, { subscribed: false });
   await call('session-b', { action: 'webPushUnsubscribe', endpoint: phone.endpoint });
   assert.deepEqual((await call('session-a', { action: 'webPushStatus', endpoint: phone.endpoint })).body, { subscribed: true, preview: false });
+  assert.deepEqual((await call('session-a', { action: 'webPushPresence', endpoint: phone.endpoint, present: true })).body, { present: true });
+  assert.deepEqual((await call('session-b', { action: 'webPushPresence', endpoint: phone.endpoint, present: true })).body, { present: false });
   assert.deepEqual((await call('session-a', { action: 'webPushUnsubscribe', endpoint: phone.endpoint })).body, { subscribed: false });
   assert.deepEqual(subscriptions.list(A), []);
+});
+
+test('#49: a device open on the chat gets no push until it leaves or stops reporting; other devices still do', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'web-push-')), store = new BootstrapStore(dir, ROOT);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  let clock = 1_000_000;
+  const subscriptions = new WebPushSubscriptions({ store, now: () => clock });
+  const phone = browser(), laptop = browser(), sent = [];
+  subscriptions.subscribe(A, phone); subscriptions.subscribe(A, laptop);
+  const notifier = new WebPushNotifier({ subscriptions, sender: { send: async subscription => { sent.push(subscription.endpoint); return 'sent'; } } });
+  let n = 0;
+  const reply = async () => { sent.length = 0; notifier.settled({ companionId: A, threadId: 't', requestId: 'r', state: 'complete', messageId: 'm' + n++, text: 'Hi' }); await sleep(5); return [...sent]; };
+  assert.deepEqual(subscriptions.presence(A, phone.endpoint, true), { present: true });
+  assert.deepEqual(await reply(), [laptop.endpoint], 'The open phone is skipped, the laptop still notified');
+  clock += PRESENCE_MS - 1;
+  assert.deepEqual(await reply(), [laptop.endpoint]);
+  clock += 2;
+  assert.deepEqual((await reply()).sort(), [phone.endpoint, laptop.endpoint].sort(), 'Stopped reporting (app suspended): notified again');
+  subscriptions.presence(A, phone.endpoint, true);
+  subscriptions.presence(A, phone.endpoint, false);
+  assert.deepEqual((await reply()).sort(), [phone.endpoint, laptop.endpoint].sort(), 'Left the chat: notified at once');
+  assert.deepEqual(subscriptions.presence(B, phone.endpoint, true), { present: false }, 'Only the owner of the subscription');
+  assert.equal((await reply()).length, 2);
+  assert.throws(() => subscriptions.presence(A, phone.endpoint, 'yes'), { code: 'INVALID_REQUEST' });
+  assert.throws(() => subscriptions.presence(A, 'https://evil.example/x', true), { code: 'INVALID_REQUEST' });
 });
