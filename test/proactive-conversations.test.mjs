@@ -461,7 +461,9 @@ test('every wake kind keeps inherited native/app tools but only the exact config
   for (const kind of ['reminder', 'heartbeat', 'watch', 'board']) {
     f.conv.enqueueProactive(f.a, wake({ kind })); await f.conv.idle();
     const selected = f.calls.at(-1).allowedTools;
-    assert.deepEqual(selected.filter(name => name.startsWith('mcp__board__')), READ_ONLY_BOARD_TOOLS.map(name => 'mcp__board__' + name));
+    const expected = kind === 'board' ? [...READ_ONLY_BOARD_TOOLS, 'create_ticket', 'post_message', 'list_activity', 'unknown_operation'] : READ_ONLY_BOARD_TOOLS;
+    assert.deepEqual(selected.filter(name => name.startsWith('mcp__board__')), expected.map(name => 'mcp__board__' + name),
+      kind === 'board' ? 'Board-triggered wakes keep every configured Board tool' : 'Other wakes read the Board only');
     for (const name of ['Read', 'Write', 'WebSearch', 'WebFetch', 'mcp__scheduler__create_schedule', 'mcp__scheduler__list_schedules',
       'mcp__scheduler__cancel_schedule', 'mcp__board_docs__post_message']) assert.ok(selected.includes(name), name);
   }

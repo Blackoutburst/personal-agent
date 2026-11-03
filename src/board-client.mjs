@@ -15,9 +15,11 @@ export class BoardClient {
   #board; #spawn; #child = null; #pending = new Map(); #nextId = 1; #buffer = ''; #ready = null;
   #sessionId;
   // board: the owner's normalized Board policy { configDir, pythonPath, connectPath }.
-  constructor({ board, label = 'companion app', spawnImpl = spawn }) {
+  // sessionId: pass a stable id so the Board keeps this session's inbox position across restarts.
+  constructor({ board, label = 'companion app', sessionId = null, spawnImpl = spawn }) {
     this.#board = board; this.#spawn = spawnImpl;
-    this.#sessionId = 'companion-app-' + randomBytes(6).toString('hex');
+    this.#sessionId = typeof sessionId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(sessionId) ? sessionId
+      : 'companion-app-' + randomBytes(6).toString('hex');
     this.label = label;
   }
 

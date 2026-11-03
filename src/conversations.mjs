@@ -15,10 +15,10 @@ const REQUEST = /^[A-Za-z0-9._-]{1,80}$/;
 const DEFAULT_TITLE = 'New conversation';
 const FLUSH_MS = 400;
 const BOARD_PREFIX = 'mcp__board__';
-// Background wakes read the Board only. A Needs-you ("board") wake may also answer the owner's request.
+// Background wakes read the Board only, except Board-triggered ("board") wakes: a Needs-you request or a mention needs
+// the companion to answer on the Board, so those keep every Board tool the owner configured.
 const wakeToolFilter = kind => name => !['mcp__scheduler__create_release_watch', 'mcp__scheduler__update_release_watch'].includes(name)
-  && (!name.startsWith(BOARD_PREFIX) || READ_ONLY_BOARD_TOOLS.includes(name.slice(BOARD_PREFIX.length))
-    || (kind === 'board' && name === BOARD_PREFIX + 'resolve_human_request'));
+  && (!name.startsWith(BOARD_PREFIX) || kind === 'board' || READ_ONLY_BOARD_TOOLS.includes(name.slice(BOARD_PREFIX.length)));
 const ERROR_MESSAGES = {
   INTERRUPTED: 'The server restarted during this reply. Send your message again to retry.',
   BUSY: 'Wait for the current reply to finish or stop it first.'

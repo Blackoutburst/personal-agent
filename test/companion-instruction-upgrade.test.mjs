@@ -39,7 +39,7 @@ test('AGENTS refresh reports one change while preserving private workspace and B
   ensureWorkspace(dir, OWNER); writeMemory(dir); writeFileSync(join(dir, 'AGENTS.md'), STALE);
   assert.equal(ensureWorkspace(dir, OWNER), true);
   const upgraded = readFileSync(join(dir, 'AGENTS.md'));
-  assert.match(upgraded.toString('utf8'), /\(version 10\)/);
+  assert.match(upgraded.toString('utf8'), /\(version 11\)/);
   assert.doesNotMatch(upgraded.toString('utf8'), /\(version 5\)/);
   assert.match(upgraded.toString('utf8'), /send_file.*stable requestId/);
   assertMemory(dir);
@@ -59,7 +59,7 @@ test('a failed pre-change callback preserves the old marker for retry and only r
   assert.equal(ensureWorkspace(dir, OWNER, { beforeInstructionsChange() {
     calls++; assert.equal(readFileSync(join(dir, 'AGENTS.md'), 'utf8'), STALE); assertMemory(dir);
   } }), true);
-  assert.equal(calls, 2); assert.match(readFileSync(join(dir, 'AGENTS.md'), 'utf8'), /\(version 10\)/); assertMemory(dir);
+  assert.equal(calls, 2); assert.match(readFileSync(join(dir, 'AGENTS.md'), 'utf8'), /\(version 11\)/); assertMemory(dir);
   const upgraded = readFileSync(join(dir, 'AGENTS.md'));
   assert.equal(ensureWorkspace(dir, OWNER, { beforeInstructionsChange() { calls++; throw failure; } }), false);
   assert.equal(calls, 2); assert.deepEqual(readFileSync(join(dir, 'AGENTS.md')), upgraded); assertMemory(dir);
@@ -119,7 +119,7 @@ test('account startup leaves a failed contender untouched, upgrades only the sta
     assert.equal(row.session_at, 1000);
   }
   assert.equal(rows(app, 'alice').length, 2); assert.equal(rows(app, 'bob').length, 2);
-  assert.match(readFileSync(join(workspace('alice'), 'AGENTS.md'), 'utf8'), /\(version 10\)/);
+  assert.match(readFileSync(join(workspace('alice'), 'AGENTS.md'), 'utf8'), /\(version 11\)/);
   assert.deepEqual(readFileSync(join(workspace('bob'), 'AGENTS.md')), bobInstructions);
   for (const owner of owners) assertMemory(workspace(owner.label));
   for (const owner of owners) app.store.db.prepare('UPDATE conv_threads SET provider_session=?,session_turns=? WHERE companion_id=?')

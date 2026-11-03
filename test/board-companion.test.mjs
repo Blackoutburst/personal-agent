@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { BootstrapStore } from '../src/store.mjs';
-import { BoardCompanion, boardPresentation, needsYouPrompt } from '../src/board-companion.mjs';
+import { BoardCompanion, boardPresentation, needsYouPrompt, mentionPrompt } from '../src/board-companion.mjs';
 import { runFileMcp } from '../src/file-mcp.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -14,11 +14,14 @@ const ID = '6f1c1b2e-1d2a-4c3b-9a8b-7c6d5e4f3a2b';
 const board = { configDir: '/tmp/board', pythonPath: '/usr/bin/python3', connectPath: '/tmp/connect.py', allowedTools: [] };
 const owner = { label: 'blackout', name: 'Blackout', board };
 
-function fakeClient(requests) {
-  const calls = [];
+function fakeClient(requests, inbox) {
+  const calls = []; let issued = 0;
   return { calls, close() {}, async call(name, args) {
     calls.push([name, args]);
-    if (name === 'read_inbox') return { session: { owner_id: 'blackoutburst' } };
+    if (name === 'read_inbox') {
+      if (args.cursor === 'revoked') throw Object.assign(new Error('Cursor was not issued for this session'), { code: 'BOARD_ERROR' });
+      return { session: { owner_id: 'blackoutburst', agent_id: 'me' }, messages: inbox(args), cursor: 'c' + ++issued };
+    }
     if (name === 'list_human_requests') return { items: requests() };
     if (name === 'update_companion_profile') return { id: 'p1', ...args };
     if (name === 'upload_attachment') return { id: 'att1', filename: args.filename, size: Buffer.from(args.content_base64, 'base64').length };
@@ -26,14 +29,55 @@ function fakeClient(requests) {
   } };
 }
 
-function fixture(t, { requests = () => [], profile = { name: 'Claude', character: 'claude' }, owners = [owner] } = {}) {
+function fixture(t, { requests = () => [], inbox = () => [], profile = { name: 'Claude', character: 'claude' }, owners = [owner] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'board-companion-')), store = new BootstrapStore(dir, ROOT);
-  const events = [], client = fakeClient(requests);
+  const events = [], client = fakeClient(requests, inbox);
   const companion = new BoardCompanion({ store, owners, profiles: { get: id => id === ID ? profile : null },
     scheduler: { enqueueEvent: (id, input) => events.push([id, input]) }, companionIdFor: () => ID, clientFor: () => client });
   t.after(() => { companion.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { companion, events, client, profile };
+  return { companion, events, client, profile, store };
 }
+
+const ping = (id, thread = 'th1', agent = 'codex') => ({ id, thread_id: thread, author: { agent_id: agent }, mentions: ['agent:me'] });
+
+test('mentions and replies wake the companion once per thread; older ones and its own are skipped', async t => {
+  let pending = [ping('old1')];
+  const { companion, events, client } = fixture(t, { inbox: () => { const page = pending; pending = []; return page; } });
+  await companion.tick();
+  assert.equal(events.length, 0, 'Mentions from before the first check are a baseline, not wakes');
+  pending = [ping('m1'), ping('m2'), ping('m3', 'th2'), ping('mine', 'th3', 'me'), ping('old1')];
+  await companion.tick();
+  assert.equal(events.length, 2);
+  const [first, second] = events.map(([, wake]) => wake);
+  assert.equal(first.kind, 'board');
+  assert.match(first.requestId, /^board-mention-[a-f0-9]{32}$/);
+  assert.match(first.prompt, /messages m1, m2 in Board thread th1/);
+  assert.match(second.prompt, /message m3 in Board thread th2/);
+  const reads = client.calls.filter(([name]) => name === 'read_inbox').map(([, args]) => args.cursor);
+  assert.deepEqual(reads, [undefined, 'c1'], 'Each check resumes from the cursor the last one received');
+  pending = [ping('m1')];
+  await companion.tick();
+  assert.equal(events.length, 2, 'A replayed mention never wakes twice');
+});
+
+test('a cursor the Board refuses is dropped and the next check reads without one', async t => {
+  const { companion, client, store } = fixture(t);
+  await companion.tick();
+  store.db.prepare("UPDATE board_inbox_state SET cursor='revoked'").run();
+  await companion.tick();
+  assert.equal(store.db.prepare('SELECT cursor FROM board_inbox_state').get().cursor, null);
+  await companion.tick();
+  const reads = client.calls.filter(([name]) => name === 'read_inbox').map(([, args]) => args.cursor);
+  assert.deepEqual(reads, [undefined, 'revoked', undefined]);
+});
+
+test('mention prompts carry ids only and keep the owner in charge of decisions', () => {
+  const prompt = mentionPrompt('th1', ['m1']);
+  assert.match(prompt, /message m1 in Board thread th1/);
+  assert.match(prompt, /untrusted context/);
+  assert.match(prompt, /post_message/);
+  assert.match(prompt, /Never approve deployments/);
+});
 
 const open = (id, extra = {}) => ({ id, ticket_id: 't' + id, owner_id: 'blackoutburst', status: 'open', question: 'Deploy now?', ...extra });
 
