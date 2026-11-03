@@ -1,6 +1,7 @@
 import { SchedulerError } from './scheduler.mjs';
 import { calendarOperation, isCalendarAction } from './calendar.mjs';
 import { githubOperation } from './github.mjs';
+import { xOperation } from './x-posts.mjs';
 
 const failure = (status, code, message) => ({ status, body: { error: { code, message } } });
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
@@ -9,9 +10,11 @@ const exact = (value, keys) => value && typeof value === 'object' && !Array.isAr
 // Shared by the freshly authenticated owner UI and the application-owned tool broker.
 // Only the browser path may change quiet hours or opt in to proactive heartbeats.
 // Calendar actions (#44) travel the same two paths.
-export async function schedulerOperation(scheduler, companionId, payload, { allowSettings = false, calendar = null, github = null } = {}) {
+export async function schedulerOperation(scheduler, companionId, payload, { allowSettings = false, calendar = null, github = null, x = null } = {}) {
   // GitHub tools (#45) exist only on the companion's tool path; the owner manages the link in Me › Connectors.
   if (!allowSettings && exact(payload, ['action', 'input']) && payload.action === 'github') return githubOperation(github, companionId, payload.input);
+  // X post reading (#46) likewise exists only for the companion's tools.
+  if (!allowSettings && exact(payload, ['action', 'input']) && payload.action === 'x') return xOperation(x, companionId, payload.input);
   if (payload && typeof payload === 'object' && isCalendarAction(payload.action)) return calendarOperation(calendar, companionId, payload, { allowSettings });
   if (!scheduler) return failure(503, 'SCHEDULER_UNAVAILABLE', 'Reminders are unavailable right now.');
   try {

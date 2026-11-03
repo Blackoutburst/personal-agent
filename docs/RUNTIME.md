@@ -261,3 +261,29 @@ The companion's scheduler MCP gains `github_list_repos`, `github_repo`, `github_
 replay from `connector_github_requests`). The tools are filtered out of turns while that owner has no token, and
 `github_create_repo` never runs in a background wake. `src/github.mjs` can only send GET requests and
 `POST /user/repos`: deleting, archiving, transferring, changing visibility and pushing are impossible from the app.
+
+## X / Twitter posts (#46)
+
+`src/x-posts.mjs`. When an owner message (web, Android or Discord) links an x.com / twitter.com post (also fxtwitter,
+vxtwitter, fixupx; at most three per message), the turn reads it before the model runs and appends one JSON line per
+post under a note that the content is untrusted data: author, date, text, the quoted post, the post it replies to
+(text only), the community note and the media. Photos and video thumbnails are saved in the workspace under
+`inbox/x/<post id>/` and passed as images (Codex `--image`; Claude opens them with Read). Failures become clear lines
+(`X_NOT_FOUND` deleted or suspended, `X_PROTECTED`, `X_UNAVAILABLE`) and never fail the turn.
+
+Source: `api.fxtwitter.com` first (free, no key). If it cannot deliver and the owner added their own X API bearer token
+in Me › Connectors (`xKeyLink` / `xKeyUnlink` on `/api/companion`; checked with one read of post 20), the X API v2 is
+asked instead, billed to that owner's app. The token is sealed with the connector key (`src/secrets.mjs`, AAD
+`x:<companionId>`, table `connector_x`), never returned to clients and never given to the model. The connector
+entry shows the source in use and the last source that answered.
+
+Tools (scheduler MCP, chat turns only, never wakes): `read_x_post(url)` for links found later, and
+`watch_x_video(url)`: downloads the smallest mp4 of at least ~600 kbit/s (max 80 MB, 10 minutes, else only the
+thumbnail with a note), saves 3–6 key frames with ffmpeg and transcribes speech up to 5 minutes with faster-whisper
+(`ops/transcribe.py`, CPU int8). The model folder is downloaded once, outside the service sandbox:
+
+    python3 -c "from huggingface_hub import snapshot_download as s; s('Systran/faster-whisper-small', local_dir='$HOME/personal-agent-data/models/whisper-small')"
+
+Without `model.bin` there (or `COMPANION_WHISPER_MODEL`), videos get frames and a "transcription is not set up" note.
+Only GET requests reach the two APIs and the `pbs.twimg.com` / `video.twimg.com` media hosts; there is no posting,
+liking, following or DM access.

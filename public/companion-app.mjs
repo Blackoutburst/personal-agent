@@ -380,7 +380,7 @@ function resetShell(denied) {
   $('stage-name').textContent = ''; $('stage-mood').textContent = '';
   for (const id of ['pick-character', 'pick-color', 'pick-outfit']) $(id).replaceChildren();
   for (const id of ['discord-pick', 'android-pick']) $(id).hidden = true;
-  connectors = null; connectorsBusy = false; githubForm = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
+  connectors = null; connectorsBusy = false; githubForm = false; xForm = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
   kept.hidden = true; keptText.textContent = ''; reconnect.hidden = true;
   memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); remindersUI.clear(); calendarUI.clear(); client.clear(); clearUploads(); clearFullImage();
 }
@@ -710,8 +710,9 @@ $('name').addEventListener('input', () => { if (draftLook) draftLook.name = $('n
 
 let connectors = null, connectorsBusy = false, connectorsRequest = 0, connectorsError = '';
 const CONNECTOR_STATES = { connected: 'Connected', pending: 'Waiting for pairing', error: 'Needs attention', not_connected: 'Not connected', paused: 'Switched off', unavailable: 'Not available', expiring: 'Expires soon' };
-const GITHUB_ERRORS = { INVALID_TOKEN: 'GitHub didn’t accept that token. Check it starts with github_pat_ and hasn’t expired.' };
-let githubForm = false;
+const GITHUB_ERRORS = { INVALID_TOKEN: 'GitHub didn’t accept that token. Check it starts with github_pat_ and hasn’t expired.',
+  X_INVALID_KEY: 'That doesn’t look like an X API bearer token.', X_KEY_REJECTED: 'X didn’t accept that key. Check it is the app’s bearer token and the app has credits.' };
+let githubForm = false, xForm = false;
 async function loadConnectors() {
   if (connectorsBusy || sessionDenied) return;
   const owner = ownerEpoch, token = ++connectorsRequest;
@@ -748,6 +749,8 @@ function renderConnectors() {
       card.append(el('div', { className: 'actions' }, go));
     } else if (item.id === 'github') {
       card.append(githubControls(item, owner));
+    } else if (item.id === 'x') {
+      card.append(xControls(item, owner));
     } else if (item.actions.length) {
       const on = item.actions.includes('connect');
       const button = el('button', { type: 'button', className: on ? 'button primary' : 'button', disabled: connectorsBusy, textContent: on ? 'Connect' : 'Disconnect' });
@@ -790,14 +793,48 @@ function githubControls(item, owner) {
   }
   return box;
 }
+// X / Twitter (#46): works without a key through FxTwitter; an owner may add their own X API bearer token as a backup.
+function xControls(item, owner) {
+  const box = el('div', { className: 'github-link' });
+  if (xForm) {
+    const link = el('a', { href: 'https://developer.x.com/en/portal/dashboard', target: '_blank', rel: 'noopener', textContent: 'X developer console' });
+    box.append(el('ol', {},
+      el('li', {}, 'In the ', link, ', open your app (pay-per-use credits) and copy its Bearer Token.'),
+      el('li', {}, 'Paste it here. It is stored encrypted, only for you, never shown again, and used only when FxTwitter cannot read a post.')));
+    const input = el('input', { type: 'text', className: 'secret', autocomplete: 'off', spellcheck: false, placeholder: 'AAAAAAAAAAAAAAAAAAAAA…', required: true });
+    input.setAttribute('aria-label', 'X API bearer token');
+    for (const flag of ['data-1p-ignore', 'data-lpignore', 'data-bwignore', 'data-form-type']) input.setAttribute(flag, flag === 'data-form-type' ? 'other' : 'true');
+    const cancel = el('button', { type: 'button', className: 'button', textContent: 'Cancel' });
+    cancel.addEventListener('click', () => { xForm = false; renderConnectors(); });
+    const form = el('form', { className: 'actions' }, input, el('button', { className: 'button primary', type: 'submit', disabled: connectorsBusy, textContent: connectorsBusy ? 'Checking…' : 'Save key' }), cancel);
+    form.addEventListener('submit', event => { event.preventDefault(); if (owner === ownerEpoch && input.value.trim()) void githubAction({ action: 'xKeyLink', token: input.value.trim() }, 'X API key saved.'); });
+    box.append(form);
+  } else {
+    const add = el('button', { type: 'button', className: 'button' + (item.state === 'error' ? ' primary' : ''), disabled: connectorsBusy,
+      textContent: item.actions.includes('add') ? 'Add an X API key (optional)' : 'Paste a new key' });
+    add.addEventListener('click', () => { xForm = true; renderConnectors(); });
+    const row = el('div', { className: 'actions' }, add);
+    if (item.actions.includes('remove')) {
+      const remove = el('button', { type: 'button', className: 'button', disabled: connectorsBusy, textContent: 'Remove key' });
+      remove.addEventListener('click', () => {
+        if (owner !== ownerEpoch || !confirm(`Remove your X API key? ${companionName()} keeps reading posts through FxTwitter.`)) return;
+        void githubAction({ action: 'xKeyUnlink' }, 'X API key removed.');
+      });
+      row.append(remove);
+    }
+    box.append(row);
+  }
+  return box;
+}
+// Saves or removes a connector secret (GitHub token, X key); the reply is the Connectors list.
 async function githubAction(body, done) {
   if (connectorsBusy || sessionDenied) return;
   const owner = ownerEpoch, token = ++connectorsRequest; connectorsBusy = true; connectorsError = ''; renderConnectors();
-  try { const result = await api(body); if (owner !== ownerEpoch || token !== connectorsRequest) return; connectors = result.connectors; githubForm = false; $('announce').textContent = done; }
+  try { const result = await api(body); if (owner !== ownerEpoch || token !== connectorsRequest) return; connectors = result.connectors; githubForm = false; xForm = false; $('announce').textContent = done; }
   catch (error) {
     if (owner !== ownerEpoch || token !== connectorsRequest) return;
     if (error.status === 401 || error.status === 403) { fileAccessDenied(); return; }
-    connectorsError = GITHUB_ERRORS[error.message] ?? 'GitHub could not be reached. Try again in a moment.';
+    connectorsError = GITHUB_ERRORS[error.message] ?? (body.action.startsWith('x') ? 'X could not be reached. Try again in a moment.' : 'GitHub could not be reached. Try again in a moment.');
   } finally { if (owner === ownerEpoch && token === connectorsRequest) { connectorsBusy = false; renderConnectors(); } }
 }
 

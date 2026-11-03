@@ -10,10 +10,10 @@ export class ConnectorError extends Error {
 }
 
 export class Connectors {
-  #db; #now; #discord; #boardConfigured; #github;
+  #db; #now; #discord; #boardConfigured; #github; #x;
   // discord: () => the DiscordBridge or null (created after the conversations it serves).
-  constructor({ store, now = Date.now, discord = () => null, boardConfigured = () => false, github = () => null }) {
-    this.#db = store.db; this.#now = now; this.#discord = discord; this.#boardConfigured = boardConfigured; this.#github = github;
+  constructor({ store, now = Date.now, discord = () => null, boardConfigured = () => false, github = () => null, x = () => null }) {
+    this.#db = store.db; this.#now = now; this.#discord = discord; this.#boardConfigured = boardConfigured; this.#github = github; this.#x = x;
     this.#db.exec(`CREATE TABLE IF NOT EXISTS connector_settings(companion_id TEXT NOT NULL, connector TEXT NOT NULL,
       enabled INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(companion_id, connector))`);
   }
@@ -50,6 +50,17 @@ export class Connectors {
           : github.problem ? `GitHub no longer accepts the token for @${github.login}. Paste a new one.`
           : `@${github.login} · ${github.repos} repositor${github.repos === 1 ? 'y' : 'ies'} visible` + (when ? ` · token expires ${when}` : ' · token never expires'),
         actions: github.linked ? ['replace', 'disconnect'] : ['connect'] });
+    }
+    // X / Twitter (#46): always on through FxTwitter; the owner may add their own official X API key as a backup.
+    const x = this.#x()?.status(companionId);
+    if (x) {
+      const day = time => new Date(time).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+      const last = x.lastSource ? ` Last post read through ${x.lastSource} on ${day(x.lastReadAt)}.` : '';
+      items.push({ id: 'x', name: 'X / Twitter', purpose: 'Read the X posts you send me: text, quoted posts, pictures and videos. Read-only: never posts, likes, follows or reads DMs.',
+        state: x.problem ? 'error' : 'connected',
+        detail: (x.problem ? 'X no longer accepts your API key, so only FxTwitter is used. Paste a new key or remove it.'
+          : x.key ? `FxTwitter first, then your own X API key (added ${day(x.keyAddedAt)}).` : 'Through FxTwitter (free, no key). Optional: add your own X API key as a backup.') + last,
+        actions: x.key ? ['replace', 'remove'] : ['add'] });
     }
     return { connectors: items };
   }

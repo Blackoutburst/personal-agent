@@ -359,6 +359,25 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** X / Twitter (#46): the owner's optional X API key, or null to remove it. Posts are read through FxTwitter either way. */
+    fun xKey(token: String?, onDone: () -> Unit = {}) {
+        if (_state.value.connectorsBusy) return
+        val version = scope
+        _state.update { it.copy(connectorsBusy = true, connectorsError = null) }
+        viewModelScope.launch {
+            try {
+                val result = if (token != null) api.xKeyLink(token) else api.xKeyUnlink()
+                if (current(version)) { _state.update { it.copy(connectors = result) }; onDone() }
+            } catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) signedOut() else _state.update { it.copy(connectorsError = when (error.code) {
+                    "X_INVALID_KEY" -> "That doesn’t look like an X API bearer token."
+                    "X_KEY_REJECTED" -> "X didn’t accept that key. Check it is the app’s bearer token and the app has credits."
+                    else -> "X could not be reached. Try again in a moment." }) }
+            } finally { if (current(version)) _state.update { it.copy(connectorsBusy = false) } }
+        }
+    }
+
     fun setConnector(id: String, enabled: Boolean) {
         if (_state.value.connectorsBusy) return
         val version = scope

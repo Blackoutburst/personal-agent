@@ -6,9 +6,8 @@
 // The companion gets a few tools: list repos, read one repo, list and read pull requests (with check status), and create
 // a repo, private unless the owner explicitly asked for public. This client has no way to delete, archive, transfer,
 // change visibility or push: only the GET and POST requests listed in #request are possible, whatever the token allows.
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { createHash } from 'node:crypto';
+import { SecretBox } from './secrets.mjs';
 
 const API = 'https://api.github.com';
 const TOKEN = /^github_pat_[A-Za-z0-9_]{20,255}$/;
@@ -33,9 +32,9 @@ export function parseExpiry(value) {
 }
 
 export class GitHub {
-  #db; #keyFile; #fetch; #now; #key = null;
+  #db; #box; #fetch; #now;
   constructor({ store, keyFile, fetchImpl = fetch, now = Date.now }) {
-    this.#db = store.db; this.#keyFile = keyFile; this.#fetch = fetchImpl; this.#now = now;
+    this.#db = store.db; this.#box = new SecretBox({ keyFile }); this.#fetch = fetchImpl; this.#now = now;
     this.#db.exec(`CREATE TABLE IF NOT EXISTS connector_github(companion_id TEXT PRIMARY KEY, token_enc TEXT NOT NULL,
       login TEXT NOT NULL, name TEXT, expires_at INTEGER, repos INTEGER NOT NULL, problem TEXT, linked_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL);
@@ -43,34 +42,12 @@ export class GitHub {
       fingerprint TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(companion_id, request_id))`);
   }
 
-  // The server key is made on first use (32 random bytes, mode 600) and read once.
-  #secret() {
-    if (this.#key) return this.#key;
-    if (!this.#keyFile) throw new GitHubError('GITHUB_UNCONFIGURED', 503);
-    try { this.#key = Buffer.from(readFileSync(this.#keyFile, 'utf8').trim(), 'hex'); }
-    catch (error) {
-      if (error.code !== 'ENOENT') throw new GitHubError('GITHUB_UNCONFIGURED', 503);
-      mkdirSync(dirname(this.#keyFile), { recursive: true, mode: 0o700 });
-      try { writeFileSync(this.#keyFile, randomBytes(32).toString('hex') + '\n', { mode: 0o600, flag: 'wx' }); } catch { /* another process won */ }
-      this.#key = Buffer.from(readFileSync(this.#keyFile, 'utf8').trim(), 'hex');
-    }
-    if (this.#key.length !== 32) { this.#key = null; throw new GitHubError('GITHUB_UNCONFIGURED', 503); }
-    return this.#key;
-  }
   #seal(companionId, token) {
-    const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', this.#secret(), iv);
-    cipher.setAAD(Buffer.from('github:' + companionId));
-    const body = Buffer.concat([cipher.update(token, 'utf8'), cipher.final()]);
-    return ['v1', iv.toString('base64'), cipher.getAuthTag().toString('base64'), body.toString('base64')].join(':');
+    try { return this.#box.seal('github:' + companionId, token); } catch { throw new GitHubError('GITHUB_UNCONFIGURED', 503); }
   }
   #open(companionId, sealed) {
-    try {
-      const [version, iv, tag, body] = sealed.split(':');
-      if (version !== 'v1') throw new Error();
-      const decipher = createDecipheriv('aes-256-gcm', this.#secret(), Buffer.from(iv, 'base64'));
-      decipher.setAAD(Buffer.from('github:' + companionId)); decipher.setAuthTag(Buffer.from(tag, 'base64'));
-      return Buffer.concat([decipher.update(Buffer.from(body, 'base64')), decipher.final()]).toString('utf8');
-    } catch (error) { if (error instanceof GitHubError) throw error; throw new GitHubError('GITHUB_UNAVAILABLE', 503); }
+    try { return this.#box.open('github:' + companionId, sealed); }
+    catch (error) { throw new GitHubError(error.message === 'SECRETS_UNCONFIGURED' ? 'GITHUB_UNCONFIGURED' : 'GITHUB_UNAVAILABLE', 503); }
   }
 
   // Only these requests exist. Anything else (DELETE, PATCH, PUT, other paths) is impossible from here.

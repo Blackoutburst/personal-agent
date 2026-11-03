@@ -180,6 +180,9 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
     suspend fun githubLink(token: String): List<Connector> =
         call<ConnectorList>("api/companion", buildJsonObject { put("action", "githubLink"); put("token", token) }).connectors
     suspend fun githubUnlink(): List<Connector> = call<ConnectorList>("api/companion", buildJsonObject { put("action", "githubUnlink") }).connectors
+    suspend fun xKeyLink(token: String): List<Connector> =
+        call<ConnectorList>("api/companion", buildJsonObject { put("action", "xKeyLink"); put("token", token) }).connectors
+    suspend fun xKeyUnlink(): List<Connector> = call<ConnectorList>("api/companion", buildJsonObject { put("action", "xKeyUnlink") }).connectors
     suspend fun discord(): DiscordStatus = call<DiscordReply>("api/companion", buildJsonObject { put("action", "discord") }).discord
     suspend fun discordLink(token: String): DiscordStatus =
         call<DiscordReply>("api/companion", buildJsonObject { put("action", "discordLink"); put("token", token) }).discord

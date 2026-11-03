@@ -84,6 +84,8 @@ export class FileStore {
     this.thread(companionId, row.thread_id); return row;
   }
   list(messageId) { return this.db.prepare("SELECT * FROM conv_files WHERE message_id=? AND state='ready' ORDER BY created_at,id").all(messageId).map(row => this.dto(row)); }
+  // A folder inside the companion's workspace (made when missing; never through a link). Used for fetched X media.
+  workspaceDir(companionId, ...parts) { const root = this.workspaceRoot(companionId); return directory(join(root, ...parts), root); }
   workspaceRoot(companionId) {
     const workspace = this.workspaceFor(companionId)?.dir;
     if (!workspace) refuse('FILE_UNAVAILABLE', 503);

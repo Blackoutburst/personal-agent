@@ -411,6 +411,7 @@ private fun ConnectorsScreen(model: CompanionModel, state: UiState) {
                 Text(item.purpose, color = Ink, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp))
                 item.detail?.let { Text(it, color = Soft, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp)) }
                 if (item.id == "github") GitHubControls(model, state, item) { disconnecting = item }
+                else if (item.id == "x") XControls(model, state, item)
                 else if (item.id != "discord" && item.actions.isNotEmpty()) {
                     val connect = "connect" in item.actions
                     ActionButton(enabled = !state.connectorsBusy, onClick = { if (connect) model.setConnector(item.id, true) else disconnecting = item },
@@ -457,6 +458,37 @@ private fun GitHubControls(model: CompanionModel, state: UiState, item: Connecto
         ActionButton(enabled = !state.connectorsBusy, onClick = { replacing = true }) { Text("Paste a new token") }
         ActionButton(enabled = !state.connectorsBusy, onClick = disconnect) { Text("Disconnect") }
     }
+}
+
+/** X / Twitter (#46): reading works through FxTwitter; an optional X API bearer token is a backup, stored encrypted and never shown again. */
+@Composable
+private fun XControls(model: CompanionModel, state: UiState, item: Connector) {
+    val uri = LocalUriHandler.current
+    var adding by remember(state.scope) { mutableStateOf(false) }
+    var removing by remember(state.scope) { mutableStateOf(false) }
+    var token by remember(state.scope) { mutableStateOf("") }
+    if (adding) {
+        Spacer(Modifier.height(6.dp))
+        Text("1. In the X developer console, open your app (pay-per-use credits) and copy its Bearer Token.", color = Soft, fontSize = 14.sp)
+        ActionButton({ uri.openUri("https://developer.x.com/en/portal/dashboard") }) { Text("Open the X developer console", color = Color(0xFFD9764A)) }
+        Text("2. Paste it here. It is stored encrypted, only for you, never shown again, and used only when FxTwitter cannot read a post.", color = Soft, fontSize = 14.sp)
+        OutlinedTextField(token, { token = it.trim() }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Bearer token") }, singleLine = true,
+            visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(18.dp),
+            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
+            colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Card, unfocusedContainerColor = Card))
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ActionButton(enabled = !state.connectorsBusy && token.isNotBlank(), onClick = { model.xKey(token) { adding = false }; token = "" }) {
+                Text(if (state.connectorsBusy) "Checking…" else "Save key") }
+            ActionButton(onClick = { adding = false; token = "" }) { Text("Cancel") }
+        }
+    } else Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ActionButton(enabled = !state.connectorsBusy, onClick = { adding = true }) { Text(if ("add" in item.actions) "Add an X API key (optional)" else "Paste a new key") }
+        if ("remove" in item.actions) ActionButton(enabled = !state.connectorsBusy, onClick = { removing = true }) { Text("Remove key") }
+    }
+    if (removing) AlertDialog(onDismissRequest = { removing = false }, title = { Text("Remove your X API key?") },
+        text = { Text("${state.name} keeps reading posts through FxTwitter.") },
+        confirmButton = { ActionButton(onClick = { removing = false; model.xKey(null) }) { Text("Remove", color = Danger) } },
+        dismissButton = { ActionButton(onClick = { removing = false }) { Text("Keep it") } })
 }
 
 @Composable

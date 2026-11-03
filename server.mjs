@@ -22,6 +22,8 @@ import { SchedulerStore, SchedulerService } from './src/scheduler.mjs';
 import { createSchedulerHttp, schedulerOperation } from './src/scheduler-http.mjs';
 import { Calendar } from './src/calendar.mjs';
 import { GitHub } from './src/github.mjs';
+import { XPosts } from './src/x-posts.mjs';
+import { SecretBox } from './src/secrets.mjs';
 import { DiscordLinks, DiscordBridge } from './src/discord.mjs';
 import { FileStore, FileError, FILE_LIMITS } from './src/files.mjs';
 import { createFileHttp, fileFailure } from './src/file-http.mjs';
@@ -79,7 +81,7 @@ function androidRelease(dataDir) {
 }
 
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, githubOptions = {}, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {}, pushOptions = {} } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, githubOptions = {}, xOptions = {}, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {}, pushOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -104,7 +106,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let conversationHttp;
   let agentsConfigured = false;
   let companionHttp;
-  let schedulerHttp, schedulerService, schedulerStore, calendar = null, github = null, discord = null;
+  let schedulerHttp, schedulerService, schedulerStore, calendar = null, github = null, x = null, discord = null;
   let files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, connectors = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
@@ -196,7 +198,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           return fail(415, 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json.');
         }
         const parsed = await readJsonBody(req, 16384);
-        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value, { calendar, github });
+        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value, { calendar, github, x });
         if (result.closeConnection) res.setHeader('connection', 'close');
         return send(result.status, result.body);
       }
@@ -276,7 +278,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
               env: { COMPANION_SCHEDULER_URL: `http://127.0.0.1:${server.address().port}/internal/scheduler`,
                 COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'create_topic_watch', 'update_release_watch',
                   'list_calendar', 'create_event', 'update_event', 'delete_event',
-                  'github_list_repos', 'github_repo', 'github_pulls', 'github_pull', 'github_create_repo'] }];
+                  'github_list_repos', 'github_repo', 'github_pulls', 'github_pull', 'github_create_repo', 'read_x_post', 'watch_x_video'] }];
           } });
         agentsConfigured = true;
       }
@@ -337,8 +339,14 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       github = new GitHub({ store, keyFile: githubOptions.keyFile ?? process.env.COMPANION_SECRETS_KEY
         ?? join(process.env.HOME ?? '', '.config/personal-agent/connector-secrets.key'), ...(githubOptions.fetchImpl ? { fetchImpl: githubOptions.fetchImpl } : {}),
         ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
-      connectors = new Connectors({ store, discord: () => discord, github: () => github, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
+      // X posts (#46): FxTwitter, else the owner's own sealed X API key; video speech through faster-whisper when its model is present.
+      const whisper = xOptions.whisperModel ?? process.env.COMPANION_WHISPER_MODEL ?? join(process.env.HOME ?? '', 'personal-agent-data/models/whisper-small');
+      x = new XPosts({ store, files, secrets: new SecretBox({ keyFile: githubOptions.keyFile ?? process.env.COMPANION_SECRETS_KEY
+        ?? join(process.env.HOME ?? '', '.config/personal-agent/connector-secrets.key') }), ...(xOptions.fetchImpl ? { fetchImpl: xOptions.fetchImpl } : {}),
+        transcriber: existsSync(join(whisper, 'model.bin')) ? { python: xOptions.python ?? 'python3', script: join(ROOT, 'ops', 'transcribe.py'), model: whisper } : null });
+      connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
       conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget: new WebBudget({ store }),
+        linkContext: (companionId, text) => x.forTurn(companionId, text),
         toolFilterFor: companionId => connectors.toolFilter(companionId), wakePolicy: {
         beforeStart: (companionId, id) => (schedulerStore.isReleaseOccurrence(companionId, id) || Boolean(runner?.ownerFor(companionId))) && schedulerStore.startInTransaction(companionId, id),
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id),
@@ -390,7 +398,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         log: message => console.error(message) });
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality, contacts, weather,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
-        discord, push: pushDevices, connectors, github,
+        discord, push: pushDevices, connectors, github, x,
         assertMemoryIdle: companionId => conversations.assertMemoryIdle(companionId),
         onForget: companionId => conversations.resetSessions(companionId),
         // Claude reads the look every turn; Codex keeps its first instructions, so it starts afresh.
