@@ -34,6 +34,7 @@ const STATIC = new Map([
   ['/companion.css', ['companion.css', 'text/css; charset=utf-8']],
   ['/companion-app.mjs', ['companion-app.mjs', 'text/javascript; charset=utf-8']],
   ['/reminders-ui.mjs', ['reminders-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/memory-ui.mjs', ['memory-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-character.mjs', ['companion-character.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-theme.js', ['companion-theme.js', 'text/javascript; charset=utf-8']],
   ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']],
@@ -283,6 +284,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
         discord,
+        assertMemoryIdle: companionId => conversations.assertMemoryIdle(companionId),
         onForget: companionId => conversations.resetSessions(companionId),
         // Claude reads the look every turn; Codex keeps its first instructions, so it starts afresh.
         onLook: companionId => conversations.resetSessions(companionId) });

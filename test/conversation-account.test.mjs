@@ -82,6 +82,83 @@ async function settle(app, proof, threadId, from = '0') {
 const newThread = async (app, proof = A, requestId = 'new-1') =>
   (await post(app, { action: 'createThread', requestId, title: 'New conversation' }, proof)).body.thread.id;
 
+test('complete private memory controls use current file CAS and export only the signed-in owner notes and diary', async t => {
+  const f = setup(t), app = await f.open(); await ready(f, app);
+  const module = await fetch(app.url + '/memory-ui.mjs');
+  assert.equal(module.status, 200); assert.match(module.headers.get('content-type'), /javascript/);
+  assert.match(await module.text(), /export function createMemoryUI/);
+  assert.equal((await fetch(app.url + '/USER.md')).status, 404);
+  assert.equal((await fetch(app.url + '/memory/2026-11-02.md')).status, 404);
+  const api = async (body, proof = A) => {
+    const response = await fetch(app.url + '/api/companion', { method: 'POST', headers: { Origin: app.url,
+      'Content-Type': 'application/json', ...(proof ? { Cookie: COOKIE(proof) } : {}) }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  await api({ action: 'memory' }); await api({ action: 'memory' }, B);
+  const workspace = join(dirname(f.home('blackout')), 'workspace'), other = join(dirname(f.home('screamer')), 'workspace');
+  const soul = readFileSync(join(workspace, 'SOUL.md'), 'utf8');
+  writeFileSync(join(workspace, 'USER.md'), '# About\nNon-bullet prose stays intact.\n- Same note\n- Same note\n');
+  writeFileSync(join(workspace, 'memory', '2026-11-02.md'), 'PRIVATE-DIARY-CANARY\nDiary prose.\n');
+  writeFileSync(join(other, 'USER.md'), '# Other owner\n- OTHER-OWNER-CANARY\n');
+  const initial = (await api({ action: 'memory' })).body, user = initial.files.find(file => file.file === 'USER.md');
+  assert.match(user.content, /Non-bullet prose stays intact/); assert.match(user.modifiedAtISO, /^2026|^20\d\d/);
+  const items = user.sections.flatMap(section => section.items); assert.notEqual(items[0].id, items[1].id);
+  const diary = initial.files.find(file => file.file === 'memory/2026-11-02.md'); assert.equal(diary.readOnly, true);
+  assert.equal((await api({ action: 'editMemory', file: user.file, id: items[0].id, text: 'Corrected note', expectedRevision: user.revision })).status, 200);
+  assert.equal((await api({ action: 'forget', file: user.file, id: items[1].id, expectedRevision: user.revision })).status, 409);
+  assert.equal((await api({ action: 'forget', file: user.file, id: items[0].id, expectedRevision: user.revision }, B)).status, 409);
+  assert.equal((await api({ action: 'exportMemory' }, null)).status, 401);
+  const exported = (await api({ action: 'exportMemory' })).body.export;
+  assert.equal(exported.format, 'companion-memory-v1');
+  assert.match(exported.files.find(file => file.file === 'USER.md').content, /Corrected note\n- Same note/);
+  assert.match(exported.files.find(file => file.file.startsWith('memory/')).content, /PRIVATE-DIARY-CANARY/);
+  assert.ok(!JSON.stringify(exported).includes('OTHER-OWNER-CANARY')); assert.ok(!exported.files.some(file => file.file === 'SOUL.md'));
+  assert.ok(!JSON.stringify((await api({ action: 'exportMemory' }, B)).body).includes('PRIVATE-DIARY-CANARY'));
+  assert.equal((await api({ action: 'editMemory', file: diary.file, id: items[0].id, text: 'no', expectedRevision: diary.revision })).status, 403);
+  const threadId = await newThread(app); await post(app, { action: 'submit', requestId: 'memory-chat', threadId, text: 'Keep this conversation.' }); await app.conversations.idle();
+  const current = (await api({ action: 'memory' })).body, currentUser = current.files.find(file => file.file === 'USER.md');
+  const corrected = currentUser.sections.flatMap(section => section.items).find(item => item.text === 'Corrected note');
+  assert.equal((await api({ action: 'forget', file: user.file, id: corrected.id, expectedRevision: currentUser.revision })).body.removed, true);
+  assert.ok(existsSync(join(workspace, diary.file)), 'single bullet forget leaves diary');
+  assert.ok((await post(app, { action: 'snapshot', threadId })).body.messages.some(message => message.text === 'Keep this conversation.'));
+  assert.equal((await api({ action: 'forgetAll', expectedRevision: initial.revision, confirm: true })).status, 409);
+  const all = (await api({ action: 'memory' })).body;
+  assert.equal((await api({ action: 'forgetAll', expectedRevision: all.revision, confirm: false })).status, 400);
+  assert.equal((await api({ action: 'forgetAll', expectedRevision: all.revision, confirm: true })).body.cleared, true);
+  assert.equal(readFileSync(join(workspace, 'USER.md'), 'utf8'), ''); assert.equal(readFileSync(join(workspace, 'MEMORY.md'), 'utf8'), '');
+  assert.equal(existsSync(join(workspace, diary.file)), false); assert.equal(readFileSync(join(workspace, 'SOUL.md'), 'utf8'), soul);
+  assert.match(readFileSync(join(other, 'USER.md'), 'utf8'), /OTHER-OWNER-CANARY/);
+  assert.ok((await post(app, { action: 'snapshot', threadId })).body.messages.some(message => message.text === 'Keep this conversation.'));
+});
+
+test('owner API refuses memory writes during normal and wake lanes and resets durably before publishing bytes', async t => {
+  const f = setup(t), app = await f.open({ conversationOptions: { wakePolicy: { beforeStart: () => true, canDeliver: () => true } } }); await ready(f, app);
+  const api = async body => {
+    const response = await fetch(app.url + '/api/companion', { method: 'POST', headers: { Origin: app.url, 'Content-Type': 'application/json', Cookie: COOKIE(A) }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  await api({ action: 'memory' }); const workspace = join(dirname(f.home('blackout')), 'workspace');
+  writeFileSync(join(workspace, 'USER.md'), '## Facts\n- Original note\n');
+  const current = (await api({ action: 'memory' })).body, user = current.files.find(file => file.file === 'USER.md');
+  const edit = { action: 'editMemory', file: user.file, id: user.sections[0].items[0].id, text: 'Corrected note', expectedRevision: user.revision };
+  const threadId = await newThread(app); await post(app, { action: 'submit', requestId: 'memory-slow', threadId, text: 'SLOW synthetic reply' });
+  const busy = await api(edit); assert.equal(busy.status, 409); assert.equal(busy.body.error.code, 'MEMORY_BUSY');
+  assert.equal((await api({ action: 'forgetAll', expectedRevision: current.revision, confirm: true })).body.error.code, 'MEMORY_BUSY');
+  await post(app, { action: 'cancel', threadId, requestId: 'memory-slow' }); await app.conversations.idle();
+  assert.equal(readFileSync(join(workspace, 'USER.md'), 'utf8'), user.content);
+  const reset = app.conversations.resetSessions.bind(app.conversations);
+  app.conversations.resetSessions = () => { throw new Error('PRIVATE-SYNTHETIC-DB-FAILURE'); };
+  const failed = await api(edit); assert.equal(failed.status, 503); assert.ok(!JSON.stringify(failed.body).includes('PRIVATE-SYNTHETIC'));
+  assert.equal(readFileSync(join(workspace, 'USER.md'), 'utf8'), user.content); app.conversations.resetSessions = reset;
+  assert.equal((await api(edit)).body.changed, true);
+  const session = await fetch(app.url + '/api/session', { method: 'POST', headers: { Origin: app.url, 'Content-Type': 'application/json', Cookie: COOKIE(A) }, body: '{}' }).then(response => response.json());
+  const admitted = app.conversations.enqueueProactive(session.companionId, { id: randomUUID(), kind: 'reminder', prompt: 'SLOW private wake' });
+  const latest = (await api({ action: 'memory' })).body;
+  assert.equal((await api({ action: 'forgetAll', expectedRevision: latest.revision, confirm: true })).body.error.code, 'MEMORY_BUSY');
+  await post(app, { action: 'cancel', threadId: admitted.threadId, requestId: admitted.requestId }); await app.conversations.idle();
+  assert.equal((await api({ action: 'forgetAll', expectedRevision: latest.revision, confirm: true })).body.cleared, true);
+});
+
 test('authenticated conversations inherit owner file/web/Board and app MCP policy', async t => {
   const f = setup(t, { ownerSettings: { blackout: {
     tools: ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
@@ -350,9 +427,9 @@ test('the companion: profile, memory view and forget, file-based instructions an
   writeFileSync(join(workspace, 'USER.md'), '# Blackout\n\n## About Blackout\n- Lives in Lyon\n- Secret crush on Mochi\n');
   const memory = (await api({ action: 'memory' })).body.files[0];
   assert.deepEqual(memory.sections[0].items.map(item => item.text), ['Lives in Lyon', 'Secret crush on Mochi']);
-  const forgotten = await api({ action: 'forget', file: 'USER.md', id: memory.sections[0].items[1].id });
+  const forgotten = await api({ action: 'forget', file: 'USER.md', id: memory.sections[0].items[1].id, expectedRevision: memory.revision });
   assert.equal(forgotten.body.removed, true);
-  assert.equal((await api({ action: 'forget', file: 'USER.md', id: memory.sections[0].items[1].id }, B)).body.removed, false); // B's own workspace
+  assert.equal((await api({ action: 'forget', file: 'USER.md', id: memory.sections[0].items[1].id, expectedRevision: memory.revision }, B)).status, 404); // B's own notes do not exist yet; A is never selected.
   await turn('t3', 'third');
 
   const calls = f.calls('blackout'), system = call => call.args[call.args.indexOf('--system-prompt') + 1];
@@ -431,7 +508,7 @@ test('account user and tagged wake turns share native continuity while outfit an
   const memory = (await companion({ action: 'memory' })).body.files.find(file => file.file === 'USER.md');
   const forgotten = memory.sections.flatMap(section => section.items).find(item => item.text === 'PRIVATE-FORGOTTEN-NATIVE-MEMORY');
   assert.ok(forgotten);
-  assert.equal((await companion({ action: 'forget', file: 'USER.md', id: forgotten.id })).body.removed, true);
+  assert.equal((await companion({ action: 'forget', file: 'USER.md', id: forgotten.id, expectedRevision: memory.revision })).body.removed, true);
   await wakeTurn(); await userTurn('after-forget-wake', 'Thank you again.');
 
   const calls = f.calls('blackout'), system = call => call.args[call.args.indexOf('--system-prompt') + 1];

@@ -100,6 +100,7 @@ function titleFrom(text) {
 export class Conversations {
   #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled;
   #queues = new Map(); #active = new Map(); #closing = false; #files; #fileToolsForTurn;
+  #sessionEpoch = new Map();
 
   // runner: a CompanionRunner (or null when no runtime is configured).
   // systemPrompt(companionId, {fresh, recent}) returns the instructions for a turn: fresh is true when a
@@ -128,6 +129,17 @@ export class Conversations {
   // (for example after a memory was forgotten, so the old one doesn't linger in context).
   resetSessions(companionId) {
     this.#db.prepare('UPDATE conv_threads SET provider_session=NULL, session_turns=0 WHERE companion_id=?').run(companionId);
+    this.#sessionEpoch.set(companionId, (this.#sessionEpoch.get(companionId) ?? 0) + 1);
+  }
+
+  // Synchronous memory writes run only after this owner's native lane has actually settled.
+  // A quiet-time queued DB wake has not captured files or a resume mapping and may remain queued.
+  assertMemoryIdle(companionId) {
+    if (this.#closing || this.#queues.has(companionId)
+        || this.#db.prepare("SELECT 1 FROM conv_turns WHERE companion_id=? AND state='running' LIMIT 1").get(companionId)
+        || this.#db.prepare("SELECT 1 FROM conv_wakes WHERE companion_id=? AND state='running' LIMIT 1").get(companionId)) {
+      throw new ConversationError('MEMORY_BUSY', 409);
+    }
   }
 
   #resume(thread) {
@@ -492,6 +504,8 @@ export class Conversations {
     });
     if (!wake) return;
     const controller = new AbortController(), key = `${wake.thread_id}:${wake.request_id}`;
+    const sessionEpoch = this.#sessionEpoch.get(companionId) ?? 0;
+    const currentSession = () => !controller.signal.aborted && !this.#closing && sessionEpoch === (this.#sessionEpoch.get(companionId) ?? 0);
     this.#active.set(key, controller);
     try {
       const thread = this.#thread(companionId, wake.thread_id), resume = this.#resume(thread);
@@ -506,7 +520,7 @@ export class Conversations {
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }),
         allowedTools: this.#allowedTools, toolFilter: wakeToolAllowed, signal: controller.signal,
         onEvent: event => {
-          if (event.type === 'session') this.#db.prepare(`UPDATE conv_threads SET provider_session=? WHERE id=? AND EXISTS(
+          if (event.type === 'session' && currentSession()) this.#db.prepare(`UPDATE conv_threads SET provider_session=? WHERE id=? AND EXISTS(
             SELECT 1 FROM conv_wakes WHERE companion_id=? AND id=? AND state='running' AND attempt_token=?)`)
             .run(event.id, thread.id, companionId, id, wake.attempt_token);
           else if (event.type === 'delta' && typeof event.text === 'string' && !overflow) {
@@ -528,8 +542,10 @@ export class Conversations {
       this.#tx(() => {
         const current = this.#wake(companionId, id);
         if (current?.state !== 'running' || current.attempt_token !== wake.attempt_token) return;
-        if (reply.sessionId) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(reply.sessionId, thread.id);
-        this.#db.prepare('UPDATE conv_threads SET session_turns=session_turns+1,session_at=? WHERE id=?').run(this.#now(), thread.id);
+        if (currentSession()) {
+          if (reply.sessionId) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(reply.sessionId, thread.id);
+          this.#db.prepare('UPDATE conv_threads SET session_turns=session_turns+1,session_at=? WHERE id=?').run(this.#now(), thread.id);
+        }
         if (decision.action === 'silent') {
           this.#db.prepare("UPDATE conv_wakes SET state='silent',result_text=NULL,result_feeling=NULL,updated_at=? WHERE companion_id=? AND id=?")
             .run(this.#now(), companionId, id);
@@ -557,6 +573,8 @@ export class Conversations {
     const thread = this.#db.prepare('SELECT * FROM conv_threads WHERE id=?').get(threadId);
     const user = this.#db.prepare('SELECT text FROM conv_messages WHERE id=?').get(turn.user_message_id);
     const controller = new AbortController(), key = `${threadId}:${requestId}`;
+    const sessionEpoch = this.#sessionEpoch.get(companionId) ?? 0;
+    const currentSession = () => sessionEpoch === (this.#sessionEpoch.get(companionId) ?? 0);
     this.#active.set(key, controller);
     let assistantId = null, text = '', written = '', timer = null, fileTools = null;
     const live = () => !this.#closing && !controller.signal.aborted && Boolean(this.#db.prepare(`SELECT 1 FROM conv_turns t JOIN conv_threads h ON h.id=t.thread_id
@@ -613,13 +631,20 @@ export class Conversations {
         prompt: user.text + filePrompt, images: incoming.filter(file => file.mime.startsWith('image/')).map(file => file.path), appServers: fileTools.servers,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }), allowedTools: this.#allowedTools, signal: controller.signal,
         onEvent: event => {
-          if (event.type === 'session') this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(event.id, threadId);
+          if (event.type === 'session' && live() && currentSession()) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(event.id, threadId);
           else if (event.type === 'delta') { text += event.text; schedule(); }
         }
       });
-      if (!live()) return;
-      if (reply.sessionId) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(reply.sessionId, threadId);
-      this.#db.prepare('UPDATE conv_threads SET session_turns=session_turns+1, session_at=? WHERE id=?').run(this.#now(), threadId);
+      if (!live()) {
+        // A provider may settle successfully after cancellation; still finish the app's running row.
+        if (this.#closing) this.#finish(turn, 'error', { code: 'INTERRUPTED', message: ERROR_MESSAGES.INTERRUPTED });
+        else if (controller.signal.aborted) this.#finish(turn, 'cancelled');
+        return;
+      }
+      if (currentSession()) {
+        if (reply.sessionId) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(reply.sessionId, threadId);
+        this.#db.prepare('UPDATE conv_threads SET session_turns=session_turns+1, session_at=? WHERE id=?').run(this.#now(), threadId);
+      }
       clearTimeout(timer);
       text = reply.text || text;
       flush(true);

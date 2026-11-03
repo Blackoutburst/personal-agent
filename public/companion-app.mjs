@@ -2,15 +2,17 @@
 import { createConversationClient, createFileTransport, AttachmentError, USER_CHARS } from './conversation-client.mjs';
 import { renderCharacter, CHARACTERS, COLORS, OUTFITS, HAS_OUTFITS } from './companion-character.mjs';
 import { createRemindersUI } from './reminders-ui.mjs';
+import { createMemoryUI } from './memory-ui.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
 const fileTransport = createFileTransport();
 const remindersUI = createRemindersUI({ document });
+const memoryUI = createMemoryUI({ document, api, onDenied: fileAccessDenied });
 const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
 let profile = null, runtime = null, view = 'loading', chatOpened = false, state = client.getState();
-let wearing = 'base', draftLook = null, pollTimer = null, polling = false, happyUntil = 0, lastTurnKey = null, memory = null, confirming = null;
+let wearing = 'base', draftLook = null, pollTimer = null, polling = false, happyUntil = 0, lastTurnKey = null;
 const messageNodes = new Map();
 let uploads = [], uploadEpoch = 0, fileNotice = '', uploadsKey = '';
 
@@ -94,13 +96,14 @@ function route() {
 }
 
 async function start() {
+  memoryUI.clear();
   try {
     const data = await api({ action: 'get' });
     profile = data.profile; runtime = data.runtime; wearing = data.wearing ?? 'base';
     applyColors(profile);
     route();
   } catch (error) {
-    if (error.status === 401 || error.status === 403) gate('Hi there!', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true });
+    if (error.status === 401 || error.status === 403) { memoryUI.clear(); gate('Hi there!', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true }); }
     else gate('Hmm, I can’t reach your companion', 'The server didn’t answer. Check your connection and try again.', { retry: true });
   }
 }
@@ -282,7 +285,7 @@ function syncFiles() {
   if (state.opened && state.threadId && state.connection === 'ready') client.setFiles(uploads.filter(item => item.status === 'ready').map(item => item.dto));
 }
 function fileAccessDenied() {
-  client.clear(); remindersUI.clear();
+  memoryUI.clear(); client.clear(); remindersUI.clear();
   gate('Your session ended', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true });
 }
 function clearUploads() {
@@ -354,57 +357,7 @@ function addFiles(files) {
 
 // ---------- Memories ----------
 
-const FILE_TITLES = { 'USER.md': 'About you', 'MEMORY.md': 'Our memories' };
-async function loadMemories() {
-  confirming = null;
-  try { memory = (await api({ action: 'memory' })).files; } catch { memory = null; }
-  renderMemories();
-}
-function renderMemories() {
-  const name = companionName();
-  $('memories-title').textContent = `What ${name} remembers`;
-  $('memories-intro').textContent = `${name} writes things down as you talk. If something is wrong or private, make ${name} forget it, or just tell ${name} in the chat.`;
-  const root = $('memory-groups');
-  root.replaceChildren();
-  if (!memory) { root.append(Object.assign(document.createElement('p'), { className: 'empty', textContent: 'Memories couldn’t be loaded. Try again in a moment.' })); return; }
-  const total = memory.reduce((sum, file) => sum + file.sections.reduce((n, s) => n + s.items.length, 0), 0);
-  if (!total) { root.append(Object.assign(document.createElement('p'), { className: 'empty', textContent: `Nothing yet. ${name} will remember things as you talk.` })); return; }
-  for (const file of memory) {
-    if (!file.sections.length) continue;
-    const card = document.createElement('section'); card.className = 'memory-card';
-    card.append(Object.assign(document.createElement('h2'), { textContent: FILE_TITLES[file.file] ?? file.file }));
-    for (const section of file.sections) {
-      if (section.title) card.append(Object.assign(document.createElement('h3'), { textContent: section.title }));
-      const list = document.createElement('ul');
-      for (const item of section.items) {
-        const row = document.createElement('li'); row.className = 'memory-item';
-        row.append(Object.assign(document.createElement('span'), { textContent: item.text }));
-        if (confirming === item.id) {
-          row.classList.add('confirming');
-          const box = document.createElement('span'); box.className = 'confirm';
-          const yes = Object.assign(document.createElement('button'), { type: 'button', className: 'yes', textContent: 'Forget' });
-          const no = Object.assign(document.createElement('button'), { type: 'button', className: 'no', textContent: 'Keep' });
-          yes.addEventListener('click', () => forget(file.file, item.id));
-          no.addEventListener('click', () => { confirming = null; renderMemories(); });
-          box.append(yes, no); row.append(box);
-        } else {
-          const button = Object.assign(document.createElement('button'), { type: 'button', className: 'forget', textContent: 'Forget' });
-          button.setAttribute('aria-label', `Forget: ${item.text}`);
-          button.addEventListener('click', () => { confirming = item.id; renderMemories(); });
-          row.append(button);
-        }
-        list.append(row);
-      }
-      card.append(list);
-    }
-    root.append(card);
-  }
-}
-async function forget(file, id) {
-  try { memory = (await api({ action: 'forget', file, id })).files; $('announce').textContent = 'Forgotten.'; }
-  catch { $('announce').textContent = 'That couldn’t be forgotten. Try again.'; }
-  confirming = null; renderMemories();
-}
+function loadMemories() { return memoryUI.load(companionName()); }
 
 // ---------- Look ----------
 
@@ -535,7 +488,7 @@ client.subscribe(next => {
   if (uploads.length && uploads.every(item => item.dto) &&
       ((next.pending?.action === 'submit' && next.pending.status === 'accepted' && uploads.every(item => next.pending.attachments?.includes(item.dto.id))) ||
        next.messages.some(message => message.role === 'user' && uploads.every(item => message.attachments?.some(file => file.id === item.dto.id))))) clearUploads();
-  if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') remindersUI.clear();
+  if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') { remindersUI.clear(); memoryUI.clear(); }
   renderAll();
   if (!polling) schedulePoll();
 });

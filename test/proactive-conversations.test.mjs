@@ -67,6 +67,47 @@ function privateTranscript(snapshotValue) {
   assert.ok(!JSON.stringify(snapshotValue).includes('"action":"silent"'));
 }
 
+test('memory changes wait for the owner lane and late normal callbacks cannot restore a reset session', async t => {
+  const started = deferred(), finish = deferred(); let live;
+  const f = fixture(t, { handler: (_owner, turn) => { live = turn; turn.onEvent({ type: 'session', id: 'old-session' }); started.resolve(); return finish.promise; } });
+  const threadId = await createThread(f);
+  await f.conv.handle(f.a, { action: 'submit', threadId, requestId: 'memory-race', text: 'RETAINED-RECENT-CHAT' }); await started.promise;
+  assert.throws(() => f.conv.assertMemoryIdle(f.a), { code: 'MEMORY_BUSY', status: 409 });
+  assert.doesNotThrow(() => f.conv.assertMemoryIdle(f.b));
+  f.conv.resetSessions(f.a); live.onEvent({ type: 'session', id: 'late-old-session' });
+  assert.equal(f.store.db.prepare('SELECT provider_session FROM conv_threads WHERE id=?').get(threadId).provider_session, null);
+  await f.conv.handle(f.a, { action: 'cancel', threadId, requestId: 'memory-race' });
+  assert.throws(() => f.conv.assertMemoryIdle(f.a), { code: 'MEMORY_BUSY' }, 'cancel has not yet joined the native lane');
+  finish.resolve({ text: 'old reply', sessionId: 'final-old-session' }); await f.conv.idle();
+  const row = f.store.db.prepare('SELECT provider_session,session_turns FROM conv_threads WHERE id=?').get(threadId);
+  assert.equal(row.provider_session, null); assert.equal(row.session_turns, 0); assert.doesNotThrow(() => f.conv.assertMemoryIdle(f.a));
+  f.handler = () => ({ text: 'new reply', sessionId: 'fresh-session' });
+  await f.conv.handle(f.a, { action: 'submit', threadId, requestId: 'after-memory', text: 'hello again' }); await f.conv.idle();
+  assert.equal(f.calls.at(-1).resume, null);
+  assert.ok(f.prompts.at(-1).context.recent.some(message => message.text === 'RETAINED-RECENT-CHAT'), 'approved recent chat replay stays unchanged');
+});
+
+test('late wake session events and final session IDs cannot undo a durable memory reset', async t => {
+  const started = deferred(), finish = deferred(); let live;
+  const f = fixture(t, { handler: (_owner, turn) => { live = turn; turn.onEvent({ type: 'session', id: 'old-wake-session' }); started.resolve(); return finish.promise; } });
+  const admitted = f.conv.enqueueProactive(f.a, wake()); await started.promise;
+  assert.throws(() => f.conv.assertMemoryIdle(f.a), { code: 'MEMORY_BUSY' });
+  f.conv.resetSessions(f.a); live.onEvent({ type: 'session', id: 'late-wake-session' });
+  finish.resolve(message('Existing reminder output.')); await f.conv.idle();
+  const row = f.store.db.prepare('SELECT provider_session,session_turns FROM conv_threads WHERE id=?').get(admitted.threadId);
+  assert.equal(row.provider_session, null); assert.equal(row.session_turns, 0); assert.doesNotThrow(() => f.conv.assertMemoryIdle(f.a));
+});
+
+test('a quiet queued DB wake does not indefinitely block memory edits, but a recovery running row does', async t => {
+  const f = fixture(t, { wakePolicy: { beforeStart: () => false, canDeliver: () => true } });
+  const input = wake(); f.conv.enqueueProactive(f.a, input); await f.conv.idle();
+  assert.equal(f.conv.proactiveResult(f.a, input.id).state, 'queued');
+  assert.doesNotThrow(() => f.conv.assertMemoryIdle(f.a));
+  f.store.db.prepare("UPDATE conv_wakes SET state='running' WHERE companion_id=? AND id=?").run(f.a, input.id);
+  assert.throws(() => f.conv.assertMemoryIdle(f.a), { code: 'MEMORY_BUSY' });
+  assert.doesNotThrow(() => f.conv.assertMemoryIdle(f.b));
+});
+
 test('a genuine wake buffers deltas and publishes one assistant message without a synthetic user row', async t => {
   const started = deferred(), finish = deferred();
   const f = fixture(t, { handler: (_owner, turn) => {

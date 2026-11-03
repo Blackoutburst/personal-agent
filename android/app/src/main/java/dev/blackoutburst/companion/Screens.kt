@@ -117,6 +117,7 @@ private enum class Tab(val label: String) { Chat("Chat"), Memories("Memories"), 
 @Composable
 fun CompanionApp(model: CompanionModel, tones: Tones, openBrowser: (android.net.Uri) -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
+    val memoryExport = rememberMemoryExport(model, state.scope)
     val scheme = if (tones.dark) darkColorScheme(primary = tones.ink, background = tones.top, surface = tones.card, onSurface = tones.ink, onSurfaceVariant = tones.soft)
     else lightColorScheme(primary = tones.ink, background = tones.top, surface = tones.card, onSurface = tones.ink, onSurfaceVariant = tones.soft)
     CompositionLocalProvider(LocalTones provides tones) { MaterialTheme(colorScheme = scheme) {
@@ -127,7 +128,7 @@ fun CompanionApp(model: CompanionModel, tones: Tones, openBrowser: (android.net.
             when (state.gate) {
                 Gate.Loading -> Gentle(state, Mood.Thinking, "One moment…")
                 Gate.SignedOut -> SignInScreen(state) { openBrowser(model.startSignIn()) }
-                Gate.Ready -> if (state.profile == null) LookScreen(model, state, first = true) else Home(model, state)
+                Gate.Ready -> if (state.profile == null) LookScreen(model, state, first = true) else Home(model, state, memoryExport)
             }
         }
     } }
@@ -157,13 +158,13 @@ private fun SignInScreen(state: UiState, signIn: () -> Unit) {
 }
 
 @Composable
-private fun Home(model: CompanionModel, state: UiState) {
+private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExportControl) {
     var tab by rememberSaveable { mutableStateOf(Tab.Chat) }
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f)) {
             when (tab) {
                 Tab.Chat -> ChatScreen(model, state)
-                Tab.Memories -> MemoriesScreen(model, state)
+                Tab.Memories -> MemoriesScreen(model, state, memoryExport)
                 Tab.Look -> LookScreen(model, state, first = false) { tab = Tab.Chat }
             }
         }
@@ -301,48 +302,8 @@ private fun Bubble(model: CompanionModel, message: Message, scope: Long) {
 
 // ---- Memories ----
 
-private val FILE_TITLES = mapOf("USER.md" to "About you", "MEMORY.md" to "Our memories")
-
 @Composable
-private fun MemoriesScreen(model: CompanionModel, state: UiState) {
-    LaunchedEffect(Unit) { model.loadMemories() }
-    var confirming by remember { mutableStateOf<String?>(null) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
-        Text("What ${state.name} remembers", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
-        Spacer(Modifier.height(4.dp))
-        Text("${state.name} keeps these notes to know you better. You can make it forget anything.", color = Soft, fontSize = 15.sp)
-        Spacer(Modifier.height(16.dp))
-        val files = state.memories
-        when {
-            files == null && state.memoriesFailed -> Text("Couldn't open the memories right now.", color = Soft)
-            files == null -> Text("Opening the notebook…", color = Soft)
-            files.all { it.sections.isEmpty() } -> Text("Nothing yet. Chat a little and ${state.name} will start remembering.", color = Soft, fontSize = 16.sp)
-        }
-        for (file in files.orEmpty()) {
-            if (file.sections.isEmpty()) continue
-            Text(FILE_TITLES[file.file] ?: file.file, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Ink, modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
-            for (section in file.sections) {
-                Column(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(20.dp)).background(Card).padding(16.dp)) {
-                    if (section.title.isNotEmpty()) Text(section.title, fontWeight = FontWeight.Bold, color = Soft, fontSize = 14.sp)
-                    for (item in section.items) {
-                        val key = "${file.file}/${item.id}"
-                        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(item.text, Modifier.weight(1f), color = Ink, fontSize = 16.sp)
-                            if (confirming == key) {
-                                TextButton({ confirming = null }) { Text("Keep", color = Soft) }
-                                TextButton({ confirming = null; model.forget(file.file, item.id) }) { Text("Forget", color = Danger, fontWeight = FontWeight.Bold) }
-                            } else {
-                                TextButton({ confirming = key }, Modifier.semantics { contentDescription = "Forget: ${item.text}" }) { Text("Forget", color = Soft) }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Spacer(Modifier.height(24.dp))
-        TextButton({ model.signOut() }) { Text("Sign out${state.username?.let { " ($it)" } ?: ""}", color = Soft) }
-    }
-}
+private fun MemoriesScreen(model: CompanionModel, state: UiState, memoryExport: MemoryExportControl) = MemoryPanel(model, state, memoryExport)
 
 // ---- Look ----
 

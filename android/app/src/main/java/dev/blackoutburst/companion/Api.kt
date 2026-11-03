@@ -26,10 +26,6 @@ import kotlinx.serialization.json.put
 @Serializable data class Runtime(val state: String, val provider: String? = null)
 @Serializable data class CompanionInfo(val profile: Profile? = null, val runtime: Runtime, val wearing: String = "base")
 @Serializable data class SavedProfile(val profile: Profile, val wearing: String = "base")
-@Serializable data class MemoryItem(val id: String, val text: String)
-@Serializable data class MemorySection(val title: String, val items: List<MemoryItem>)
-@Serializable data class MemoryFile(val file: String, val sections: List<MemorySection>)
-@Serializable data class Memories(val files: List<MemoryFile>)
 @Serializable data class ChatThread(val id: String, val title: String)
 @Serializable data class Message(val id: String, val threadId: String, val role: String, val text: String, val requestId: String? = null,
     val feeling: String? = null, val attachments: List<Attachment> = emptyList())
@@ -77,10 +73,30 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
             put("action", "setProfile")
             put("profile", json.encodeToJsonElement(Profile.serializer(), profile))
         }))
-    suspend fun memories(): Memories = call("api/companion", buildJsonObject { put("action", "memory") })
-    suspend fun forget(file: String, id: String): Memories = call("api/companion", buildJsonObject {
-        put("action", "forget"); put("file", file); put("id", id)
-    })
+    suspend fun memories(): Memories = parseMemories(post(companion + "api/companion", buildJsonObject { put("action", "memory") }))
+    suspend fun editMemory(file: String, id: String, text: String, expectedRevision: String): Memories {
+        checkMemoryChange(file, id, expectedRevision)
+        if (!validCorrection(text)) throw ApiException("INVALID_REQUEST")
+        return parseMemories(post(companion + "api/companion", buildJsonObject {
+            put("action", "editMemory"); put("file", file); put("id", id); put("text", text); put("expectedRevision", expectedRevision)
+        }), "changed")
+    }
+    suspend fun forget(file: String, id: String, expectedRevision: String): Memories {
+        checkMemoryChange(file, id, expectedRevision)
+        return parseMemories(post(companion + "api/companion", buildJsonObject {
+            put("action", "forget"); put("file", file); put("id", id); put("expectedRevision", expectedRevision)
+        }), "removed")
+    }
+    suspend fun forgetAllMemory(expectedRevision: String): Memories {
+        if (!memoryRevision(expectedRevision)) throw ApiException("INVALID_REQUEST")
+        return parseMemories(post(companion + "api/companion", buildJsonObject {
+            put("action", "forgetAll"); put("expectedRevision", expectedRevision); put("confirm", true)
+        }), "cleared")
+    }
+    suspend fun exportMemory(): MemoryExport = parseMemoryExport(post(companion + "api/companion", buildJsonObject { put("action", "exportMemory") }))
+    private fun checkMemoryChange(file: String, id: String, revision: String) {
+        if (!writableMemory(file) || !memoryItemId(id) || !memoryRevision(revision)) throw ApiException("INVALID_REQUEST")
+    }
 
     suspend fun discord(): DiscordStatus = call<DiscordReply>("api/companion", buildJsonObject { put("action", "discord") }).discord
     suspend fun discordLink(token: String): DiscordStatus =

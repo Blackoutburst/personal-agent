@@ -4,7 +4,7 @@
 import { FEELINGS, OUTFITS, outfitFor } from './wardrobe.mjs';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { memorySnapshot, forgetMemory as removeMemoryBullet } from './memory.mjs';
 
 export const CHARACTERS = Object.freeze(['pip', 'mochi', 'sprout', 'luna', 'claude']);
 export const COLORS = Object.freeze(['peach', 'mint', 'sky', 'lilac', 'sun', 'rose']);
@@ -168,38 +168,17 @@ function writeAtomic(path, text) {
 
 // ---------- Memory view and forget ----------
 
-const itemId = (file, text) => createHash('sha256').update(`${file}\0${text}`).digest('hex').slice(0, 16);
-
-// Sections ("## Heading") with their bullet items. Items are identified by a hash of their text.
+// Library compatibility; owner HTTP edits use memory.mjs with the client's explicit full-byte revision.
 export function readMemory(dir) {
-  return MEMORY_FILES.map(file => {
-    const lines = readText(join(dir, file), 1 << 20).split('\n');
-    const sections = [];
-    let current = null;
-    for (const line of lines) {
-      const heading = /^##\s+(.+?)\s*$/.exec(line);
-      if (heading) { current = { title: heading[1], items: [] }; sections.push(current); continue; }
-      const bullet = /^\s*[-*]\s+(.+?)\s*$/.exec(line);
-      if (bullet) {
-        if (!current) { current = { title: '', items: [] }; sections.push(current); }
-        current.items.push({ id: itemId(file, bullet[1]), text: bullet[1] });
-      }
-    }
-    return { file, sections: sections.filter(section => section.items.length) };
-  });
+  return memorySnapshot(dir).files;
 }
 
-// Removes every bullet line of `file` whose text hashes to `id`. Returns whether something was removed.
+// Existing local callers may remove an item from a fresh snapshot; this is not the HTTP protocol.
 export function forgetMemory(dir, file, id) {
   if (!MEMORY_FILES.includes(file) || typeof id !== 'string' || !/^[0-9a-f]{16}$/.test(id)) throw invalid();
-  const path = join(dir, file);
-  let text;
-  try { text = readFileSync(path, 'utf8'); } catch { return false; }
-  const lines = text.split('\n');
-  const kept = lines.filter(line => { const bullet = /^\s*[-*]\s+(.+?)\s*$/.exec(line); return !(bullet && itemId(file, bullet[1]) === id); });
-  if (kept.length === lines.length) return false;
-  writeAtomic(path, kept.join('\n'));
-  return true;
+  const current = memorySnapshot(dir).files.find(value => value.file === file);
+  if (!current?.sections.some(section => section.items.some(item => item.id === id))) return false;
+  return removeMemoryBullet(dir, { file, id, expectedRevision: current.revision }, () => {}).removed;
 }
 
 // ---------- Instructions for a turn ----------

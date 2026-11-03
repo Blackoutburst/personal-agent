@@ -50,6 +50,13 @@ data class UiState(
     val happyUntil: Long = 0,
     val memories: List<MemoryFile>? = null,
     val memoriesFailed: Boolean = false,
+    val memoryRevision: String? = null,
+    val memoryLoading: Boolean = false,
+    val memoryBusy: Boolean = false,
+    val memoryError: String? = null,
+    val memoryErrorCode: String? = null,
+    val memoryNotice: String? = null,
+    val memoryDraft: MemoryDraft? = null,
     val saving: Boolean = false,
     val discord: DiscordStatus? = null,
     val discordBusy: Boolean = false,
@@ -84,6 +91,9 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private val mediaTransfers = mutableSetOf<TransferCancellation>()
     private val mediaLock = Mutex()
     private val mediaCache = mutableMapOf<String, File>()
+    @Volatile private var memoryEpoch = 0L
+    private var memoryJob: Job? = null
+    private val memoryExports = mutableSetOf<TransferCancellation>()
 
     init {
         // An interrupted prior process must not leave an unbounded or reusable private media cache.
@@ -239,20 +249,123 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadMemories() {
+        if (_state.value.memoryBusy) return
         val version = scope
-        viewModelScope.launch {
-            if (!current(version)) return@launch
-            _state.update { it.copy(memoriesFailed = false) }
-            if (!guarded { val memories = api.memories(); if (current(version)) _state.update { it.copy(memories = memories.files) } } && current(version))
-                _state.update { it.copy(memoriesFailed = true) }
+        val request = ++memoryEpoch
+        memoryJob?.cancel()
+        _state.update { it.copy(memoriesFailed = false, memoryLoading = true, memoryError = null, memoryErrorCode = null) }
+        memoryJob = viewModelScope.launch {
+            if (!memoryCurrent(version, request)) return@launch
+            try {
+                val result = api.memories()
+                if (memoryCurrent(version, request)) _state.update { it.copy(memories = result.files, memoryRevision = result.revision, memoriesFailed = false) }
+            } catch (error: ApiException) {
+                if (!memoryCurrent(version, request)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                _state.update { it.copy(memoriesFailed = true, memoryError = "The notes could not be loaded. Try again.", memoryErrorCode = error.code) }
+            } finally { if (memoryCurrent(version, request)) _state.update { it.copy(memoryLoading = false) } }
         }
     }
 
-    fun forget(file: String, id: String) {
-        val version = scope
-        viewModelScope.launch {
-            if (current(version)) guarded { val memories = api.forget(file, id); if (current(version)) _state.update { it.copy(memories = memories.files) } }
+    private fun memoryCurrent(version: Long, request: Long) = current(version) && memoryEpoch == request
+
+    fun editMemory(file: MemoryFile, item: MemoryItem, expectedScope: Long) {
+        if (!current(expectedScope) || file.readOnly || !writableMemory(file.file) || _state.value.memoryBusy) return
+        _state.update { it.copy(memoryDraft = MemoryDraft(file.file, item.id, item.line, file.revision, item.text), memoryError = null, memoryErrorCode = null, memoryNotice = null) }
+    }
+    fun updateMemoryDraft(text: String, expectedScope: Long) {
+        if (!current(expectedScope) || _state.value.memoryBusy) return
+        val draft = _state.value.memoryDraft ?: return
+        if ('\n' in text || '\r' in text || '\t' in text || !validText(text, MEMORY_FILE_BYTES, MEMORY_FILE_BYTES) ||
+            (text.length > 4000 && text.length >= draft.text.length)) return
+        _state.update { it.copy(memoryDraft = draft.copy(text = text)) }
+    }
+    fun closeMemoryDraft(expectedScope: Long) {
+        if (current(expectedScope) && !_state.value.memoryBusy) _state.update { it.copy(memoryDraft = null) }
+    }
+    fun saveMemoryDraft(expectedScope: Long) {
+        val draft = _state.value.memoryDraft ?: return
+        if (!current(expectedScope) || draft.conflicted || !validCorrection(draft.text)) return
+        mutateMemory(expectedScope, closeDraft = true,
+            operation = { api.editMemory(draft.file, draft.id, draft.text, draft.expectedRevision) },
+            notice = { if (it.changed == true) "Correction saved." else "This correction is already saved." })
+    }
+    fun forget(file: MemoryFile, item: MemoryItem, expectedScope: Long) {
+        if (!current(expectedScope) || file.readOnly || !writableMemory(file.file)) return
+        mutateMemory(expectedScope, operation = { api.forget(file.file, item.id, file.revision) }, notice = {
+            if (it.removed == true) "Removed from memory. Past chats aren't changed." else "That note is no longer in memory."
+        })
+    }
+    fun forgetAllMemory(revision: String, expectedScope: Long) {
+        if (!current(expectedScope)) return
+        mutateMemory(expectedScope, closeDraft = true, operation = { api.forgetAllMemory(revision) },
+            notice = { if (it.cleared == true) "Memory notes and diary cleared. Past chats aren't changed." else "Memory notes and diary are already clear. Past chats aren't changed." })
+    }
+    private fun mutateMemory(expectedScope: Long, closeDraft: Boolean = false,
+        operation: suspend () -> Memories, notice: (Memories) -> String) {
+        if (!current(expectedScope) || _state.value.memoryBusy) return
+        val request = ++memoryEpoch
+        memoryJob?.cancel(); memoryExports.toList().forEach { it.cancel() }
+        _state.update { it.copy(memoryBusy = true, memoryLoading = false, memoryError = null, memoryErrorCode = null, memoryNotice = null) }
+        memoryJob = viewModelScope.launch {
+            if (!memoryCurrent(expectedScope, request)) return@launch
+            try {
+                val result = operation()
+                if (!memoryCurrent(expectedScope, request)) return@launch
+                _state.update { it.copy(memories = result.files, memoryRevision = result.revision, memoriesFailed = false,
+                    memoryDraft = if (closeDraft) null else it.memoryDraft, memoryNotice = notice(result)) }
+            } catch (error: ApiException) {
+                if (!memoryCurrent(expectedScope, request)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                if (error.code == "MEMORY_CONFLICT") {
+                    _state.update { it.copy(memoryDraft = it.memoryDraft?.copy(conflicted = true)) }
+                    val fresh = try { api.memories() } catch (failure: ApiException) {
+                        if (memoryCurrent(expectedScope, request) && failure.signedOut) signedOut()
+                        null
+                    }
+                    if (!memoryCurrent(expectedScope, request)) return@launch
+                    _state.update { it.copy(memories = fresh?.files ?: it.memories, memoryRevision = fresh?.revision ?: it.memoryRevision,
+                        memoryErrorCode = error.code, memoryError = when {
+                            fresh != null && it.memoryDraft != null -> memoryProblem(error)
+                            fresh != null -> "The notes changed. The latest version has been loaded. Review it before trying again."
+                            it.memoryDraft != null -> "The notes changed, but the latest version could not be loaded. Your draft is kept. Reload before editing again."
+                            else -> "The notes changed, but the latest version could not be loaded. Reload before trying again."
+                        }) }
+                } else _state.update { it.copy(memoryError = memoryProblem(error), memoryErrorCode = error.code) }
+            } finally { if (memoryCurrent(expectedScope, request)) _state.update { it.copy(memoryBusy = false) } }
         }
+    }
+
+    /** A fresh owner-only export; an older read cannot write after a local correction, forget or owner reset. */
+    suspend fun exportMemory(destination: Uri, expectedScope: Long, cancel: TransferCancellation) {
+        val request = memoryEpoch
+        try {
+            if (!memoryCurrent(expectedScope, request)) throw ApiException("CANCELLED")
+            memoryExports.add(cancel)
+            cancel.check()
+            val exported = api.exportMemory()
+            if (!memoryCurrent(expectedScope, request)) throw ApiException("CANCELLED")
+            cancel.check()
+            val bytes = memoryExportBytes(exported)
+            withContext(Dispatchers.IO) {
+                if (!memoryCurrent(expectedScope, request)) throw ApiException("CANCELLED")
+                val resolver = getApplication<Application>().contentResolver
+                resolver.openOutputStream(destination, "wt")?.use { output ->
+                    var offset = 0
+                    while (offset < bytes.size) {
+                        cancel.check(); if (!memoryCurrent(expectedScope, request)) throw ApiException("CANCELLED")
+                        val length = minOf(64 * 1024, bytes.size - offset)
+                        output.write(bytes, offset, length); offset += length
+                    }
+                    cancel.check(); if (!memoryCurrent(expectedScope, request)) throw ApiException("CANCELLED")
+                } ?: throw ApiException("FILE_UNAVAILABLE")
+            }
+            cancel.check(); if (!memoryCurrent(expectedScope, request)) throw ApiException("CANCELLED")
+        } catch (error: Exception) {
+            runCatching { DocumentsContract.deleteDocument(getApplication<Application>().contentResolver, destination) }
+            if (error is ApiException && error.signedOut && memoryCurrent(expectedScope, request)) signedOut()
+            throw error
+        } finally { memoryExports.remove(cancel) }
     }
 
     // ---- Chat ----
@@ -262,6 +375,10 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     private fun invalidateFiles(stopPolling: Boolean = true) {
         scope++
+        memoryEpoch++; memoryJob?.cancel(); memoryJob = null
+        memoryExports.toList().forEach { it.cancel() }; memoryExports.clear()
+        _state.update { it.copy(scope = scope, memories = null, memoryRevision = null, memoriesFailed = false,
+            memoryLoading = false, memoryBusy = false, memoryError = null, memoryErrorCode = null, memoryNotice = null, memoryDraft = null) }
         if (stopPolling) { poller?.cancel(); poller = null }
         transfers.values.toList().forEach { it.cancel() }; transfers.clear()
         uploadJobs.values.toList().forEach { it.cancel() }; uploadJobs.clear()

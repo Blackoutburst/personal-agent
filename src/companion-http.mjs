@@ -1,18 +1,22 @@
 // POST /api/companion: the signed-in owner's companion profile (name and look) and its memory
-// (view and forget). Account mode only; every request revalidates the platform session.
-import { CompanionError, readMemory, forgetMemory, ensureWorkspace } from './companion.mjs';
+// (complete view, correction, forgetting and private export). Fresh account validation on every request.
+import { CompanionError, ensureWorkspace } from './companion.mjs';
+import { MemoryError, memorySnapshot, editMemory, forgetMemory, forgetAllMemory, exportMemory } from './memory.mjs';
+import { ConversationError } from './conversations.mjs';
 import { outfitFor } from './wardrobe.mjs';
 import { DiscordError } from './discord.mjs';
+import { createHash } from 'node:crypto';
 
 const fail = (status, code, message) => ({ status, body: { error: { code, message } } });
+const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
 
 // profiles: Profiles. workspaceFor(companionId) -> {dir, owner} or null when no agent is configured.
-// onForget(companionId): called after a memory was removed (starts a new agent session).
+// onForget(companionId): durable session reset BEFORE any memory bytes are replaced.
 // onLook(companionId): called when the name or look changed, so the agent's next session knows.
 // discord: the DiscordBridge (docs/DISCORD.md), or null when connections are unavailable.
-export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null }) {
+export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null }) {
   return async function companion(request) {
-    const parsed = await access.read(request, 4096);
+    const parsed = await access.read(request, 32768);
     if (parsed.failure) return parsed.failure;
     const admitted = await access.authorize(request);
     if (admitted.failure) return admitted.failure;
@@ -37,17 +41,36 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
         case 'memory': {
           if (!only(['action'])) break;
           const workspace = workspaceFor(companionId);
-          if (!workspace) return { status: 200, body: { files: [] } };
+          if (!workspace) return { status: 200, body: { files: [], revision: EMPTY_MEMORY_REVISION } };
+          memorySnapshot(workspace.dir); // Refuse unsafe roots/files before optional first-use initialization.
           ensureWorkspace(workspace.dir, workspace.owner);
-          return { status: 200, body: { files: readMemory(workspace.dir) } };
+          return { status: 200, body: memorySnapshot(workspace.dir) };
         }
+        case 'editMemory':
         case 'forget': {
-          if (!only(['action', 'file', 'id'])) break;
+          if (!only(payload.action === 'forget' ? ['action', 'file', 'id', 'expectedRevision'] : ['action', 'file', 'id', 'text', 'expectedRevision'])) break;
+          if (typeof payload.expectedRevision !== 'string' || !/^[a-f0-9]{64}$/.test(payload.expectedRevision)) return fail(409, 'MEMORY_CONFLICT', 'Reload your saved notes before changing them.');
           const workspace = workspaceFor(companionId);
           if (!workspace) return fail(404, 'NOT_FOUND', 'Nothing to forget.');
-          const removed = forgetMemory(workspace.dir, payload.file, payload.id);
-          if (removed) onForget(companionId);
-          return { status: 200, body: { removed, files: readMemory(workspace.dir) } };
+          assertMemoryIdle(companionId);
+          const { action, ...change } = payload;
+          const beforeChange = () => { assertMemoryIdle(companionId); onForget(companionId); };
+          return { status: 200, body: action === 'forget' ? forgetMemory(workspace.dir, change, beforeChange) : editMemory(workspace.dir, change, beforeChange) };
+        }
+        case 'forgetAll': {
+          if (!only(['action', 'expectedRevision', 'confirm']) || payload.confirm !== true) break;
+          const workspace = workspaceFor(companionId);
+          if (!workspace) return fail(404, 'NOT_FOUND', 'No saved notes are available.');
+          assertMemoryIdle(companionId);
+          return { status: 200, body: forgetAllMemory(workspace.dir, { expectedRevision: payload.expectedRevision, confirm: true }, () => {
+            assertMemoryIdle(companionId); onForget(companionId);
+          }) };
+        }
+        case 'exportMemory': {
+          if (!only(['action'])) break;
+          const workspace = workspaceFor(companionId);
+          if (!workspace) return fail(404, 'NOT_FOUND', 'No saved notes are available.');
+          return { status: 200, body: { export: exportMemory(workspace.dir, { now: () => now().getTime() }) } };
         }
         case 'discord': {
           if (!only(['action']) || !discord) break;
@@ -66,6 +89,12 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
       return fail(400, 'INVALID_REQUEST', 'Invalid request.');
     } catch (error) {
       if (error instanceof CompanionError) return fail(error.status, error.code, 'Invalid request.');
+      if (error instanceof MemoryError || error instanceof ConversationError) {
+        const message = error.code === 'MEMORY_BUSY' ? 'Finish or stop the current reply, wait for it to stop, then try again.'
+          : error.code === 'MEMORY_CONFLICT' ? 'Your saved notes changed. Reload them before trying again.'
+          : 'Your saved notes could not be read or changed. Reload and try again.';
+        return fail(error.status, error.code, message);
+      }
       if (error instanceof DiscordError) return fail(error.status, error.code, 'Discord could not be linked.');
       return fail(503, 'UNAVAILABLE', 'Your companion is unavailable right now.');
     }
