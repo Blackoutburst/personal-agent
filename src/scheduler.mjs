@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { latestRoutineSlot } from './routines.mjs';
+import { ReleaseWatches } from './release-watches.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/, HASH = /^[a-f0-9]{64}$/, CLOCK = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -68,12 +69,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS scheduler_routine_attempt ON scheduler_routine
  WHERE admitted_at IS NOT NULL;`;
 
 export class SchedulerStore {
-  #db; #timezone; #now; #spacing; #cap;
+  #db; #timezone; #now; #spacing; #cap; #release;
   constructor({ store, timezoneFor = () => 'UTC', now = Date.now, minSpacingMs = 300000, maxTurnsPerDay = 24 }) {
     requireSchedule(store?.db && typeof timezoneFor === 'function' && typeof now === 'function'
       && integer(minSpacingMs) && integer(maxTurnsPerDay, 1, 1000));
     this.#db = store.db; this.#timezone = timezoneFor; this.#now = now; this.#spacing = minSpacingMs; this.#cap = maxTurnsPerDay;
-    this.#tx(() => this.#db.exec(SCHEMA));
+    this.#tx(() => { this.#db.exec(SCHEMA); this.#release = new ReleaseWatches(this.#db, code => new SchedulerError(code)); });
   }
   #tx(run) {
     try {
@@ -166,7 +167,8 @@ export class SchedulerStore {
   #lookup(companionId, id) {
     const prior = this.#db.prepare('SELECT * FROM scheduler_occurrences WHERE id=? AND companion_id=?').get(id, companionId);
     const routine = this.#routineRow(this.#db.prepare('SELECT * FROM scheduler_routine_occurrences WHERE id=? AND companion_id=?').get(id, companionId));
-    requireSchedule(!prior || !routine, 'UNAVAILABLE'); return prior ?? routine;
+    const release = this.#release.lookup(companionId, id);
+    requireSchedule([prior, routine, release].filter(Boolean).length <= 1, 'UNAVAILABLE'); return prior ?? routine ?? release;
   }
   #prepareRoutines(companionId, settings, now) {
     this.#configureRoutines(companionId, settings, {}, now);
@@ -203,7 +205,7 @@ export class SchedulerStore {
       quietStart: settings.quiet_start, quietEnd: settings.quiet_end, heartbeatEnabled: !!settings.heartbeat_enabled,
       dailyDigest: { enabled: !!routines.get('dailyDigest')?.enabled, localTime: routines.get('dailyDigest')?.local_time ?? '09:00' },
       weeklyCheckin: { enabled: !!routines.get('weeklyCheckin')?.enabled, localTime: routines.get('weeklyCheckin')?.local_time ?? '09:00', weekday: routines.get('weeklyCheckin')?.weekday ?? 1 } },
-    items: jobs.map(reminder) };
+    items: jobs.map(reminder), releaseWatches: this.#release.list(companionId, settings.identity_key) };
   }
   create(companionId, input) {
     const value = shape(input, ['requestId', 'text', 'dueAt']); requireSchedule(typeof value.requestId === 'string' && REQUEST.test(value.requestId));
@@ -222,6 +224,33 @@ export class SchedulerStore {
     });
   }
   list(companionId) { return this.#tx(() => this.#snapshot(companionId)); }
+  createWatch(companionId, input) {
+    return this.#tx(() => {
+      const settings = this.#owner(companionId);
+      this.#release.create(companionId, settings.identity_key, input, this.#time());
+      return this.#snapshot(companionId);
+    });
+  }
+  updateWatch(companionId, input) {
+    return this.#tx(() => {
+      const settings = this.#owner(companionId);
+      this.#release.update(companionId, settings.identity_key, input, this.#time());
+      return this.#snapshot(companionId);
+    });
+  }
+  isReleaseOccurrence(companionId, id) { return !!this.#release.lookup(companionId, id); }
+  releaseCompanions() { return this.#db.prepare("SELECT DISTINCT companion_id FROM scheduler_release_watches WHERE state='active'").all().map(row => row.companion_id); }
+  // Both callbacks run inside Conversations' publication transaction, never nested.
+  recordReleaseCheck(companionId, id, check, messageText) {
+    const settings = this.#owner(companionId, false);
+    if (!settings?.enabled) return { action: 'cancelled' };
+    return this.#release.record(companionId, settings.identity_key, id, check, messageText, this.#time());
+  }
+  releaseDelivered(companionId, id) {
+    const settings = this.#owner(companionId, false), row = this.#lookup(companionId, id);
+    if (!this.#eligible(companionId, row, settings, this.#time())) return false;
+    return this.#release.delivered(companionId, settings.identity_key, id, this.#time());
+  }
   cancel(companionId, input) {
     const { id } = shape(input, ['id']); requireSchedule(typeof id === 'string' && UUID.test(id));
     return this.#tx(() => {
@@ -302,6 +331,7 @@ export class SchedulerStore {
         this.#db.prepare('UPDATE scheduler_settings SET heartbeat_next_at=? WHERE companion_id=?').run(settings.heartbeat_next_at + count * PERIOD, companionId);
       }
       this.#prepareRoutines(companionId, settings, now);
+      this.#release.prepare(companionId, settings.identity_key, now);
       return this.#pending(companionId);
     });
   }
@@ -309,11 +339,13 @@ export class SchedulerStore {
     const legacy = this.#db.prepare("SELECT * FROM scheduler_occurrences WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250").all(companionId);
     const routines = this.#db.prepare("SELECT * FROM scheduler_routine_occurrences WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250")
       .all(companionId).map(row => this.#routineRow(row));
-    return [...legacy, ...routines].sort((a, b) => a.due_at - b.due_at || a.id.localeCompare(b.id)).slice(0, 250).map(occurrence);
+    return [...legacy, ...routines, ...this.#release.pending(companionId)].sort((a, b) => a.due_at - b.due_at || a.id.localeCompare(b.id)).slice(0, 250).map(occurrence);
   }
   pending(companionId) { return this.#tx(() => { this.#owner(companionId); return this.#pending(companionId); }); }
-  #eligible(companionId, row, settings, time) {
-    if (!row || !settings?.enabled || TERMINAL.has(row.state) || this.#quiet(companionId, settings, time)) return false;
+  #eligible(companionId, row, settings, time, starting = false) {
+    if (!row || !settings?.enabled || TERMINAL.has(row.state)
+      || !(starting && row.release_watch) && this.#quiet(companionId, settings, time)) return false;
+    if (row.release_watch) return this.#release.eligible(companionId, settings.identity_key, row, time);
     if (row.routine) {
       const preference = this.#routines(companionId, settings).get(row.routine), zone = this.#zone(companionId);
       if (!preference?.enabled || preference.generation !== row.generation || preference.timezone !== zone || row.timezone !== zone
@@ -334,8 +366,13 @@ export class SchedulerStore {
   startInTransaction(companionId, id) {
     const settings = this.#owner(companionId, false), now = this.#time();
     const row = this.#lookup(companionId, id);
-    if (!this.#eligible(companionId, row, settings, now)) return false;
+    if (!this.#eligible(companionId, row, settings, now, true)) return false;
     if (row.admitted_at !== null) return true;
+    if (row.release_watch) {
+      if (now < settings.cooldown_until) return false;
+      this.#db.prepare("UPDATE scheduler_release_occurrences SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
+      return true;
+    }
     if (now < settings.cooldown_until || settings.last_started_at !== null && now - settings.last_started_at < this.#spacing) return false;
     const day = this.#local(companionId, now).day;
     const count = this.#db.prepare('SELECT turns FROM scheduler_days WHERE companion_id=? AND local_day=?').get(companionId, day)?.turns ?? 0;
@@ -357,7 +394,8 @@ export class SchedulerStore {
       this.#owner(companionId);
       const row = this.#lookup(companionId, id);
       requireSchedule(row, 'NOT_FOUND');
-      if (!TERMINAL.has(row.state)) {
+      if (row.release_watch) this.#release.finish(companionId, this.#owner(companionId).identity_key, id, state, this.#time());
+      else if (!TERMINAL.has(row.state)) {
         this.#db.prepare('UPDATE ' + (row.routine ? 'scheduler_routine_occurrences' : 'scheduler_occurrences') + ' SET state=? WHERE id=?').run(state, id);
         if (row.job_id) this.#db.prepare("UPDATE scheduler_jobs SET state=?,version=version+1 WHERE id=? AND state='active' AND generation=?")
           .run(state === 'message' || state === 'silent' ? 'complete' : state, row.job_id, row.generation);
@@ -369,6 +407,8 @@ export class SchedulerStore {
       return occurrence(row);
     });
   }
+  releaseCancellations(companionId) { this.#owner(companionId, false); return this.#release.cancellations(companionId); }
+  acknowledgeReleaseCancellation(companionId, id) { this.#owner(companionId, false); this.#release.acknowledgeCancellation(companionId, id); }
   routineCancellations(companionId) {
     this.#owner(companionId, false);
     return this.#db.prepare("SELECT id FROM scheduler_routine_occurrences WHERE companion_id=? AND state='cancelled' AND cancel_pending=1 ORDER BY due_at,id LIMIT 250")
@@ -404,11 +444,16 @@ export class SchedulerService {
       try {
         this.#scheduler.prepareDue(companionId);
         this.#cancelRoutineWakes(companionId);
+        this.#cancelReleaseWakes(companionId);
         for (const wake of this.#scheduler.pending(companionId)) {
           if (this.#stopped) break;
           let result = await this.#conversations.proactiveResult(companionId, wake.id);
+          if (wake.kind === 'release_watch' && ['error', 'interrupted'].includes(result?.state) && !result.releaseCheck) {
+            this.#conversations.reconcileReleaseFailure?.(companionId, wake.id);
+            result = await this.#conversations.proactiveResult(companionId, wake.id);
+          }
           if (!result || result.state === 'queued' || result.state === 'waiting_delivery') {
-            if (result?.state !== 'waiting_delivery' && !await this.#ready(companionId)) continue;
+            if (wake.kind !== 'release_watch' && result?.state !== 'waiting_delivery' && !await this.#ready(companionId)) continue;
             if (this.#stopped) break;
             result = await this.#conversations.enqueueProactive(companionId, { id: wake.id, kind: wake.kind, prompt: wake.prompt });
             if (!this.#scheduler.pending(companionId).some(current => current.id === wake.id)) {
@@ -424,6 +469,16 @@ export class SchedulerService {
       } catch { /* One unavailable owner never blocks the other owner or leaks private errors. */ }
     }
   }
+  #cancelReleaseWakes(companionId) {
+    for (const id of this.#scheduler.releaseCancellations?.(companionId) ?? []) {
+      try {
+        const result = this.#conversations.cancelProactive(companionId, id);
+        if (result && typeof result.then === 'function') Promise.resolve(result)
+          .then(() => this.#scheduler.acknowledgeReleaseCancellation(companionId, id)).catch(() => {});
+        else this.#scheduler.acknowledgeReleaseCancellation(companionId, id);
+      } catch { /* Keep the durable flag until cancellation is acknowledged. */ }
+    }
+  }
   #cancelRoutineWakes(companionId) {
     for (const id of this.#scheduler.routineCancellations(companionId)) {
       try {
@@ -437,6 +492,11 @@ export class SchedulerService {
   #kick() { if (this.#timer && !this.#stopped) void this.tick().catch(() => {}); }
   create(companionId, input) { const result = this.#scheduler.create(companionId, input); this.#kick(); return result; }
   list(companionId) { return this.#scheduler.list(companionId); }
+  createWatch(companionId, input) { const result = this.#scheduler.createWatch(companionId, input); this.#kick(); return result; }
+  updateWatch(companionId, input) {
+    const result = this.#scheduler.updateWatch(companionId, input);
+    this.#cancelReleaseWakes(companionId); this.#kick(); return result;
+  }
   configure(companionId, input) {
     const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', ...ROUTINES]);
     const prior = value.heartbeatEnabled === false ? this.#scheduler.pending(companionId).filter(wake => wake.kind === 'heartbeat') : [];

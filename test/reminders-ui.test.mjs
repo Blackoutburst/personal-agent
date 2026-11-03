@@ -11,6 +11,7 @@ class Element {
   get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
   set innerHTML(_value) { throw new Error('Reminder UI must use text nodes.'); }
   append(...children) { this.children.push(...children); }
+  insertBefore(child, before) { const index = this.children.indexOf(before); if (index < 0) this.children.push(child); else this.children.splice(index, 0, child); }
   replaceChildren(...children) { this.text = ''; this.children = [...children]; }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   addEventListener(name, callback) {
@@ -40,10 +41,12 @@ function fixture({ routineNodes = true } = {}) {
     ...(routineNodes ? routineIds : [])]
     .map(id => [id, new Element()]));
   nodes.get('schedule-save').disabled = true;
+  nodes.get('upcoming').append(nodes.get('schedule-list'), nodes.get('schedule-settings'));
   const requests = [], created = [], document = { getElementById: id => nodes.get(id), createElement(tag) {
     const node = new Element(tag); created.push(node); return node;
   } };
-  const ui = createRemindersUI({ document, fetchImpl(url, options) {
+  let keys = 0;
+  const ui = createRemindersUI({ document, requestId: () => 'watch-change-' + ++keys, fetchImpl(url, options) {
     const pending = deferred(), request = { url, options, body: JSON.parse(options.body), pending,
       reply(value = data(), status = 200) { pending.resolve({ status, ok: status >= 200 && status < 300, json: async () => structuredClone(value) }); } };
     requests.push(request); return pending.promise;
@@ -309,4 +312,185 @@ test('an uncertain routine save retains its exact field draft without automatic 
   assert.equal(f.$('schedule-daily-time').value, '11:20'); assert.match(f.$('schedule-note').textContent, /couldn’t confirm/);
   assert.equal(f.requests.filter(request => request.body.action === 'configure').length, 1);
   assert.ok(!f.$('schedule-note').textContent.includes('CANARY'));
+});
+
+const WATCH = '1e80ef85-15aa-4afb-99cf-e415fa3e4971', OTHER_WATCH = '4d317b44-1f1a-46f1-b515-822d93c8246c';
+const watch = (extra = {}) => ({ id: WATCH, version: 1, kind: 'release_watch', condition: 'Qwen4 is officially released by Alibaba/Qwen', state: 'active',
+  nextCheckAt: '2026-11-03T12:00:00.000Z', lastCheckAt: null, lastResult: null, urls: [], evidence: null, consecutiveStale: 0,
+  deliveryPending: false, createdAt: '2026-11-03T06:00:00.000Z', ...extra });
+const watches = (rows = [watch()]) => routineData({}, { releaseWatches: rows });
+const walk = node => [node, ...node.children.flatMap(walk)];
+const find = (f, predicate) => walk(f.$('upcoming')).filter(predicate);
+const byClass = (f, name) => find(f, node => node.className?.split(' ').includes(name));
+function watchButton(f, text, index = 0) { const value = find(f, node => node.tagName === 'button' && node.textContent === text)[index]; assert.ok(value, `Missing ${text}`); return value; }
+const watchInput = f => find(f, node => node.tagName === 'textarea')[0];
+async function draft(f, text) { const input = watchInput(f); assert.ok(input); input.value = text; await input.emit('input'); return input; }
+const watchWrites = f => f.requests.filter(request => request.body.action === 'updateWatch');
+async function replyConflict(f, promise, fresh) {
+  f.requests.at(-1).reply({ error: { code: 'SCHEDULER_CONFLICT', message: 'PRIVATE-DIAGNOSTIC' } }, 409);
+  await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(f.requests.at(-1).body, { action: 'list' }); f.requests.at(-1).reply(fresh); await promise;
+}
+
+test('release watch inspection retains paused/complete history, exact evidence and safe source links without changing routine controls', async () => {
+  const f = fixture(), malicious = '<img src=x onerror="bad()">', source = 'https://qwen.example/releases?q=Qwen4';
+  await open(f, watches([watch({ state: 'paused', condition: malicious, lastCheckAt: '2026-11-03T07:00:00.000Z', lastResult: 'stale', consecutiveStale: 3, evidence: '<script>bad()</script>', urls: [source] }),
+    watch({ id: OTHER_WATCH, state: 'complete', lastResult: 'found', lastCheckAt: '2026-11-03T08:00:00.000Z', evidence: 'Official model card published.', urls: [source] })]));
+  assert.equal(byClass(f, 'watch-row').length, 2); await watchButton(f, 'Inspect watch').emit('click');
+  const panel = byClass(f, 'release-watches')[0]; assert.ok(panel.textContent.includes(malicious)); assert.ok(panel.textContent.includes('Couldn’t check'));
+  assert.ok(panel.textContent.includes('Consecutive checks unavailable: 3')); assert.ok(panel.textContent.includes('<script>bad()</script>'));
+  const link = find(f, node => node.tagName === 'a')[0]; assert.equal(link.href, source); assert.equal(link.textContent, source);
+  assert.equal(link.rel, 'noopener noreferrer'); assert.equal(link.target, '_blank'); assert.equal(link.referrerPolicy, 'no-referrer');
+  assert.equal(f.created.some(node => node.tagName === 'img' || node.tagName === 'script'), false);
+  assert.equal(f.$('schedule-daily-enabled').checked, false); assert.equal(f.$('schedule-checkins').checked, false); assert.equal(f.requests.length, 1);
+  const pending = f.ui.refresh(); f.requests.at(-1).reply(watches([watch({ lastResult: 'found', deliveryPending: true, lastCheckAt: '2026-11-03T08:00:00.000Z', urls: [source] })])); await pending;
+  assert.match(panel.textContent, /Found · waiting for delivery after quiet hours/);
+});
+
+test('pause/resume/cancel use fresh version and stable operation keys, stay nonoptimistic and require explicit cancel confirmation', async () => {
+  const f = fixture(); await open(f, watches());
+  const pause = watchButton(f, 'Pause watch').emit('click'); assert.equal(watchWrites(f).length, 1);
+  assert.deepEqual(watchWrites(f)[0].body, { action: 'updateWatch', input: { requestId: 'watch-change-1', id: WATCH, expectedVersion: 1, operation: 'pause' } });
+  assert.ok(byClass(f, 'watch-row')[0].textContent.includes('Active')); assert.equal(watchButton(f, 'Pause watch').disabled, true);
+  f.requests.at(-1).reply(watches([watch({ version: 2, state: 'paused' })])); await pause;
+  const resume = watchButton(f, 'Resume watch').emit('click'); assert.deepEqual(watchWrites(f)[1].body.input, { requestId: 'watch-change-2', id: WATCH, expectedVersion: 2, operation: 'resume' });
+  f.requests.at(-1).reply(watches([watch({ version: 3 })])); await resume;
+  await watchButton(f, 'Cancel watch').emit('click'); assert.equal(watchWrites(f).length, 2);
+  assert.match(byClass(f, 'watch-confirmation')[0].textContent, /Qwen4 is officially released/);
+  const cancel = watchButton(f, 'Confirm cancel watch').emit('click'); assert.deepEqual(watchWrites(f)[2].body.input, { requestId: 'watch-change-3', id: WATCH, expectedVersion: 3, operation: 'cancel' });
+  f.requests.at(-1).reply(watches([watch({ version: 4, state: 'cancelled', nextCheckAt: null })])); await cancel;
+  assert.equal(find(f, node => node.textContent === 'Edit condition').length, 0); assert.equal(byClass(f, 'watch-row').length, 1);
+});
+
+test('a deferred third-stale notice never presents an unavailable check as a found release', async () => {
+  const f = fixture(); await open(f, watches([watch({ lastCheckAt: '2026-11-03T23:00:00.000Z', lastResult: 'stale', consecutiveStale: 3, deliveryPending: true })]));
+  assert.match(byClass(f, 'watch-row')[0].textContent, /Check unavailable · notice waiting for delivery after quiet hours/);
+  assert.ok(!byClass(f, 'watch-row')[0].textContent.includes('Found')); await watchButton(f, 'Inspect watch').emit('click');
+  assert.match(byClass(f, 'watch-details')[0].textContent, /Couldn’t check/); assert.match(byClass(f, 'watch-details')[0].textContent, /Consecutive checks unavailable: 3/);
+  assert.equal(find(f, node => node.tagName === 'a').length, 0); assert.equal(f.requests.length, 1);
+});
+
+test('condition draft retains its original CAS and DOM through polling; conflict never rebases or autosends, reviewed reopen uses current version', async () => {
+  const f = fixture(); await open(f, watches()); await watchButton(f, 'Edit condition').emit('click');
+  const editor = await draft(f, 'An explicit revised release condition');
+  const poll = f.ui.refreshIfOpen(); f.requests.at(-1).reply(watches([watch({ version: 2, condition: 'Other device condition' })])); await poll;
+  assert.equal(watchInput(f), editor); assert.equal(editor.value, 'An explicit revised release condition');
+  const save = byClass(f, 'watch-editor')[0].emit('submit');
+  assert.deepEqual(watchWrites(f)[0].body.input, { requestId: 'watch-change-1', id: WATCH, expectedVersion: 1, operation: 'edit', condition: 'An explicit revised release condition' });
+  await replyConflict(f, save, watches([watch({ version: 3, condition: 'Current official condition' })]));
+  assert.equal(watchInput(f).value, 'An explicit revised release condition'); assert.equal(watchButton(f, 'Save condition').disabled, true);
+  const before = f.requests.length; await byClass(f, 'watch-editor')[0].emit('submit'); assert.equal(f.requests.length, before); assert.equal(watchWrites(f).length, 1);
+  assert.ok(!byClass(f, 'release-watches')[0].textContent.includes('PRIVATE-DIAGNOSTIC'));
+  await watchButton(f, 'Close condition editor').emit('click'); assert.equal(watchButton(f, 'Edit condition').disabled, true);
+  const review = watchButton(f, 'Reload release watches').emit('click'); f.requests.at(-1).reply(watches([watch({ version: 3, condition: 'Current official condition' })])); await review;
+  await watchButton(f, 'Edit condition').emit('click'); assert.equal(watchInput(f).value, 'Current official condition');
+  await draft(f, 'A newly reviewed condition'); const reviewed = byClass(f, 'watch-editor')[0].emit('submit'); assert.equal(watchWrites(f).at(-1).body.input.expectedVersion, 3);
+  f.requests.at(-1).reply(watches([watch({ version: 4, condition: 'A newly reviewed condition' })])); await reviewed;
+  assert.equal(watchInput(f), undefined); assert.match(byClass(f, 'release-watches')[0].textContent, /Release watch saved/);
+});
+
+test('uncertain edit retains exact frozen retry body/key across polling and draft tampering; only explicit matched ACK clears it', async () => {
+  const f = fixture(); await open(f, watches()); await watchButton(f, 'Edit condition').emit('click'); await draft(f, 'The exact requested condition');
+  const save = byClass(f, 'watch-editor')[0].emit('submit'), original = f.requests.at(-1); original.pending.reject(new Error('PRIVATE-NETWORK')); await save;
+  assert.match(byClass(f, 'release-watches')[0].textContent, /could not be confirmed/); assert.equal(watchInput(f).disabled, true);
+  await draft(f, 'DOM tampering must not alter an uncertain request');
+  const poll = f.ui.refreshIfOpen(); f.requests.at(-1).reply(watches([watch({ version: 2, condition: 'The exact requested condition' })])); await poll;
+  assert.equal(watchWrites(f).length, 1); const retry = watchButton(f, 'Retry same watch change').emit('click');
+  assert.equal(f.requests.at(-1).options.body, original.options.body); assert.deepEqual(f.requests.at(-1).body, original.body);
+  f.requests.at(-1).reply(watches([watch({ version: 2, condition: 'The exact requested condition' })])); await retry;
+  assert.equal(watchWrites(f).length, 2); assert.equal(watchInput(f), undefined); assert.equal(find(f, node => node.textContent === 'Retry same watch change').length, 0);
+  assert.ok(!byClass(f, 'release-watches')[0].textContent.includes('PRIVATE-NETWORK'));
+});
+
+test('wrong or stale canonical mutation ACK never becomes a saved claim or a new logical request', async () => {
+  for (const returned of [watch({ version: 0, state: 'paused' }), watch({ version: 1, state: 'paused' }), watch({ version: 2, state: 'active' })]) {
+    const f = fixture(); await open(f, watches()); const pause = watchButton(f, 'Pause watch').emit('click'); f.requests.at(-1).reply(watches([returned])); await pause;
+    assert.notEqual(f.$('announce').textContent, 'Release watch saved.'); assert.equal(watchWrites(f).length, 1);
+    assert.ok(find(f, node => node.textContent === 'Retry same watch change').length); assert.match(byClass(f, 'release-watches')[0].textContent, /could not be confirmed/);
+  }
+});
+
+test('a non-edit conflict retires its retry key and cannot re-enable writes until explicit canonical review', async () => {
+  const f = fixture(); await open(f, watches()); const pause = watchButton(f, 'Pause watch').emit('click');
+  await replyConflict(f, pause, watches([watch({ version: 2 })]));
+  assert.equal(watchButton(f, 'Pause watch').disabled, true); assert.equal(find(f, node => node.textContent === 'Retry same watch change').length, 0);
+  const count = f.requests.length; await watchButton(f, 'Pause watch').emit('click'); assert.equal(f.requests.length, count);
+  const poll = f.ui.refreshIfOpen(); f.requests.at(-1).reply(watches([watch({ version: 3 })])); await poll; assert.equal(watchButton(f, 'Pause watch').disabled, true);
+  const review = watchButton(f, 'Reload release watches').emit('click'); f.requests.at(-1).reply(watches([watch({ version: 3 })])); await review;
+  const fresh = watchButton(f, 'Pause watch').emit('click'); assert.equal(watchWrites(f).length, 2); assert.equal(watchWrites(f)[1].body.input.expectedVersion, 3);
+  assert.notEqual(watchWrites(f)[1].body.input.requestId, watchWrites(f)[0].body.input.requestId);
+  f.requests.at(-1).reply(watches([watch({ version: 4, state: 'paused' })])); await fresh;
+});
+
+test('successful condition edit displays the reset canonical check generation and removes old pending evidence', async () => {
+  const f = fixture(); await open(f, watches([watch({ lastCheckAt: '2026-11-03T09:00:00.000Z', lastResult: 'found', deliveryPending: true,
+    evidence: 'OLD-GENERATION-EVIDENCE', urls: ['https://qwen.example/old-evidence'] })]));
+  await watchButton(f, 'Inspect watch').emit('click'); assert.equal(find(f, node => node.tagName === 'a').length, 1);
+  await watchButton(f, 'Edit condition').emit('click'); await draft(f, 'New official release condition'); const save = byClass(f, 'watch-editor')[0].emit('submit');
+  f.requests.at(-1).reply(watches([watch({ version: 2, condition: 'New official release condition' })])); await save;
+  assert.equal(find(f, node => node.tagName === 'a').length, 0); assert.ok(!byClass(f, 'release-watches')[0].textContent.includes('OLD-GENERATION-EVIDENCE'));
+  assert.match(byClass(f, 'release-watches')[0].textContent, /Not checked yet/); assert.ok(!byClass(f, 'release-watches')[0].textContent.includes('waiting for delivery'));
+});
+
+test('cancel confirmation keeps its original version and becomes inert after a newer check or edit', async () => {
+  const f = fixture(); await open(f, watches()); await watchButton(f, 'Cancel watch').emit('click'); const oldConfirm = watchButton(f, 'Confirm cancel watch');
+  const poll = f.ui.refreshIfOpen(); f.requests.at(-1).reply(watches([watch({ version: 2, condition: 'Updated by another device' })])); await poll;
+  assert.equal(watchButton(f, 'Confirm cancel watch').disabled, true); const count = f.requests.length; await oldConfirm.emit('click'); await watchButton(f, 'Confirm cancel watch').emit('click'); assert.equal(f.requests.length, count);
+  await watchButton(f, 'Keep watch').emit('click'); await watchButton(f, 'Cancel watch').emit('click'); const cancel = watchButton(f, 'Confirm cancel watch').emit('click');
+  assert.equal(watchWrites(f).at(-1).body.input.expectedVersion, 2); f.requests.at(-1).reply(watches([watch({ version: 3, condition: 'Updated by another device', state: 'cancelled' })])); await cancel;
+});
+
+test('external cancel closes watch authority while preserving a pinned draft; detached same-owner controls cannot mutate newer state', async () => {
+  const f = fixture(); await open(f, watches()); const stalePause = watchButton(f, 'Pause watch'); await watchButton(f, 'Edit condition').emit('click');
+  await draft(f, 'Keep this draft'); const poll = f.ui.refresh(); f.requests.at(-1).reply(watches([watch({ version: 2, state: 'cancelled' })])); await poll;
+  assert.equal(watchInput(f).value, 'Keep this draft'); assert.equal(watchButton(f, 'Save condition').disabled, true);
+  const count = f.requests.length; await stalePause.emit('click'); await byClass(f, 'watch-editor')[0].emit('submit'); assert.equal(f.requests.length, count);
+});
+
+for (const status of [401, 403]) test(`old-owner ${status} and stale handlers cannot clear/unlock a newer owner mutation`, async () => {
+  const f = fixture(); await open(f, watches([watch({ condition: 'PRIVATE-OWNER-A' })])); const stalePause = watchButton(f, 'Pause watch');
+  const oldLoad = f.ui.refresh(), old = f.requests.at(-1); f.ui.clear(); await open(f, watches([watch({ id: OTHER_WATCH, condition: 'Owner B watch' })]));
+  const mutation = watchButton(f, 'Pause watch').emit('click'), current = f.requests.at(-1);
+  old.reply({ error: { code: 'AUTHENTICATION_REQUIRED' } }, status); await oldLoad;
+  assert.equal(watchButton(f, 'Pause watch').disabled, true); assert.ok(byClass(f, 'release-watches')[0].textContent.includes('Owner B watch'));
+  assert.ok(!byClass(f, 'release-watches')[0].textContent.includes('PRIVATE-OWNER-A')); const count = f.requests.length; await stalePause.emit('click'); assert.equal(f.requests.length, count);
+  current.reply(watches([watch({ id: OTHER_WATCH, version: 2, condition: 'Owner B watch', state: 'paused' })])); await mutation; assert.ok(watchButton(f, 'Resume watch'));
+});
+
+test('a superseded same-owner request is fenced before auth clearing while the current mutation remains busy', async () => {
+  const f = fixture(); await open(f, watches()); const oldLoad = f.ui.refresh(), old = f.requests.at(-1);
+  const mutation = watchButton(f, 'Pause watch').emit('click'), current = f.requests.at(-1);
+  old.reply({ error: { code: 'AUTHENTICATION_REQUIRED' } }, 401); await oldLoad;
+  assert.equal(byClass(f, 'release-watches')[0].hidden, false); assert.equal(watchButton(f, 'Pause watch').disabled, true);
+  current.reply(watches([watch({ version: 2, state: 'paused' })])); await mutation; assert.ok(watchButton(f, 'Resume watch'));
+});
+
+test('current auth denial clears every private watch draft/retry and late success cannot restore them', async () => {
+  const f = fixture(); await open(f, watches([watch({ condition: 'PRIVATE-CONDITION' })])); const oldLoad = f.ui.refresh(), old = f.requests.at(-1);
+  await watchButton(f, 'Edit condition').emit('click'); const oldForm = byClass(f, 'watch-editor')[0]; await draft(f, 'PRIVATE-DRAFT');
+  const mutation = oldForm.emit('submit'); f.requests.at(-1).reply({ error: { code: 'AUTHENTICATION_REQUIRED' } }, 401); await mutation;
+  assertCleared(f); assert.equal(byClass(f, 'release-watches')[0].hidden, true); assert.equal(watchInput(f), undefined);
+  old.reply(watches([watch({ condition: 'PRIVATE-CONDITION' })])); await oldLoad; const count = f.requests.length; await oldForm.emit('submit'); assert.equal(f.requests.length, count);
+  assert.equal(byClass(f, 'watch-row').length, 0); assert.equal(find(f, node => node.textContent === 'Retry same watch change').length, 0);
+});
+
+test('absent rollback retires drafts and retries without changing legacy routine saves or allowing detached controls', async () => {
+  const f = fixture(); await open(f, watches()); await watchButton(f, 'Edit condition').emit('click'); const oldForm = byClass(f, 'watch-editor')[0];
+  await draft(f, 'A retiring draft'); const save = oldForm.emit('submit'); f.requests.at(-1).pending.reject(new Error('Lost ACK')); await save;
+  const retry = watchButton(f, 'Retry same watch change'), poll = f.ui.refresh(); f.requests.at(-1).reply(routineData()); await poll;
+  assert.equal(byClass(f, 'release-watches')[0].hidden, true); const count = f.requests.length; await retry.emit('click'); await oldForm.emit('submit'); assert.equal(f.requests.length, count);
+  const legacy = f.$('schedule-settings').emit('submit'); assert.deepEqual(f.requests.at(-1).body, { action: 'configure', input: { heartbeatEnabled: false, quietStart: '22:00', quietEnd: '08:00' } });
+  f.requests.at(-1).reply(routineData()); await legacy;
+});
+
+test('malformed/unsafe bounded watch DTOs never create active controls or fetch their evidence URLs', async () => {
+  const bad = [null, Array(21).fill(watch()), [watch(), watch()], [watch({ extra: 'private' })], [watch({ id: WATCH + '\n' })],
+    [watch({ version: Number.MAX_SAFE_INTEGER + 1 })], [watch({ condition: 'a'.repeat(1001) })], [watch({ condition: '\ud800' })],
+    [watch({ evidence: 'two\nlines' })], [watch({ createdAt: 'not a date' })], [watch({ urls: ['javascript:bad()'] })],
+    [watch({ urls: ['https://user:password@qwen.example/'] })], [watch({ urls: ['https://qwen.example/\ud800'] })],
+    [watch({ urls: ['https://qwen.example/' + 'a'.repeat(2048)] })], [watch({ urls: Array(9).fill('https://qwen.example/') })]];
+  for (const rows of bad) {
+    const f = fixture(); await open(f, watches(rows)); assert.equal(byClass(f, 'watch-row').length, 0);
+    assert.equal(find(f, node => node.textContent === 'Edit condition').length, 0); assert.equal(find(f, node => node.tagName === 'a').length, 0);
+    assert.equal(f.requests.length, 1); assert.equal(f.$('schedule-settings').hidden, false); assert.equal(f.$('schedule-checkins').checked, false);
+  }
 });

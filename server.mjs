@@ -244,7 +244,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
             if (!Array.isArray(additional) || !companionId || !server.address()) throw new TypeError('Invalid app tools');
             return [...additional, { name: 'scheduler', command: process.execPath, args: [join(ROOT, 'src', 'scheduler-mcp.mjs')],
               env: { COMPANION_SCHEDULER_URL: `http://127.0.0.1:${server.address().port}/internal/scheduler`,
-                COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule'] }];
+                COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'update_release_watch'] }];
           } });
         agentsConfigured = true;
       }
@@ -299,8 +299,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           '\n\nUse your scheduler tools for reminders the owner asks for. Check list_schedules for the current time and owner timezone, then resolve an explicit ISO timestamp. Never claim a reminder was saved without a successful tool result. Do not create unsolicited reminders or enable periodic checks for the owner.';
       };
       conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, wakePolicy: {
-        beforeStart: (companionId, id) => Boolean(runner?.ownerFor(companionId)) && schedulerStore.startInTransaction(companionId, id),
-        canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id) },
+        beforeStart: (companionId, id) => (schedulerStore.isReleaseOccurrence(companionId, id) || Boolean(runner?.ownerFor(companionId))) && schedulerStore.startInTransaction(companionId, id),
+        canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id),
+        recordReleaseCheck: (companionId, id, check, text) => schedulerStore.recordReleaseCheck(companionId, id, check, text),
+        releaseDelivered: (companionId, id) => schedulerStore.releaseDelivered(companionId, id) },
         onSettled: event => discord?.settled(event),
         onNativeSettled: companionId => {
           try { if (workspaceFor(companionId)) personality.observe(companionId); }
@@ -320,7 +322,8 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         }
       };
       schedulerService = new SchedulerService({ scheduler: schedulerStore, conversations,
-        companions: () => owners.map(owner => companionIdFor(store, owner)).filter(id => id && profiles.get(id)),
+        companions: () => [...new Set([...owners.map(owner => companionIdFor(store, owner)).filter(id => id && profiles.get(id)),
+          ...schedulerStore.releaseCompanions()])],
         ready: companionId => Boolean(runner?.ownerFor(companionId)), ...(schedulerOptions.pollMs ? { pollMs: schedulerOptions.pollMs } : {}) });
       schedulerHttp = createSchedulerHttp({ access, scheduler: schedulerService });
       // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
