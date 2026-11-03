@@ -124,7 +124,7 @@ async function start() {
     route();
   } catch (error) {
     if (owner !== ownerEpoch || token !== startRequest) return;
-    if (error.status === 401 || error.status === 403) fileAccessDenied();
+    if (error.status === 401 || error.status === 403) fileAccessDenied(error.message);
     else gate('Hmm, I can’t reach your companion', 'The server didn’t answer. Check your connection and try again.', { retry: true });
   }
 }
@@ -332,10 +332,13 @@ function fileView(file) {
 function syncFiles() {
   if (state.opened && state.threadId && state.connection === 'ready') client.setFiles(uploads.filter(item => item.status === 'ready').map(item => item.dto));
 }
-function fileAccessDenied() {
+function fileAccessDenied(code = 'AUTHENTICATION_REQUIRED') {
   if (sessionDenied) return;
   resetShell(true);
-  gate('Your session ended', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true });
+  // Each refusal says what actually happened, so a wrong account or a blocked browser request isn't mistaken for signing out.
+  if (code === 'INVITATION_REQUIRED') gate('This account has no companion', 'You are signed in with a Blackoutburst account that isn’t invited. Sign in with your invited account.', { signIn: true });
+  else if (code === 'ORIGIN_REJECTED') gate('Your browser blocked the request', 'Open the companion directly at blackoutburst.com/personal-agent-preview/ and try again.', { retry: true });
+  else gate('Your session ended', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true });
 }
 function resetShell(denied) {
   ownerEpoch++; startRequest++; lookRequest++; wearingRequest++; discordRequest++; composerEpoch++; readSequence++;

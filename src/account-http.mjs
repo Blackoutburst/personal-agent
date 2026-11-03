@@ -27,7 +27,10 @@ function rawValues(request, name) {
   return values;
 }
 
-function selectedSession(request) {
+// Every well-formed platform session cookie the browser sent, in order. Browsers can hold a stale duplicate
+// (for example an old host-only cookie next to the current Domain=.blackoutburst.com one); the platform itself uses
+// the first, so a duplicate must not lock the owner out. Each candidate is validated separately (see authorize).
+function sessionCandidates(request) {
   const selected = [];
   for (const header of rawValues(request, 'cookie')) {
     for (const part of header.split(';')) {
@@ -36,8 +39,10 @@ function selectedSession(request) {
       if (equals >= 0 && pair.slice(0, equals).trim() === '__Secure-blackout_session') selected.push(pair.slice(equals + 1));
     }
   }
-  return selected.length === 1 && /^[A-Za-z0-9_-]{43}$/.test(selected[0]) ? selected[0] : null;
+  const unique = [...new Set(selected)];
+  return unique.length <= MAX_SESSION_CANDIDATES && unique.every(value => /^[A-Za-z0-9_-]{43}$/.test(value)) ? unique : [];
 }
+const MAX_SESSION_CANDIDATES = 3;
 
 export function readJsonBody(request, maximum) {
   if (Number(request.headers['content-length']) > maximum) return Promise.resolve({ failure: fail('BODY_TOO_LARGE', true) });
@@ -104,17 +109,21 @@ export function createAccountAccess({ store, validateAccount, pilotSubjects, all
       return readJsonBody(request, maximum);
     },
     async authorize(request) {
-      const session = selectedSession(request);
-      if (session === null) return { failure: fail('AUTHENTICATION_REQUIRED') };
-      try {
-        const provision = createCompanionProvisioner({ store, validateAccount, pilotSubjects });
-        const { companionId } = await provision(session);
-        return { companionId };
-      } catch (error) {
-        const known = error instanceof CompanionAccessError && ['AUTHENTICATION_REQUIRED', 'INVITATION_REQUIRED',
-          'ACCOUNT_VALIDATION_UNAVAILABLE', 'COMPANION_STORE_UNAVAILABLE', 'COMPANION_STATE_INVALID'].includes(error.code);
-        return { failure: fail(known ? error.code : 'ACCOUNT_VALIDATION_UNAVAILABLE') };
+      const candidates = sessionCandidates(request);
+      if (!candidates.length) return { failure: fail('AUTHENTICATION_REQUIRED') };
+      const provision = createCompanionProvisioner({ store, validateAccount, pilotSubjects });
+      const admitted = new Set(), errors = [];
+      for (const session of candidates) {
+        try { admitted.add((await provision(session)).companionId); }
+        catch (error) { errors.push(error); }
       }
+      // Exactly one account: a stale extra cookie is ignored, but two live sessions for different accounts are refused.
+      if (admitted.size === 1) return { companionId: [...admitted][0] };
+      if (admitted.size > 1) return { failure: fail('AUTHENTICATION_REQUIRED') };
+      const codes = errors.map(error => error instanceof CompanionAccessError ? error.code : null);
+      const code = ['COMPANION_STATE_INVALID', 'COMPANION_STORE_UNAVAILABLE', 'ACCOUNT_VALIDATION_UNAVAILABLE', 'INVITATION_REQUIRED', 'AUTHENTICATION_REQUIRED']
+        .find(known => codes.includes(known));
+      return { failure: fail(codes.includes(null) ? 'ACCOUNT_VALIDATION_UNAVAILABLE' : code) };
     }
   };
 }

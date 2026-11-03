@@ -82,15 +82,25 @@ test('exact Origin and fetch-site guards reject forged requests before validatio
   assert.equal(f.calls.length, 0); assert.equal(f.store.count(), 0);
 });
 
-test('only one selected secure cookie is accepted, including across raw Cookie headers', async t => {
+test('one account per request: a stale duplicate cookie is ignored, two live accounts or malformed values are refused', async t => {
   const f = await fixture(t);
-  for (const cookie of [null, 'blackout_session=' + A, COOKIE(A) + '; ' + COOKIE(A), COOKIE(A + 'x'), '__Secure-blackout_session="' + A + '"']) {
+  for (const cookie of [null, 'blackout_session=' + A, COOKIE(A + 'x'), '__Secure-blackout_session="' + A + '"', COOKIE(A) + '; ' + COOKIE(A + 'x')]) {
     assert.equal((await f.send({ cookie })).status, 401);
   }
+  assert.deepEqual(f.calls, [], 'Malformed or missing cookies never reach the validator');
   const base = ['Origin', f.origin, 'Content-Type', 'application/json'];
-  assert.equal((await f.send({ rawHeaders: [...base, 'Cookie', COOKIE(A), 'Cookie', COOKIE(B)] })).status, 401);
+  assert.equal((await f.send({ rawHeaders: [...base, 'Cookie', COOKIE(A), 'Cookie', COOKIE(B)] })).status, 401, 'Two live accounts are ambiguous');
+  f.calls.length = 0;
+  const only = (await f.send({ cookie: COOKIE(A) })).body.companionId;
+  const STALE = 'S'.repeat(43);
+  for (const cookie of [COOKIE(STALE) + '; ' + COOKIE(A), COOKIE(A) + '; ' + COOKIE(STALE), COOKIE(A) + '; ' + COOKIE(A)]) {
+    const result = await f.send({ cookie });
+    assert.equal(result.status, 200); assert.equal(result.body.companionId, only);
+  }
   assert.equal((await f.send({ rawHeaders: [...base, 'Cookie', 'unrelated=synthetic', 'Cookie', COOKIE(A) + '; another=ignored'] })).status, 200);
-  assert.deepEqual(f.calls, [A], 'The validator receives only the selected cookie value');
+  assert.equal((await f.send({ cookie: [1, 2, 3, 4].map(n => COOKIE(String(n).repeat(43))).join('; ') })).status, 401, 'At most three candidates');
+  assert.equal((await f.send({ cookie: COOKIE(STALE) + '; ' + COOKIE(C) })).body.error.code, 'INVITATION_REQUIRED');
+  assert.ok(f.calls.every(value => [A, STALE, C].includes(value)), 'The validator receives only cookie values');
 });
 
 test('JSON, media type and byte limits reject identity or runtime fields before validation', async t => {
