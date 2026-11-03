@@ -1,5 +1,10 @@
 package dev.blackoutburst.companion
 
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
@@ -91,7 +96,7 @@ val DarkTones = Tones(Color(0xFF231B22), Color(0xFF2C2029), Color(0xFFF6ECEF), C
     Color(0xFF362A33), Color(0xFF5B3F37), Color(0xFFFF8A80), dark = true,
     bubble = Color(0xFF4D3D48), bubbleLine = Color(0xFF5E4C58))
 
-private val LocalTones = staticCompositionLocalOf { LightTones }
+internal val LocalTones = staticCompositionLocalOf { LightTones }
 private val Cream: Color @Composable get() = LocalTones.current.top
 private val Blush: Color @Composable get() = LocalTones.current.bottom
 private val Ink: Color @Composable get() = LocalTones.current.ink
@@ -190,6 +195,11 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
     LaunchedEffect(Unit) { while (true) { delay(1000); tick = System.currentTimeMillis() } }
     val mood = remember(state, draft.isNotBlank(), tick) { model.mood(draft.isNotBlank()) }
     val list = rememberLazyListState()
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val dismissKeyboard = { focus.clearFocus(); keyboard?.hide() }
+    // Only a person dragging the history closes the keyboard; scrolling to a new reply must not.
+    LaunchedEffect(list) { list.interactionSource.interactions.collect { if (it is DragInteraction.Start) dismissKeyboard() } }
     val shown = state.messages.filter { it.text.isNotEmpty() || it.attachments.isNotEmpty() }
     LaunchedEffect(shown.size, shown.lastOrNull()?.text?.length) { if (shown.isNotEmpty()) list.animateScrollToItem(shown.size - 1) }
     Column(Modifier.fillMaxSize()) {
@@ -203,7 +213,8 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
             }
             ActionButton(enabled = state.threadId != null && !state.deleting && !state.chatLoading, onClick = { confirmDelete = true }) { Text("Delete") }
         }
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, verticalArrangement = Arrangement.spacedBy(8.dp),
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().pointerInput(Unit) { detectTapGestures(onTap = { dismissKeyboard() }) },
+            state = list, verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)) {
             if (shown.isEmpty()) item {
                 Text("Say hello to ${state.name}!", Modifier.fillMaxWidth().padding(top = 40.dp), color = Soft, textAlign = TextAlign.Center, fontSize = 17.sp)
@@ -214,17 +225,16 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
             Text(it, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), color = Soft, fontSize = 14.sp, textAlign = TextAlign.Center)
         }
         state.fileError?.let { Text(it, Modifier.fillMaxWidth().padding(horizontal = 16.dp), color = Danger, fontSize = 14.sp) }
-        if (state.uploads.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        if (state.uploads.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             state.uploads.forEach { upload ->
-                Column(Modifier.width(260.dp).heightIn(max = 220.dp).verticalScroll(rememberScrollState())) {
-                    UploadCard(model, upload, state.scope, state.sending || state.sendFailed)
-                }
+                UploadCard(model, upload, state.sending || state.sendFailed, Modifier.width(260.dp))
             }
         }
         if (state.deleteFailed) ActionButton(onClick = { model.deleteThread(state.scope) }) { Text("Retry deletion") }
         if (state.deleting) Text("Deleting conversation and files…", Modifier.padding(horizontal = 16.dp), color = Soft)
         Row(Modifier.fillMaxWidth().padding(12.dp, 6.dp), verticalAlignment = Alignment.Bottom) {
-            RoundButton("Attach files", "+", secondary = true,
+            RoundButton("Attach files", "+",
                 enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.replying && !state.deleting && !state.deleteFailed && state.uploads.size < MAX_FILES) {
                 pickerScope = state.scope; picker.launch(arrayOf("*/*"))
             }
@@ -286,7 +296,7 @@ private fun note(state: UiState): String? {
 }
 
 @Composable
-private fun Bubble(model: CompanionModel, message: Message, scope: Long) {
+internal fun Bubble(model: CompanionModel, message: Message, scope: Long) {
     if (message.role == "peer") { PeerCard(message); return }
     val mine = message.role == "user"
     val bubbleShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = if (mine) 20.dp else 6.dp, bottomEnd = if (mine) 6.dp else 20.dp)
@@ -297,8 +307,12 @@ private fun Bubble(model: CompanionModel, message: Message, scope: Long) {
                 .background(if (mine) Mine else LocalTones.current.bubble)
                 .border(1.dp, if (mine) Color.Transparent else LocalTones.current.bubbleLine, bubbleShape)
                 .padding(horizontal = 16.dp, vertical = 10.dp)) {
-            if (message.text.isNotEmpty()) Text(message.text, color = Ink, fontSize = 17.sp, lineHeight = 23.sp)
-            message.attachments.forEach { file -> AttachmentView(model, file, scope) }
+            if (message.text.isNotEmpty()) MarkdownText(message.text, color = Ink, link = Ink, codeBackground = Ink.copy(alpha = 0.1f),
+                fontSize = 17.sp, lineHeight = 23.sp)
+            message.attachments.forEach { file ->
+                if (message.text.isNotEmpty() || file != message.attachments.first()) Spacer(Modifier.height(8.dp))
+                AttachmentView(model, file, scope)
+            }
         }
     }
 }
@@ -499,7 +513,7 @@ private fun Pill(text: String, enabled: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun RoundButton(label: String, glyph: String, enabled: Boolean = true, secondary: Boolean = false, onClick: () -> Unit) {
+internal fun RoundButton(label: String, glyph: String, enabled: Boolean = true, secondary: Boolean = false, onClick: () -> Unit) {
     // secondary: the attach "+" (soft background, ink glyph), like the web composer.
     val fill = when { secondary -> Blush; enabled -> Color(0xFFEE8F64); else -> Line }
     Box(Modifier.size(52.dp).clip(CircleShape).background(fill)

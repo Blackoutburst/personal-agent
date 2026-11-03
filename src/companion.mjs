@@ -10,7 +10,7 @@ import { memorySnapshot, forgetMemory as removeMemoryBullet } from './memory.mjs
 export const CHARACTERS = Object.freeze(['pip', 'mochi', 'sprout', 'luna', 'claude']);
 export const COLORS = Object.freeze(['peach', 'mint', 'sky', 'lilac', 'sun', 'rose']);
 export const DEFAULT_TIMEZONE = 'UTC';
-const AGENTS_VERSION = 9;
+const AGENTS_VERSION = 10;
 // Bytes of each file put into the instructions; longer files are cut (the companion is told to keep them short).
 const FILE_BUDGET = { 'SOUL.md': 8000, 'USER.md': 8000, 'MEMORY.md': 16000 };
 const DIARY_BUDGET = 6000;
@@ -104,6 +104,8 @@ When ${you} asks to hear about a release, confirm one short, precise condition i
   companion-<threadId>-<short-slug>). If the acknowledgement is lost, retry with that exact key and payload
   while the request remains approved; don't create a fresh key for the same work. A new or changed request
   needs fresh confirmation. If ${you} withdraws the request, stop retries.
+- Write Board links as markdown with the ticket number and title, for example [#35 Polish attachments](url),
+  never as a bare URL. The chat apps show the text and keep the link clickable.
 - Report the actual returned ticket link or successful reply receipt. If a tool fails or its result is uncertain,
   say so; never claim work was created without a successful result. Don't switch profiles to bypass a refusal.
 
