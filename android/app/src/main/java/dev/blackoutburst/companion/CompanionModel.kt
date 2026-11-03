@@ -72,6 +72,9 @@ data class UiState(
     val contactsConfirmed: Boolean = false,
     val contactsError: String? = null,
     val contactsNotice: String? = null,
+    val weather: WeatherSnapshot? = null,
+    val weatherBusy: Boolean = false,
+    val weatherError: String? = null,
     val saving: Boolean = false,
     val discord: DiscordStatus? = null,
     val discordBusy: Boolean = false,
@@ -234,6 +237,38 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 done()
             }
             if (current(version)) _state.update { it.copy(saving = false) }
+        }
+    }
+
+    // ---- Weather: the owner's city; the outfit and the companion follow the local weather. ----
+    fun loadWeather() {
+        val version = scope
+        viewModelScope.launch {
+            try { val result = api.weather(); if (current(version)) _state.update { it.copy(weather = result, weatherError = null) } }
+            catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) signedOut() else _state.update { it.copy(weatherError = "The weather could not be loaded.") }
+            }
+        }
+    }
+
+    fun saveWeather(place: String) {
+        if (_state.value.weatherBusy) return
+        val version = scope
+        _state.update { it.copy(weatherBusy = true, weatherError = null) }
+        viewModelScope.launch {
+            try {
+                val result = api.setWeatherPlace(place)
+                if (current(version)) _state.update { it.copy(weather = result, wearing = result.wearing ?: it.wearing) }
+            } catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) signedOut()
+                else _state.update { it.copy(weatherError = when (error.code) {
+                    "PLACE_NOT_FOUND" -> "That place was not found. Try a nearby city."
+                    "NETWORK" -> "Connection lost. Try again."
+                    else -> "The weather service is unavailable right now. Try again later."
+                }) }
+            } finally { if (current(version)) _state.update { it.copy(weatherBusy = false) } }
         }
     }
 

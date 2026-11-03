@@ -107,13 +107,22 @@
             <fieldset><legend>Character</legend><div id="pick-character" class="pick-character"></div></fieldset>
             <fieldset><legend>Color</legend><div id="pick-color" class="pick-color"></div></fieldset>
             <fieldset id="outfit-field" hidden><legend>Outfit</legend>
-              <p class="hint">Automatic changes with the time of day, the seasons and special days.</p>
+              <p class="hint">Automatic changes with the time of day, the weather, the seasons and special days.</p>
               <div id="pick-outfit" class="pick-outfit"></div></fieldset>
             <label class="name-field">Name<input id="name" maxlength="24" autocomplete="off" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other" required></label>
             <p id="look-error" class="look-error" role="alert" hidden></p>
             <button id="save-look" class="button primary" type="submit">Save</button>
           </form>
         </div>
+        <section id="weather-panel" class="connection weather" aria-labelledby="weather-title" hidden>
+          <h2 id="weather-title">Weather</h2>
+          <p>Your city lets the outfit follow the real weather during the day, and your companion knows what it is like outside. Only the city and its coordinates are sent to Open-Meteo.</p>
+          <form id="weather-form" class="weather-form">
+            <label>City<input id="weather-place" maxlength="100" autocomplete="address-level2" placeholder="e.g. Lyon"></label>
+            <button id="weather-save" class="button" type="submit">Save</button>
+          </form>
+          <p id="weather-now" role="status"></p>
+        </section>
         <section id="personality-panel" class="connection personality" aria-labelledby="personality-title" hidden>
           <h2 id="personality-title">Personality</h2>
           <p id="personality-intro" class="intro"></p>

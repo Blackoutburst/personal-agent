@@ -1,5 +1,6 @@
 // Claude-chan's wardrobe and faces: which outfit she wears now, and the feeling tag that picks her face.
 // The pictures are in public/characters/claude (docs/COMPANION.md).
+import { weatherOutfit } from './weather.mjs';
 
 export const OUTFITS = Object.freeze({
   base: { label: 'Signature blouse', wears: 'your signature cream ruffled blouse with the black bow and flower brooch' },
@@ -70,14 +71,17 @@ function season(md) {
 }
 
 // What she wears now: the pinned outfit, else special days (all day, pajamas after 1 am), pajamas at night,
-// the cardigan in the evening, and during the day an outfit of the season that changes each day.
-export function outfitFor(profile, now = new Date()) {
+// the cardigan in the evening, and during the day what the local weather calls for (weather.mjs), else
+// an outfit of the season that changes each day.
+export function outfitFor(profile, now = new Date(), weather = null) {
   if (profile?.outfit && profile.outfit !== 'auto' && OUTFITS[profile.outfit]) return profile.outfit;
   const local = localParts(now, profile?.timezone ?? 'UTC');
   const special = specialDay(local);
   if (special && (special === 'party' || local.hour >= 7)) return special;
   if (local.hour >= 22 || local.hour < 7) return 'pajamas';
   if (local.hour >= 19) return 'cozy-home';
+  const forWeather = weatherOutfit(weather);
+  if (forWeather) return forWeather;
   const choices = season(local.md), day = Math.floor(local.utcDay / 86400000);
   return choices[(day * 7 + 3) % choices.length];
 }

@@ -2,6 +2,7 @@
 // instructions each turn starts from. Inspired by the OpenClaw / Meta Muse SOUL.md idea: the companion
 // is a set of files it reads at the start of every session and keeps rewriting itself.
 import { FEELINGS, OUTFITS, outfitFor } from './wardrobe.mjs';
+import { describeWeather } from './weather.mjs';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { memorySnapshot, forgetMemory as removeMemoryBullet } from './memory.mjs';
@@ -222,31 +223,32 @@ const LOOKS = {
 };
 const COLOR_NAMES = { peach: 'peach', mint: 'mint green', sky: 'sky blue', lilac: 'lilac', sun: 'sunny yellow', rose: 'rose pink' };
 
-export function appearance(profile, you, now = new Date()) {
+export function appearance(profile, you, now = new Date(), weather = null) {
   if (!profile || !LOOKS[profile.character]) return null;
   const color = COLOR_NAMES[profile.color] ?? profile.color;
-  const outfit = outfitFor(profile, now);
+  const outfit = outfitFor(profile, now, weather);
   const look = profile.character === 'claude'
     ? `you are ${LOOKS.claude.replace(/, and a cream ruffled blouse.*$/, '')}; the app around you is ${color}. ` +
       `Right now you are wearing ${OUTFITS[outfit].wears}` +
-      (profile.outfit && profile.outfit !== 'auto' ? ` (${you} picked it)` : ' (your outfit changes with the time of day, the season and special days)')
+      (profile.outfit && profile.outfit !== 'auto' ? ` (${you} picked it)` : ' (your outfit changes with the time of day, the weather, the season and special days)')
     : `you are ${LOOKS[profile.character]}, colored ${color}`;
   return `How you look in the app: ${look}. Your face shows how you are doing (listening, thinking, talking, sleepy) and the feeling you pick for each reply. ` +
     `${you} chose this look and can change it any time; if it changes, this line changes too.`;
 }
 
-export function instructions({ owner, profile, dir, now = new Date(), files = true, recent = [] }) {
+export function instructions({ owner, profile, dir, now = new Date(), files = true, recent = [], weather = null }) {
   const you = ownerName(owner), name = profile?.name || 'Companion';
   const parts = [
     (profile?.name ? `You are ${name}, ${you}'s personal companion.` : `You are ${you}'s personal companion. You don't have a name yet; ${you} can give you one in the app.`) +
       ` You live on their home server and only ${you} talks to you, through the companion app.`,
-    `Now: ${localTime(now, profile?.timezone ?? DEFAULT_TIMEZONE)}.`,
+    `Now: ${localTime(now, profile?.timezone ?? DEFAULT_TIMEZONE)}.` +
+      (weather?.current ? ` Weather where ${you} is (${weather.place}): ${describeWeather(weather.current)}.` : ''),
     `Your own folder is ${dir}. Follow AGENTS.md (how you live, remember and talk).`
   ];
   // Claude runs with its own system prompt replaced and no setting sources, so the workspace CLAUDE.md
   // (which imports AGENTS.md) is not loaded: give it AGENTS.md here. Codex reads AGENTS.md from its folder.
   if (owner?.provider === 'claude') parts.push(`<AGENTS.md>\n${agentsMd(owner).replace(/^<!--.*-->\n/, '').trim()}\n</AGENTS.md>`);
-  const looks = appearance(profile, you, now);
+  const looks = appearance(profile, you, now, weather?.current ?? null);
   if (looks) parts.splice(1, 0, looks);
   if (files) {
     for (const [file, budget] of Object.entries(FILE_BUDGET)) parts.push(`<${file}>\n${readText(join(dir, file), budget).trim()}\n</${file}>`);

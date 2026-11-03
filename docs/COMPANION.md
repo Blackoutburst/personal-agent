@@ -240,6 +240,26 @@ forwarding remains subject to each owner's existing exact tool policy; no Board 
 
 Voice comes later, with speech recognition and voices running on the server.
 
+## Local weather
+
+The owner can type a city on the Look page (web) or Look screen (Android). `src/weather.mjs` looks it up once with
+Open-Meteo's free geocoding API (no key) and stores only the resolved place name and coordinates in
+`companion_weather`. Every five minutes a tick refreshes any reading older than 55 minutes, one place at a time,
+with a 10 s timeout. Only the coordinates are sent; nothing identifying the owner is. Readings older than three
+hours are ignored. An empty city removes the row.
+
+The weather affects two things:
+
+- **Outfit.** During the day, when the outfit is automatic, `outfitFor` picks rain, snow, windy, winter (≤ 2 °C),
+  summer (≥ 27 °C) or sunny (clear and ≥ 20 °C). A pinned outfit, special days, pajamas at night and the evening
+  cardigan still come first. With no reading, the season decides as before.
+- **Instructions.** The companion's instructions add one line after the time, for example
+  "Weather where Blackout is (Lyon, France): light rain, 8°C, wind 12 km/h."
+
+Owner actions on `/api/companion`: `weather` (snapshot) and `setWeatherPlace` with `place` (at most 100
+characters; `PLACE_NOT_FOUND` is 404). The second returns the new `wearing`. If Open-Meteo is down, the place is
+still saved and the next tick retries.
+
 ## Android app download
 
 The Look page shows a "Download for Android" card when a release is published on the server. To publish one, put the APK and a small `android.json` in `<COMPANION_DATA_DIR>/downloads/`:

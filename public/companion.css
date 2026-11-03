@@ -332,3 +332,8 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .connection .status[data-state="error"]::before { background: var(--danger); }
 .connection .error { color: var(--danger); }
 .connection input.secret { -webkit-text-security: disc; text-security: disc; }
+.weather-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.weather-form label { display: flex; flex-direction: column; gap: 4px; flex: 1 1 200px; }
+.weather-form input { border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 8px 12px; font: inherit; color: inherit; }
+.weather-form button { border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 8px 12px; cursor: pointer; }
+.weather-form input:focus-visible, .weather-form button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }

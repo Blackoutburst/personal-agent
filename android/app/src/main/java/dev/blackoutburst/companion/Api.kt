@@ -26,6 +26,9 @@ import kotlinx.serialization.json.put
 @Serializable data class Runtime(val state: String, val provider: String? = null)
 @Serializable data class CompanionInfo(val profile: Profile? = null, val runtime: Runtime, val wearing: String = "base")
 @Serializable data class SavedProfile(val profile: Profile, val wearing: String = "base")
+@Serializable data class WeatherNow(val code: Int, val temperature: Double, val wind: Double, val day: Boolean = true, val summary: String)
+/** The owner's city for local weather (src/weather.mjs); wearing is only sent back after a change. */
+@Serializable data class WeatherSnapshot(val place: String? = null, val current: WeatherNow? = null, val wearing: String? = null)
 @Serializable data class ChatThread(val id: String, val title: String)
 @Serializable data class Message(val id: String, val threadId: String, val role: String, val text: String, val requestId: String? = null,
     val feeling: String? = null, val attachments: List<Attachment> = emptyList(), val peer: PeerMessage? = null)
@@ -68,6 +71,9 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
     private val transfers = FileTransfers(session, open)
 
     suspend fun companionInfo(): CompanionInfo = call("api/companion", buildJsonObject { put("action", "get") })
+    suspend fun weather(): WeatherSnapshot = call("api/companion", buildJsonObject { put("action", "weather") })
+    suspend fun setWeatherPlace(place: String): WeatherSnapshot =
+        call("api/companion", buildJsonObject { put("action", "setWeatherPlace"); put("place", place.trim().take(100)) })
     suspend fun contacts(): ContactReply = parseContacts(post(companion + "api/companion", buildJsonObject { put("action", "contacts") }))
     suspend fun setContact(id: String, enabled: Boolean, expectedRevision: Long): ContactReply {
         if (!contactId(id) || !contactRevision(expectedRevision)) throw ApiException("INVALID_REQUEST")

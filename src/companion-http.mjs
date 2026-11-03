@@ -8,6 +8,7 @@ import { DiscordError } from './discord.mjs';
 import { createHash } from 'node:crypto';
 import { PersonalityError, PERSONALITY_LIMITS } from './personality.mjs';
 import { ContactError } from './contacts.mjs';
+import { WeatherError } from './weather.mjs';
 
 const fail = (status, code, message) => ({ status, body: { error: { code, message } } });
 const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
@@ -16,7 +17,8 @@ const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
 // onForget(companionId): durable session reset BEFORE any memory bytes are replaced.
 // onLook(companionId): called when the name or look changed, so the agent's next session knows.
 // discord: the DiscordBridge (docs/DISCORD.md), or null when connections are unavailable.
-export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null, contacts = null }) {
+export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null, contacts = null, weather = null }) {
+  const weatherNow = companionId => weather?.current(companionId) ?? null;
   return async function companion(request) {
     const parsed = await access.read(request, PERSONALITY_LIMITS.requestBytes);
     if (parsed.failure) return parsed.failure;
@@ -27,6 +29,15 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
     const only = keys => Object.keys(payload).every(key => keys.includes(key));
     try {
       switch (payload.action) {
+        case 'weather': {
+          if (!only(['action']) || !weather) break;
+          return { status: 200, body: weather.snapshot(companionId) };
+        }
+        case 'setWeatherPlace': {
+          if (!only(['action', 'place']) || !weather) break;
+          const snapshot = await weather.setPlace(companionId, payload.place);
+          return { status: 200, body: { ...snapshot, wearing: outfitFor(profiles.get(companionId), now(), weatherNow(companionId)) } };
+        }
         case 'contacts': {
           if(!only(['action'])||!contacts) break;
           return {status:200,body:contacts.snapshot(companionId)};
@@ -66,14 +77,14 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
           if (!only(['action'])) break;
           const runtime = await runtimeStatus(companionId);
           const profile = profiles.get(companionId);
-          return { status: 200, body: { profile, wearing: outfitFor(profile, now()),
+          return { status: 200, body: { profile, wearing: outfitFor(profile, now(), weatherNow(companionId)),
             runtime: { state: runtime.state, ...(runtime.provider ? { provider: runtime.provider } : {}) } } };
         }
         case 'setProfile': {
           if (!only(['action', 'profile'])) break;
           const before = profiles.get(companionId), profile = profiles.set(companionId, payload.profile);
           if (!before || ['name', 'character', 'color', 'outfit'].some(key => before[key] !== profile[key])) onLook(companionId);
-          return { status: 200, body: { profile, wearing: outfitFor(profile, now()) } };
+          return { status: 200, body: { profile, wearing: outfitFor(profile, now(), weatherNow(companionId)) } };
         }
         case 'memory': {
           if (!only(['action'])) break;
@@ -125,6 +136,7 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
       }
       return fail(400, 'INVALID_REQUEST', 'Invalid request.');
     } catch (error) {
+      if (error instanceof WeatherError) return fail(error.status, error.code, error.code === 'PLACE_NOT_FOUND' ? 'That place was not found. Try a nearby city.' : error.code === 'INVALID_REQUEST' ? 'Invalid request.' : 'The weather service is unavailable right now. Try again later.');
       if (error instanceof ContactError) return fail(error.status,error.code,error.message);
       if (error instanceof PersonalityError) return fail(error.status, error.code, error.message);
       if (error instanceof CompanionError) return fail(error.status, error.code, 'Invalid request.');

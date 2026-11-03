@@ -23,6 +23,7 @@ import { FileStore, FileError, FILE_LIMITS } from './src/files.mjs';
 import { createFileHttp, fileFailure } from './src/file-http.mjs';
 import { PersonalityStore } from './src/personality.mjs';
 import { Contacts, ContactError } from './src/contacts.mjs';
+import { Weather } from './src/weather.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 // Claude-chan art (docs/COMPANION.md): outfits are whole pictures, faces are patches drawn over them.
@@ -39,6 +40,7 @@ const STATIC = new Map([
   ['/memory-ui.mjs', ['memory-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/personality-ui.mjs', ['personality-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/contact-ui.mjs', ['contact-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/weather-ui.mjs', ['weather-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-character.mjs', ['companion-character.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-theme.js', ['companion-theme.js', 'text/javascript; charset=utf-8']],
   ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']],
@@ -64,7 +66,7 @@ function androidRelease(dataDir) {
 }
 
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {} } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -90,7 +92,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let agentsConfigured = false;
   let companionHttp;
   let schedulerHttp, schedulerService, schedulerStore, discord = null;
-  let files = null, fileHttp, contacts = null;
+  let files = null, fileHttp, contacts = null, weather = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
   const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
@@ -253,6 +255,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         return owner ? { owner, dir: runner.paths(owner).workspace } : null;
       };
       const personality = new PersonalityStore({ store, workspaceFor });
+      weather = new Weather({ store, ...(weatherOptions.fetchImpl ? { fetchImpl: weatherOptions.fetchImpl } : {}) });
       const displayLabel = (value, fallback) => {
         let text='';
         for(const char of String(value??fallback).replace(/[\x00-\x1f\x7f]/g,' ').trim()) {
@@ -294,8 +297,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         const workspace = workspaceFor(companionId);
         if (!workspace) return null;
         ensureWorkspace(workspace.dir, workspace.owner);
+        const current = weather.current(companionId), place = current ? weather.snapshot(companionId).place : null;
         return instructions({ owner: workspace.owner, profile: profiles.get(companionId), dir: workspace.dir,
-          files: workspace.owner.provider === 'claude' || fresh, recent }) +
+          files: workspace.owner.provider === 'claude' || fresh, recent, weather: current ? { place, current } : null }) +
           '\n\nUse your scheduler tools for reminders the owner asks for. Check list_schedules for the current time and owner timezone, then resolve an explicit ISO timestamp. Never claim a reminder was saved without a successful tool result. Do not create unsolicited reminders or enable periodic checks for the owner.';
       };
       conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, wakePolicy: {
@@ -329,7 +333,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
       discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, ...discordOptions,
         log: message => console.error(message) });
-      companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality, contacts,
+      companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality, contacts, weather,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
         discord,
         assertMemoryIdle: companionId => conversations.assertMemoryIdle(companionId),
@@ -352,8 +356,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     files?.recover();
     conversations?.recover();
     schedulerService?.start();
+    if (weatherOptions.poll !== false) weather?.start();
     if (discordOptions.connect !== false) discord?.start();
   } catch (error) {
+    weather?.stop();
     discord?.stop();
     await schedulerService?.stop();
     if (server.listening) await new Promise(resolve => server.close(resolve));
@@ -364,6 +370,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     server, store, url: `http://127.0.0.1:${server.address().port}`,
     conversations, files, scheduler: schedulerService, discord,
     async close() {
+      weather?.stop();
       discord?.stop();
       await schedulerService?.stop();
       await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

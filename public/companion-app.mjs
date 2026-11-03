@@ -5,6 +5,7 @@ import { createRemindersUI } from './reminders-ui.mjs';
 import { createMemoryUI } from './memory-ui.mjs';
 import { createPersonalityUI } from './personality-ui.mjs';
 import { createContactUI, renderPeerCard } from './contact-ui.mjs';
+import { createWeatherUI } from './weather-ui.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
@@ -13,6 +14,7 @@ const remindersUI = createRemindersUI({ document });
 const memoryUI = createMemoryUI({ document, api, onDenied: fileAccessDenied });
 const personalityUI = createPersonalityUI({ document, api, onDenied: fileAccessDenied });
 const contactUI = createContactUI({ document, api, onDenied: fileAccessDenied });
+const weatherUI = createWeatherUI({ document, api, onDenied: fileAccessDenied, onWearing: next => { wearing = next; renderAll(); } });
 const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
 let profile = null, runtime = null, view = 'loading', chatOpened = false, state = client.getState();
@@ -100,14 +102,14 @@ function route() {
 }
 
 async function start() {
-  memoryUI.clear(); personalityUI.clear(); contactUI.clear();
+  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear();
   try {
     const data = await api({ action: 'get' });
     profile = data.profile; runtime = data.runtime; wearing = data.wearing ?? 'base';
     applyColors(profile);
     route();
   } catch (error) {
-    if (error.status === 401 || error.status === 403) { memoryUI.clear(); personalityUI.clear(); contactUI.clear(); gate('Hi there!', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true }); }
+    if (error.status === 401 || error.status === 403) { memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); gate('Hi there!', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true }); }
     else gate('Hmm, I can’t reach your companion', 'The server didn’t answer. Check your connection and try again.', { retry: true });
   }
 }
@@ -292,7 +294,7 @@ function syncFiles() {
   if (state.opened && state.threadId && state.connection === 'ready') client.setFiles(uploads.filter(item => item.status === 'ready').map(item => item.dto));
 }
 function fileAccessDenied() {
-  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); client.clear(); remindersUI.clear();
+  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); client.clear(); remindersUI.clear();
   gate('Your session ended', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true });
 }
 function clearUploads() {
@@ -370,7 +372,9 @@ function loadMemories() { return memoryUI.load(companionName()); }
 
 function startLook() {
   $('contacts-panel').hidden = !profile;
-  if (profile) contactUI.load(); else contactUI.clear();
+  if (profile) contactUI.load(); else contactUI.clear(); weatherUI.clear();
+  $('weather-panel').hidden = !profile;
+  if (profile) weatherUI.load(); else weatherUI.clear();
   $('personality-panel').hidden = !profile;
   if (profile) personalityUI.load(companionName()); else personalityUI.clear();
   draftLook = { ...(profile ?? { character: 'pip', color: 'peach', name: '' }) };
@@ -499,7 +503,7 @@ client.subscribe(next => {
   if (uploads.length && uploads.every(item => item.dto) &&
       ((next.pending?.action === 'submit' && next.pending.status === 'accepted' && uploads.every(item => next.pending.attachments?.includes(item.dto.id))) ||
        next.messages.some(message => message.role === 'user' && uploads.every(item => message.attachments?.some(file => file.id === item.dto.id))))) clearUploads();
-  if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') { remindersUI.clear(); memoryUI.clear(); personalityUI.clear(); contactUI.clear(); }
+  if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') { remindersUI.clear(); memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); }
   renderAll();
   if (!polling) schedulePoll();
 });
