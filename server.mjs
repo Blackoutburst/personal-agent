@@ -14,6 +14,7 @@ import { createConversationHttp } from './src/conversation-http.mjs';
 import { loadRuntimeConfig, companionIdFor } from './src/runtime-config.mjs';
 import { CompanionRunner } from './src/runner.mjs';
 import { Conversations } from './src/conversations.mjs';
+import { WebBudget } from './src/web-budget.mjs';
 import { Profiles, ensureWorkspace, instructions } from './src/companion.mjs';
 import { createCompanionHttp } from './src/companion-http.mjs';
 import { SchedulerStore, SchedulerService } from './src/scheduler.mjs';
@@ -325,7 +326,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           files: workspace.owner.provider === 'claude' || fresh, recent, weather: current ? { place, current } : null }) +
           '\n\nUse your scheduler tools for reminders the owner asks for. Check list_schedules for the current time and owner timezone, then resolve an explicit ISO timestamp. Never claim a reminder was saved without a successful tool result. Do not create unsolicited reminders or enable periodic checks for the owner.';
       };
-      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, wakePolicy: {
+      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget: new WebBudget({ store }), wakePolicy: {
         beforeStart: (companionId, id) => (schedulerStore.isReleaseOccurrence(companionId, id) || Boolean(runner?.ownerFor(companionId))) && schedulerStore.startInTransaction(companionId, id),
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id),
         recordReleaseCheck: (companionId, id, check, text) => schedulerStore.recordReleaseCheck(companionId, id, check, text),

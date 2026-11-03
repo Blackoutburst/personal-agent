@@ -144,11 +144,13 @@ test('runtime config preserves issuer and owner name while rejecting unknown fie
   const configured = parse({ ...base, issuer: 'https://alternate.invalid', name: '  Owner name  ' });
   assert.equal(configured.issuer, 'https://alternate.invalid');
   assert.equal(configured.name, 'Owner name');
-  assert.deepEqual(configured.tools, ['Read', 'Edit', 'Write', 'Glob', 'Grep']);
+  assert.deepEqual(configured.tools, ['WebSearch', 'WebFetch', 'Read', 'Edit', 'Write', 'Glob', 'Grep'], 'Claude owners get web search (#42) and workspace files by default');
+  assert.deepEqual(parse({ ...base, provider: 'codex' }).tools, ['WebSearch', 'WebFetch']);
+  assert.deepEqual(parse({ ...base, tools: [] }).tools, [], 'An owner can turn every built-in tool off');
   assert.equal(configured.board, null);
   assert.ok(Object.isFrozen(configured) && Object.isFrozen(configured.tools));
   assert.deepEqual(parse({ ...base, tools: ['Read', 'WebSearch'] }).tools, ['Read', 'WebSearch']);
-  assert.deepEqual(parse({ ...base, provider: 'codex' }).tools, []);
+  assert.deepEqual(parse({ ...base, provider: 'codex', tools: [] }).tools, []);
   assert.deepEqual(parse({ ...base, provider: 'codex', tools: ['WebSearch', 'WebFetch'] }).tools, ['WebSearch', 'WebFetch']);
   for (const name of ['', '   ', '<Owner>', 'Owner\nname', 'x'.repeat(41), 7]) assert.throws(() => parse({ ...base, name }));
   for (const issuer of ['', 'http://alternate.invalid', 'https://alternate.invalid/path', null]) assert.throws(() => parse({ ...base, issuer }));

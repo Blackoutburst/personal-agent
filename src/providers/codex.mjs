@@ -62,6 +62,8 @@ export function parseLine(line) {
     const text = value.item.text ?? '';
     return [{ type: 'delta', text }, { type: 'message', text }];
   }
+  // Codex's native web search, counted like Claude's WebSearch (#42).
+  if (type === 'item.completed' && value.item?.type === 'web_search') return [{ type: 'tool', name: 'WebSearch' }];
   if (type === 'turn.completed') return [{ type: 'done', text: null, sessionId: null, usage: value.usage ?? null }];
   if (type === 'turn.failed' || type === 'error') {
     const text = String(value.error?.message ?? value.message ?? '');

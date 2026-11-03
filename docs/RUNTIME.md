@@ -89,11 +89,19 @@ directory. These are manual owner choices, not defaults for a new installation:
 ]}
 ```
 
-Omitted Claude tools retain the companion's existing five file tools. An explicit
-list selects exactly those file/web capabilities; `[]` selects none. Codex's native
-file tools and workspace-write policy remain provider-owned; its configurable web
-search/fetch is one capability, so specify both web names or neither. Omission
-disables that native web capability. No new shell or execution-policy flag is set
+Since #42, omitted tools mean native web search/fetch plus, on Claude, the five
+workspace file tools; on Codex, the web pair. An explicit list selects exactly those
+file/web capabilities; `[]` selects none. Codex's native file tools and workspace-write
+policy remain provider-owned; its configurable web search/fetch is one capability, so
+specify both web names or neither.
+
+Web tools are used only in owner chat turns (web, Android, Discord) and the app's own
+watch checks; background wakes (reminders, check-ins, Board and peer events) run
+without them. Each owner has a daily allowance of 60 web tool calls (UTC day,
+`src/web-budget.mjs`, table `web_usage`, counts only). Once it is spent, chat turns run
+without web tools and the companion is told so. The instructions (AGENTS v14) ask for
+a few lookups per reply, source links as markdown, and treating page content as
+untrusted data. No new shell or execution-policy flag is set
 by this tool configuration change. The existing companion workspace and Claude
 `acceptEdits` behavior are preserved; see [COMPANION.md](COMPANION.md).
 Codex's upstream native shell policy is also unchanged here; the lead's earlier

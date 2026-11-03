@@ -54,6 +54,11 @@ export function parseLine(line) {
       const delta = value.event?.type === 'content_block_delta' ? value.event.delta : null;
       return delta?.type === 'text_delta' && typeof delta.text === 'string' ? [{ type: 'delta', text: delta.text }] : [];
     }
+    case 'assistant': {
+      // Tool calls, by name only, so the app can count native web use (#42).
+      const content = Array.isArray(value.message?.content) ? value.message.content : [];
+      return content.filter(block => block?.type === 'tool_use' && typeof block.name === 'string').map(block => ({ type: 'tool', name: block.name }));
+    }
     case 'rate_limit_event': {
       const info = value.rate_limit_info ?? {};
       return [{ type: 'rate', status: info.status ?? null, resetsAt: info.resetsAt ?? null, windows: info.unifiedWindows ?? null }];

@@ -149,6 +149,7 @@ export class CompanionRunner {
       else if (event.type === 'delta') { streamed += event.text; onEvent(event); }
       else if (event.type === 'message') text = event.text;
       else if (event.type === 'rate') { rate = event; onEvent(event); }
+      else if (event.type === 'tool') onEvent(event);
       else if (event.type === 'done') { done = true; if (event.text !== null) text = event.text; if (event.sessionId) sessionId = event.sessionId; usage = event.usage; }
       else if (event.type === 'error') failure ??= event;
     };

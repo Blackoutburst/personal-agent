@@ -280,7 +280,7 @@ test('authenticated conversations inherit owner file/web/Board and app MCP polic
     const args = f.calls(label)[0].args;
     const native = args[args.indexOf('--tools') + 1].split(',');
     assert.ok(['Read', 'Edit', 'Write', 'Glob', 'Grep'].every(tool => native.includes(tool)));
-    assert.equal(native.includes('WebSearch'), label === 'blackout');
+    assert.ok(native.includes('WebSearch') && native.includes('WebFetch'), 'Both owners can look things up in chat (#42 default)');
     assert.equal(args[args.indexOf('--permission-mode') + 1], 'acceptEdits');
     const servers = JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers;
     assert.deepEqual(Object.keys(servers), label === 'blackout' ? ['board', 'appdocs', 'scheduler', 'files'] : ['appdocs', 'scheduler', 'files']);
@@ -542,7 +542,7 @@ test('the companion: profile, memory view and forget, file-based instructions an
   assert.ok(!calls[0].args.includes('--resume') && calls[1].args.includes('--resume') && !calls[2].args.includes('--resume'));
   for (const call of calls) {
     assert.ok(call.args.includes('--permission-mode') && call.args.includes('acceptEdits'));
-    assert.deepEqual(call.args.slice(call.args.indexOf('--allowedTools') + 1, call.args.indexOf('--allowedTools') + 6), ['Read', 'Edit', 'Write', 'Glob', 'Grep']);
+    assert.deepEqual(call.args.slice(call.args.indexOf('--allowedTools') + 1, call.args.indexOf('--allowedTools') + 8), ['WebSearch', 'WebFetch', 'Read', 'Edit', 'Write', 'Glob', 'Grep']);
     assert.match(system(call), /^You are Nova, Blackout's personal companion\./);
     assert.match(system(call), /<SOUL\.md>[\s\S]*You're becoming someone/);
   }
@@ -571,7 +571,7 @@ test('the feeling tag picks the face and never shows in the reply', async t => {
   assert.match(prompt, /Follow AGENTS\.md/);
   const agents = readFileSync(join(f.home('blackout'), '..', 'workspace', 'AGENTS.md'), 'utf8');
   assert.match(agents, /\[feeling:laugh\]/);
-  assert.match(agents, /version 13/);
+  assert.match(agents, /version 14/);
   assert.match(agents, /## Board work/);
   assert.match(agents, /## Following Board work/);
 });

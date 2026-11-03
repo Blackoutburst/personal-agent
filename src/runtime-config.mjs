@@ -28,8 +28,9 @@ export function parseRuntimeConfig(text, env = process.env) {
     if (typeof label !== 'string' || !LABEL.test(label)) throw new Error(`Invalid label for ${subject}: use lowercase letters, digits and dashes`);
     if (!PROVIDERS.includes(provider)) throw new Error(`Provider for ${label} must be one of: ${PROVIDERS.join(', ')}`);
     if (model !== null && (typeof model !== 'string' || !model || model.length > 100)) throw new Error(`Invalid model for ${label}`);
-    const toolPolicy = normalizeToolPolicy({ tools: owner.tools === undefined && provider === 'claude'
-      ? CLAUDE_FILE_TOOLS : owner.tools, board: owner.board }, env);
+    // Defaults: native web search/fetch for chat (#42), plus workspace file tools on Claude. "tools": [] turns them off.
+    const toolPolicy = normalizeToolPolicy({ tools: owner.tools === undefined
+      ? provider === 'claude' ? [...WEB_TOOLS, ...CLAUDE_FILE_TOOLS] : [...WEB_TOOLS] : owner.tools, board: owner.board }, env);
     if (provider === 'codex' && toolPolicy.tools.length
         && (toolPolicy.tools.length !== WEB_TOOLS.length || !WEB_TOOLS.every(tool => toolPolicy.tools.includes(tool)))) {
       throw new Error(`Codex tools for ${label} must be the web pair or empty`);

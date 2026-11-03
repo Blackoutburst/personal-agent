@@ -456,7 +456,7 @@ test('wake and user turns share the owner queue, native persona and provider-ses
   assert.deepEqual((await snapshot(f)).messages.map(item => item.role), ['user', 'assistant', 'assistant', 'user', 'assistant']);
 });
 
-test('every wake kind keeps inherited native/app tools but only the exact configured Board read names', async t => {
+test('every wake kind keeps inherited file/app tools, never web tools, and only the exact configured Board read names', async t => {
   const f = fixture(t), before = structuredClone(f.owners[0]);
   for (const kind of ['reminder', 'heartbeat', 'watch', 'board']) {
     f.conv.enqueueProactive(f.a, wake({ kind })); await f.conv.idle();
@@ -464,7 +464,8 @@ test('every wake kind keeps inherited native/app tools but only the exact config
     const expected = kind === 'board' ? [...READ_ONLY_BOARD_TOOLS, 'create_ticket', 'post_message', 'list_activity', 'unknown_operation'] : READ_ONLY_BOARD_TOOLS;
     assert.deepEqual(selected.filter(name => name.startsWith('mcp__board__')), expected.map(name => 'mcp__board__' + name),
       kind === 'board' ? 'Board-triggered wakes keep every configured Board tool' : 'Other wakes read the Board only');
-    for (const name of ['Read', 'Write', 'WebSearch', 'WebFetch', 'mcp__scheduler__create_schedule', 'mcp__scheduler__list_schedules',
+    for (const name of ['WebSearch', 'WebFetch']) assert.ok(!selected.includes(name), 'Background wakes do not browse: ' + name);
+    for (const name of ['Read', 'Write', 'mcp__scheduler__create_schedule', 'mcp__scheduler__list_schedules',
       'mcp__scheduler__cancel_schedule', 'mcp__board_docs__post_message']) assert.ok(selected.includes(name), name);
   }
   assert.deepEqual(f.owners[0], before); assert.equal(f.factoryCalls.length, 4);
@@ -565,10 +566,12 @@ for (const provider of ['claude', 'codex']) test(`${provider}: real runner resol
   assert.deepEqual(board(launches[1]), READ_ONLY_BOARD_TOOLS);
   for (const index of [0, 2]) assert.deepEqual(board(launches[index]), owner.board.allowedTools);
   if (provider === 'claude') {
-    assert.equal(launches[1][launches[1].indexOf('--tools') + 1], owner.tools.join(','));
+    assert.equal(launches[1][launches[1].indexOf('--tools') + 1], owner.tools.filter(tool => !tool.startsWith('Web')).join(','));
+    assert.equal(launches[0][launches[0].indexOf('--tools') + 1], owner.tools.join(','), 'Owner turns keep web tools');
     assert.ok(launches[1].includes('mcp__scheduler__create_schedule') && launches[1].includes('mcp__board_docs__post_message'));
   } else {
-    assert.equal(overrides(launches[1]).get('web_search'), 'live');
+    assert.equal(overrides(launches[1]).get('web_search'), 'disabled', 'Background wakes do not browse');
+    assert.equal(overrides(launches[0]).get('web_search'), 'live', 'Owner turns keep web search');
     assert.deepEqual(overrides(launches[1]).get('mcp_servers.scheduler.enabled_tools'), f.apps.a[0].allowedTools);
     assert.deepEqual(overrides(launches[1]).get('mcp_servers.board_docs.enabled_tools'), f.apps.a[1].allowedTools);
   }
