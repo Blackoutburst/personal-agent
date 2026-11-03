@@ -1,0 +1,6 @@
+#!/bin/sh
+# COMPANION_SYSTEMCTL helper for ops/release.mjs on the server: the account service is a system unit, so stop/start
+# need root. Only the two actions the release tool sends, for its one unit, are passed to sudo (non-interactive).
+case "$1" in start|stop) ;; *) exit 64 ;; esac
+[ "$#" -eq 2 ] && [ "$2" = personal-agent-account.service ] || exit 64
+exec /usr/bin/sudo -n /usr/bin/systemctl "$1" "$2"
