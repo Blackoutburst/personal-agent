@@ -1,15 +1,15 @@
 # Personal Agent
 
-> **Restructured 2 November 2026.** The current plan is [docs/PLAN.md](docs/PLAN.md); the original v1 plan is archived in [docs/PLAN-V1-CODEX-ARCHIVE.md](docs/PLAN-V1-CODEX-ARCHIVE.md). The sections below describe the existing foundations (login, private store, conversation UI, goals, board boundary), which are kept and reused.
+> **Restructured 2 November 2026.** The current plan is [docs/PLAN.md](docs/PLAN.md); the original v1 plan is archived in [docs/PLAN-V1-CODEX-ARCHIVE.md](docs/PLAN-V1-CODEX-ARCHIVE.md). Retained foundation interfaces and prototype pages are distinguished below from the current companion.
 
 
-A local candidate for the Blackoutburst personal companion. It contains a responsive account-preview client, a loopback HTTP server, account-to-companion integration and a private SQLite ledger/API. Personal Codex, Board access and model-backed conversation remain unavailable.
+A private Blackoutburst companion with web and Android clients, authenticated conversations and each owner's own Claude Code or Codex runtime. See [the companion](docs/COMPANION.md), [runtime configuration](docs/RUNTIME.md) and the current [operations runbook](docs/OPERATIONS.md).
 
-The default mode is `unavailable`. An explicit `demo` mode displays synthetic preview data and labels the account and Board adapters `development-double`. Neither mode contacts an account authority. Explicit `account` mode enables fresh platform-session checks, invited-user provisioning and the private-state API; provider and runtime stay unavailable in every mode. The running account-only preview remains pinned to its earlier release. This private-state candidate is not deployed, and a full companion/runtime pilot remains unqualified.
+The default mode is `unavailable`. An explicit `demo` mode displays synthetic preview data and labels the account and Board adapters `development-double`. Neither mode contacts an account authority. Explicit `account` mode enables fresh platform-session checks, invited-user provisioning, private APIs and native turns when an owner runtime is configured. Missing runtime configuration remains explicitly unavailable. Local startup does not deploy or sign anyone into a provider.
 
 ## Run locally
 
-Use **Node.js 24.22.1** and its bundled npm. There are no npm dependencies to install and no bundler or build step. HTML, CSS and JavaScript are served directly. The version choice follows the Node 24.22.1 platform convention recorded in the account foundation; it is not a claim that the companion is deployed there.
+Use **Node.js 24.22.1** and its bundled npm. There are no npm dependencies to install and no bundler or build step. HTML, CSS and JavaScript are served directly. Verify the operator's deployed interpreter separately as described in the runbook.
 
 From this directory, set an absolute data directory **outside the checkout**, then start the server. `npm run dev` runs the root `server.mjs`. The server binds only to `127.0.0.1`, using port 4318 by default; open the loopback URL printed at startup.
 
@@ -51,20 +51,21 @@ npm run dev
 | `COMPANION_MODE` | `unavailable` by default; `demo` opts into synthetic preview data; `account` explicitly enables platform-session validation. |
 | `COMPANION_PORT` | Optional local port; defaults to `4318`. |
 | `COMPANION_PILOT_FILE` | Required in CLI account mode: private absolute JSON file outside the checkout; see below. Ignored in default/demo. |
-| `COMPANION_PUBLIC_ORIGIN` | Optional exact HTTPS origin for a trusted future reverse proxy. Without it, only the actual loopback origins are accepted. Never derived from forwarded headers. |
+| `COMPANION_PUBLIC_ORIGIN` | Optional exact HTTPS origin for the trusted reverse proxy. Without it, only the actual loopback origins are accepted. Never derived from forwarded headers. |
 
 The external directory contains `bootstrap.sqlite`, a versioned local metadata store. Demo mode writes only its synthetic contract fixture in the `development` namespace. The status API's storage `ready` / `local-bootstrap` state means that this local store opened successfully; it does not establish authenticated tenant storage. The store rejects paths resolving inside the checkout, checks its application/schema version and applies owner-only permissions on POSIX. Windows ACL qualification remains open.
 
-Local development uses synthetic data. The private-state implementation milestone #6 is complete under its accepted implementation/qualification split. Actual protected deployment, runtime credential/thread isolation and cross-device private-history acceptance remain with #7/#8, #20 and #21. Windows ACL qualification remains open. Local source tests do not prove those external boundaries.
+Local development uses synthetic data. The historical #5/#6 foundation acceptance did not itself qualify native runtimes or deployment. Current application isolation tests are documented in [ISOLATION-TESTS.md](docs/ISOLATION-TESTS.md); operator release/restore evidence and the real pilot remain separate. Windows ACL qualification remains open.
 
-## Check the skeleton
+## Check the source
 
 ```sh
 npm run check
+npm run test:isolation
 npm test
 ```
 
-`check` runs the configured `node --check` source checks; `test` runs `node --test`. These checks cover the implemented skeleton, not live authentication, two-user isolation, provider eligibility, model execution or deployment acceptance. No `build` command is required.
+`check` runs the configured syntax checks; `test:isolation` selects the owning application-isolation suites; `test` runs the complete suite. They use synthetic accounts and fake providers, not real sign-in, model execution or deployment evidence. No `build` command is required.
 
 ## Internal provisioning primitive
 
@@ -72,7 +73,7 @@ npm test
 
 The retained mapping uses a domain-separated SHA-256 issuer/subject key and a random UUID; it does not store the proof or raw principal tuple. The companion ID is an identifier, not an authentication credential. Invalid retained identity state stops provisioning for review instead of silently replacing the ID.
 
-Concurrency, HTTP integration and guard tests use synthetic accounts. Separately, #5 is complete for account-only acceptance: both invited owners reported admission and non-expiry checks passing, and the owner accepted an isolated exact-source expiry test. An actual pilot session timeout remains unobserved. All actual runtime binding and full-pilot obligations remain in #7/#8 and #21.
+Concurrency, HTTP integration and guard tests use synthetic accounts. Historically, #5 completed its account-only acceptance: both invited owners reported admission and non-expiry checks passing, and the owner accepted an isolated exact-source expiry test. That split did not include native runtime or full-pilot acceptance; current runtime and operating contracts are linked above.
 
 ## Internal account validator
 
@@ -80,44 +81,44 @@ Concurrency, HTTP integration and guard tests use synthetic accounts. Separately
 
 The validator disables redirects, bounds its response and timeout, distinguishes an authentication denial from service unavailability and rejects malformed success responses. Tests use temporary synthetic local services only.
 
-The account service's internal-authenticator failure guard was deployed and verified in [account #24](https://board.blackoutburst.com/?thread=9968061425da6965dcc349be308fa289&message=beaa288b997af0bde67e7c51db52274e). Account-only invitation, identity stability and logout/relogin are accepted in #5. Provider revocation and actual private runtime qualification remain open.
+The account service's internal-authenticator failure guard was deployed and verified in [account #24](https://board.blackoutburst.com/?thread=9968061425da6965dcc349be308fa289&message=beaa288b997af0bde67e7c51db52274e). Account-only invitation, identity stability and logout/relogin were accepted in #5. Installed-provider and actual pilot checks remain distinct from these foundation tests.
 
-## Account-only HTTP candidate
+## Account HTTP boundary
 
-In `account` mode, `POST /api/session` accepts exactly an empty JSON object. It requires an exact trusted Origin, rejects cross-site requests, bounds the body and read time, and accepts only one valid `__Secure-blackout_session` cookie value. Client identity/runtime fields are rejected before validation. A verified invited platform session returns only a companion UUID plus explicit unavailable provider/runtime states. All errors are fixed public messages; responses are no-store. No cookie is issued or renewed, and a companion UUID grants no access. Every future protected operation must validate the central session again.
+In `account` mode, `POST /api/session` accepts exactly an empty JSON object. It requires an exact trusted Origin, rejects cross-site requests, bounds the body and read time, and accepts only one valid `__Secure-blackout_session` cookie value. Client identity/runtime fields are rejected before validation. A verified invited platform session returns a companion UUID and that companion's provider/runtime status. All errors are fixed public messages; responses are no-store. No cookie is issued or renewed, and a companion UUID grants no access. Every protected operation validates the central session again.
 
 The web button checks the browser's existing platform cookie without collecting passwords or provider credentials. It links to the existing Blackoutburst account page for login/renewal, and clears its previous identity display after denial or when hidden. Platform sign-in is separate from personal Codex authorization. An account-only local service cannot use a Secure platform cookie from an HTTP browser origin; actual cookie behavior requires a qualified HTTPS proxy and both invited owners.
 
 Private pilot configuration contains only exact central account principals, never names, emails, passwords, cookies or Codex credentials. The schema is `{"principals":[{"issuer":"https://blackoutburst.com","subject":"<central account UUID>"}]}` with one or two distinct principals. Keep the real file and identity values out of source, Board payloads and attachments. On POSIX it must be a current-user-owned regular file with mode `0600`, one link and a current-user-owned mode `0700` parent, outside the checkout, with no symlink components and trusted nonwritable ancestors. Windows CLI account mode fails closed until ACL qualification; local synthetic tests use explicit constructor injection. Detailed file validation lives in `src/pilot-config.mjs`.
 
-The earlier account-only release `9d57d26` is installed behind the dedicated HTTPS preview prefix, with boot startup disabled. This source candidate has not replaced it. The proxy preserves the exact Origin, sets a fixed loopback Host, strips the dedicated prefix and redirects its bare prefix to a trailing slash, because assets/API URLs are relative. The service binds only to loopback and trusts no forwarded identity or host headers. Provider/runtime paths do not exist. See [account staging and retained installation evidence](docs/ACCOUNT-STAGING.md).
+The earlier account-only release `9d57d26` and its disabled-at-boot staging state are historical. Current operator-confirmed HTTPS, boot startup and release layout are recorded in [OPERATIONS.md](docs/OPERATIONS.md); [ACCOUNT-STAGING.md](docs/ACCOUNT-STAGING.md) retains the original staging history. The proxy preserves Origin, supplies a fixed loopback Host and strips the preview prefix. The service remains loopback-only and trusts no forwarded identity or host headers.
 
 ## Integration boundaries
 
 Blackoutburst login and the personal Codex connection are separate contracts. Account mode derives companion identity from a validated central account, never a client-supplied account or Board-owner ID. Each user still needs a separate qualified provider/runtime boundary. A synthetic preview cannot establish that external boundary.
 
-The Board remains responsible for project work. Companion conversations, memories, goals and personality stay in a separate private store. They must not enter Board tickets, messages, attachments, metadata or logs. The future Board adapter consumes MCP contracts; this project does not copy or embed the Board executor.
+The Board remains responsible for project work. Companion conversations, memories, goals and personality stay private. Current [owner-scoped Board tools](docs/BOARD-COMPANION.md), including explicitly requested file attachments, use the owner's paired bridge and accepted confirmation/privacy rules; this project does not copy or embed the Board executor.
 
-The revised pilot targets two personal Codex runtimes on the existing Blackoutburst home server, which both owners administer through the shared `ubuntu` SSH account. Each runtime still needs its own managed login, credential/state home, saved threads and application binding. Separate directories do not establish isolation from the shared host administrator. Actual runtime registration, application-level cross-user denial and production storage/service boundaries remain unqualified. No commercial plan-sharing form is assumed by default, and no runtime is activated by selecting this direction.
+Each owner uses their own configured Claude or Codex login/home, workspace and saved sessions on the trusted shared host. The accepted privacy boundary is application routing, not OS-user isolation. [ISOLATION-TESTS.md](docs/ISOLATION-TESTS.md) maps the reproducible negative tests and their limits; installed-provider behavior and real pilot observations remain operator evidence.
 
-See [foundation interfaces and upstream owners](docs/FOUNDATIONS.md) and [runtime, dependency and license decisions](docs/DEPENDENCIES.md). This candidate does not collect provider credentials or activate a runtime.
+See [historical foundation interfaces](docs/FOUNDATIONS.md) and [runtime, dependency and license decisions](docs/DEPENDENCIES.md). Provider sign-in remains owner-managed; the release workflow never reads or copies provider homes or private login/configuration directories.
 
 ## Private-state implementation
 
-The source now includes an account-mode private ledger/API candidate. See [PRIVATE-STATE.md](docs/PRIVATE-STATE.md) for its authenticated contract, ordering/retry semantics, privacy boundaries and verification limits. The running account preview has not been updated to this candidate; runtime connections remain unavailable.
+Account mode includes the owner-scoped private ledger/API. See [PRIVATE-STATE.md](docs/PRIVATE-STATE.md) for its authenticated contract, ordering/retry semantics, privacy boundaries and verification limits. Native memory and conversation/runtime controls have their own current APIs and owning tests.
 
-## Personal runtime binding candidate
+## Per-owner native runtime
 
 [RUNTIME.md](docs/RUNTIME.md): each owner's own Claude Code or Codex agent on the server (`src/runner.mjs`, provider adapters in `src/providers/`, admin tool `manage.mjs`).
 
-## Conversation client candidate
+## Conversation clients
 
-Open `conversation.html` on the local candidate to try the [text-and-links conversation client](docs/CONVERSATION-UI.md). Positive interaction requires explicit `demo` mode and is prominently labelled synthetic replies/no AI. The bounded fixture supports threads, paged incremental replies, reconnect and exact-action retries across two test clients. Account mode freshly checks platform admission but keeps personal Codex and conversation unavailable. Task #9 completed its UI milestone at source `2e2a7eb` after the owner reported desktop/narrow-layout and keyboard checks passing. Actual private-runtime/full-pilot qualification remains separate, and this source has not replaced the deployed account-only preview.
+The main web app and Android client use authenticated [conversations](docs/CONVERSATION-UI.md) with the owner's configured native runtime. The retained `conversation.html` demo exercises synthetic replies without a model; it is not the deployed companion's runtime-status contract. Task #9's earlier UI milestone at `2e2a7eb` is historical evidence, separate from current source and operating acceptance.
 
-## Private goals and permission cards
+## Retained private goals and permission-card prototype
 
-`goals.html` provides the [private goal workflow and versioned permission cards](docs/GOALS.md): editable goals/plans/milestones, review/pause controls, saved project-text previews and explicit local consent. Account mode revalidates the owner on every API request; demo state is labelled synthetic and separated from real accounts. Lifetime reservations never reset when a card is edited or reconfirmed. Independent Board authority is unavailable by default; no card or browser operation starts dispatch, a provider, spending or a runtime. Candidate deployment and actual end-to-end pilot qualification remain separate.
+The original goal/permission-card workflow is recorded in the [archived v1 plan](docs/PLAN-V1-CODEX-ARCHIVE.md). Its `src/goals.mjs` and owning tests remain, but the current client no longer ships `goals.html` or the former `docs/GOALS.md`. This prototype does not activate the native runtime or supply the authority for its configured Board tools; its local reservation/consent tests remain in the full suite.
 
 ## Project-only Board boundary
 
-The [shared outbound boundary](docs/BOARD-BOUNDARY.md) constructs only qualified static project-template tickets, messages and generated JSON attachments. Private narrative, goal mappings, resource URLs, credentials, arbitrary tool fields and raw files have no passthrough. Fresh reservation, qualified project provenance and deterministic private inspection are all required; missing providers fail closed. No HTTP mode enables actual Board publication. Owner-scoped transport, durable dispatch recovery and worker-report integration remain separate milestones.
+The retained [deterministic outbound facade](docs/BOARD-BOUNDARY.md) constructs qualified project-template packets and fails closed without its required providers. It is separate from current owner-configured native Board forwarding and requested file attachment. Its synthetic marker tests do not intercept every native MCP call; see [ISOLATION-TESTS.md](docs/ISOLATION-TESTS.md) for the precise coverage distinction.
