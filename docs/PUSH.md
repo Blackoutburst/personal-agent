@@ -54,5 +54,6 @@ needs no review and updates with every deploy. The same works on Android Chrome 
 - **Settings** (Me › Settings › Notifications, `public/web-push-ui.mjs`): "Notify me on this device" asks for permission
   straight from the tap (Safari requires a gesture) and subscribes; "Show the message in the notification" changes the
   preview. In iPhone Safari outside the Home Screen app it explains how to install instead.
-- **Key**: the VAPID key pair is created on first use at `~/.config/personal-agent/web-push-vapid.json` (chmod 600, or
-  `COMPANION_WEB_PUSH_KEY`). Replacing it invalidates every web subscription: each device turns notifications on again.
+- **Key**: the VAPID key pair lives at `~/.config/personal-agent/web-push-vapid.json` (chmod 600, or
+  `COMPANION_WEB_PUSH_KEY`). It is created on first use, but the live unit has `ProtectHome=read-only`, so on the
+  server it was created ahead of time (3 Nov 2026). Replacing it invalidates every web subscription: each device turns notifications on again.
