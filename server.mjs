@@ -24,6 +24,12 @@ import { createFileHttp, fileFailure } from './src/file-http.mjs';
 import { PersonalityStore } from './src/personality.mjs';
 import { Contacts, ContactError } from './src/contacts.mjs';
 import { Weather } from './src/weather.mjs';
+import { BoardCompanion } from './src/board-companion.mjs';
+
+const BOARD_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const CONTENT_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
+  pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown', json: 'application/json', log: 'text/plain', mp4: 'video/mp4' };
+const contentTypeFor = name => CONTENT_TYPES[/\.([a-z0-9]{1,5})$/i.exec(name)?.[1]?.toLowerCase()] ?? 'application/octet-stream';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 // Claude-chan art (docs/COMPANION.md): outfits are whole pictures, faces are patches drawn over them.
@@ -66,7 +72,7 @@ function androidRelease(dataDir) {
 }
 
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {} } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -92,7 +98,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let agentsConfigured = false;
   let companionHttp;
   let schedulerHttp, schedulerService, schedulerStore, discord = null;
-  let files = null, fileHttp, contacts = null, weather = null;
+  let files = null, fileHttp, contacts = null, weather = null, boardCompanion = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
   const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
@@ -141,6 +147,21 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         const parsed = await readJsonBody(req, 16384);
         if (parsed.failure) return send(parsed.failure.status, parsed.failure.body);
         const input = parsed.value;
+        if (input && typeof input === 'object' && !Array.isArray(input) && input.action === 'board') {
+          // attach_to_board: one workspace file to a Board thread through the owner's own Board bridge.
+          if (Object.keys(input).some(key => !['action', 'path', 'threadId'].includes(key)) || typeof input.threadId !== 'string'
+              || !/^[A-Za-z0-9_-]{1,64}$/.test(input.threadId) || !boardCompanion?.configuredFor(turn.companionId)) return fail(400, 'BOARD_UNCONFIGURED', 'No Board connection.');
+          try {
+            const file = files.readWorkspaceFile(turn.companionId, input.path, BOARD_ATTACHMENT_BYTES);
+            const attachment = await boardCompanion.attach(turn.companionId, { threadId: input.threadId, filename: file.name,
+              contentType: contentTypeFor(file.name), bytes: file.bytes });
+            return send(200, { attachment: { id: attachment?.id, filename: attachment?.filename ?? file.name, size: attachment?.size ?? file.bytes.length } });
+          } catch (error) {
+            if (error instanceof FileError) { const result = fileFailure(error); return send(result.status, result.body); }
+            const code = ['BOARD_REFUSED', 'BOARD_UNCONFIGURED'].includes(error?.code) ? error.code : 'BOARD_UNAVAILABLE';
+            return fail(code === 'BOARD_UNAVAILABLE' ? 503 : 400, code, 'The Board upload failed.');
+          }
+        }
         if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['requestId', 'path', 'caption'].includes(key))
             || typeof input.requestId !== 'string' || !/^[A-Za-z0-9._-]{1,80}$/.test(input.requestId)) return fail(400, 'INVALID_FILE', 'Invalid file tool arguments.');
         let file;
@@ -279,8 +300,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         const token = randomBytes(32).toString('hex');
         fileTurns.set(token, { companionId, ...context });
         const servers=[{ name: 'files', command: process.execPath, args: [join(ROOT, 'src', 'file-mcp.mjs')],
-          env: { COMPANION_FILE_URL: `http://127.0.0.1:${server.address().port}/internal/files`, COMPANION_FILE_TOKEN: token },
-          allowedTools: ['send_file'] }];
+          env: { COMPANION_FILE_URL: `http://127.0.0.1:${server.address().port}/internal/files`, COMPANION_FILE_TOKEN: token,
+            ...(boardCompanion?.configuredFor(companionId) ? { COMPANION_FILE_BOARD: '1' } : {}) },
+          allowedTools: boardCompanion?.configuredFor(companionId) ? ['send_file', 'attach_to_board'] : ['send_file'] }];
         let contactToken;
         if(available.length) {
           contactToken=randomBytes(32).toString('hex'); contactTurns.set(contactToken,{companionId,...context,contacts:available});
@@ -330,6 +352,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           ...schedulerStore.releaseCompanions()])],
         ready: companionId => Boolean(runner?.ownerFor(companionId)), ...(schedulerOptions.pollMs ? { pollMs: schedulerOptions.pollMs } : {}) });
       schedulerHttp = createSchedulerHttp({ access, scheduler: schedulerService });
+      // Board companion duties (docs/BOARD-COMPANION.md): Needs-you wakes, profile sync and attachments.
+      boardCompanion = new BoardCompanion({ store, owners, profiles, scheduler: schedulerService,
+        companionIdFor: owner => companionIdFor(store, owner), log: message => console.error(message), ...boardOptions });
       // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
       discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, ...discordOptions,
         log: message => console.error(message) });
@@ -339,7 +364,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         assertMemoryIdle: companionId => conversations.assertMemoryIdle(companionId),
         onForget: companionId => conversations.resetSessions(companionId),
         // Claude reads the look every turn; Codex keeps its first instructions, so it starts afresh.
-        onLook: companionId => conversations.resetSessions(companionId) });
+        onLook: companionId => {
+          conversations.resetSessions(companionId);
+          boardCompanion?.syncProfile(companionId).catch(() => console.error('Board profile sync failed; retried on the next check.'));
+        } });
     }
     const runtimeStatus = async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' };
     conversationHttp = createConversationHttp({ access, store, mode, conversations, runtimeStatus });
@@ -357,9 +385,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     conversations?.recover();
     schedulerService?.start();
     if (weatherOptions.poll !== false) weather?.start();
+    if (boardOptions.poll !== false) boardCompanion?.start();
     if (discordOptions.connect !== false) discord?.start();
   } catch (error) {
-    weather?.stop();
+    weather?.stop(); boardCompanion?.stop();
     discord?.stop();
     await schedulerService?.stop();
     if (server.listening) await new Promise(resolve => server.close(resolve));
@@ -370,7 +399,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     server, store, url: `http://127.0.0.1:${server.address().port}`,
     conversations, files, scheduler: schedulerService, discord,
     async close() {
-      weather?.stop();
+      weather?.stop(); boardCompanion?.stop();
       discord?.stop();
       await schedulerService?.stop();
       await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

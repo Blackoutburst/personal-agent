@@ -15,8 +15,10 @@ const REQUEST = /^[A-Za-z0-9._-]{1,80}$/;
 const DEFAULT_TITLE = 'New conversation';
 const FLUSH_MS = 400;
 const BOARD_PREFIX = 'mcp__board__';
-const wakeToolAllowed = name => !['mcp__scheduler__create_release_watch', 'mcp__scheduler__update_release_watch'].includes(name)
-  && (!name.startsWith(BOARD_PREFIX) || READ_ONLY_BOARD_TOOLS.includes(name.slice(BOARD_PREFIX.length)));
+// Background wakes read the Board only. A Needs-you ("board") wake may also answer the owner's request.
+const wakeToolFilter = kind => name => !['mcp__scheduler__create_release_watch', 'mcp__scheduler__update_release_watch'].includes(name)
+  && (!name.startsWith(BOARD_PREFIX) || READ_ONLY_BOARD_TOOLS.includes(name.slice(BOARD_PREFIX.length))
+    || (kind === 'board' && name === BOARD_PREFIX + 'resolve_human_request'));
 const ERROR_MESSAGES = {
   INTERRUPTED: 'The server restarted during this reply. Send your message again to retry.',
   BUSY: 'Wait for the current reply to finish or stop it first.'
@@ -611,7 +613,7 @@ export class Conversations {
           + 'For this background turn only, return exactly one JSON object, without markdown or other text: {"action":"message","text":"your message"} '
           + 'or {"action":"silent"}. Your native feeling tag may precede the JSON. Message text must be nonempty and at most 4000 characters. Respond naturally again on normal user turns.\n\n' + wake.prompt,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }),
-        allowedTools: this.#allowedTools, toolFilter: wakeToolAllowed, signal: controller.signal,
+        allowedTools: this.#allowedTools, toolFilter: wakeToolFilter(wake.kind), signal: controller.signal,
         onEvent: event => {
           if (event.type === 'session' && currentSession()) this.#db.prepare(`UPDATE conv_threads SET provider_session=? WHERE id=? AND EXISTS(
             SELECT 1 FROM conv_wakes WHERE companion_id=? AND id=? AND state='running' AND attempt_token=?)`)

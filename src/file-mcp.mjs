@@ -11,6 +11,8 @@ const empty = value => value === undefined || exact(value, []);
 const string = (maximum, description) => ({ type: 'string', maxLength: maximum, description });
 const schema = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const TOOLS = [{ name: 'send_file', description: 'Send one regular file from your own workspace to the owner in this active reply. Use a stable requestId for exact retries. Only a successful result means the file was sent.', inputSchema: {type:'object',properties:{requestId:string(80,'Stable logical send key'),path:string(4096,'File inside your own workspace'),caption:string(1000,'Optional caption')},required:['requestId','path'],additionalProperties:false} }];
+const BOARD_TOOL = { name: 'attach_to_board', description: 'Upload one regular file from your own workspace (for example a screenshot your owner sent, found in inbox/) to a Board thread. Returns the attachment id; then pass it in attachment_ids to the Board create_ticket, update_ticket or post_message tool. Ticket threads are ticket.thread_id. Like every Board write, only after your owner agreed in this chat.', inputSchema: schema({ path: string(4096, 'File inside your own workspace'), threadId: string(64, 'Board thread id') }) };
+const THREAD = /^[A-Za-z0-9_-]{1,64}$/;
 function configuration(endpoint, token) {
   let url;
   try { url = new URL(endpoint); } catch { throw new Error('File tools are unavailable.'); }
@@ -20,7 +22,12 @@ function configuration(endpoint, token) {
   }
   return url.href;
 }
-function toolInput(name,args) {
+function toolInput(name,args,board) {
+  if (name === 'attach_to_board') {
+    if (!board || !exact(args, ['path', 'threadId']) || typeof args.path !== 'string' || !args.path || args.path.length > 4096
+      || /[\x00-\x1f]/.test(args.path) || typeof args.threadId !== 'string' || !THREAD.test(args.threadId)) return null;
+    return { action: 'board', path: args.path, threadId: args.threadId };
+  }
   if (name !== 'send_file' || !object(args) || Object.keys(args).some(key=>!['requestId','path','caption'].includes(key))
       || typeof args.requestId !== 'string' || !REQUEST.test(args.requestId) || typeof args.path !== 'string'
       || !args.path || args.path.length > 4096 || /[\x00-\x1f]/.test(args.path)
@@ -43,7 +50,8 @@ async function readJson(response) {
 // The child process owns no identity selector, storage path or arbitrary HTTP capability.
 // Its endpoint and ephemeral active-turn token come only from the application constructor.
 export async function runFileMcp({ input = process.stdin, output = process.stdout,
-  endpoint = process.env.COMPANION_FILE_URL, token = process.env.COMPANION_FILE_TOKEN, fetchImpl = fetch } = {}) {
+  endpoint = process.env.COMPANION_FILE_URL, token = process.env.COMPANION_FILE_TOKEN, fetchImpl = fetch,
+  board = process.env.COMPANION_FILE_BOARD === '1' } = {}) {
   const url = configuration(endpoint, token);
   let initialized = false, ready = false;
   const write = async message => { if (!output.write(JSON.stringify(message) + '\n')) await once(output, 'drain'); };
@@ -78,11 +86,11 @@ export async function runFileMcp({ input = process.stdin, output = process.stdou
     if (!ready) return error(id, -32002, 'Initialization required.');
     if (method === 'tools/list') {
       if (!empty(params)) return error(id, -32602, 'Invalid tool list request.');
-      return result({ tools: TOOLS });
+      return result({ tools: board ? [...TOOLS, BOARD_TOOL] : TOOLS });
     }
     if (method !== 'tools/call') return error(id, -32601, 'Method not found.');
     if (!exact(params, ['name', 'arguments'])) return error(id, -32602, 'Invalid tool request.');
-    const body = toolInput(params.name, params.arguments);
+    const body = toolInput(params.name, params.arguments, board);
     if (!body) return error(id, -32602, 'Invalid files tool arguments.');
     try {
       const response = await fetchImpl(url, { method: 'POST', redirect: 'error',
@@ -93,6 +101,8 @@ export async function runFileMcp({ input = process.stdin, output = process.stdou
         const errors = { FILE_TOO_LARGE: 'The file exceeds this companion file size limit.', FILE_QUOTA: 'The companion file quota is full.',
           FILE_PATH_REJECTED: 'Choose a regular, unshared file inside your own workspace; links are not allowed.',
           FILE_TURN_ENDED: 'This reply ended; no more files can be sent from it.', FILE_TOO_MANY: 'At most eight files can be sent in one reply.',
+          BOARD_UNCONFIGURED: 'Your owner has no Board connection.', BOARD_REFUSED: 'The Board refused the upload; check the thread id and that it is in your owner\'s projects.',
+          BOARD_UNAVAILABLE: 'The Board could not be reached. Try again later.',
           CONFLICT: 'The request key changed or a matching send is still running. Reuse the original file and key for an exact retry.' };
         if (!Object.hasOwn(errors, data.error?.code)) throw new Error();
         return result({ content: [{ type: 'text', text: errors[data.error.code] }], isError: true });

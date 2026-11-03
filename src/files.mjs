@@ -226,7 +226,8 @@ export class FileStore {
       return { ...this.dto(row), path: dest };
     });
   }
-  async outgoing(companionId, { threadId, requestId, path, caption }, current) {
+  // Opens one regular, unlinked, non-symlinked file inside the companion's own workspace.
+  #openWorkspaceFile(companionId, path) {
     if (typeof path !== 'string' || !path || path.length > 4096 || /[\x00-\x1f]/.test(path)) refuse();
     const root = this.workspaceRoot(companionId), selected = resolve(root, path);
     if (!inside(selected, root) || selected === root) refuse('FILE_PATH_REJECTED', 403);
@@ -240,8 +241,24 @@ export class FileStore {
     const fd = openSync(selected, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const info = fstatSync(fd);
     if (!info.isFile() || info.nlink !== 1 || before.ino !== info.ino || before.dev !== info.dev || !inside(realpathSync(selected), root)) { closeSync(fd); refuse('FILE_PATH_REJECTED', 403); }
+    return { fd, info, name: basename(selected) };
+  }
+
+  // A workspace file's bytes, for the Board attach tool (at most maxBytes).
+  readWorkspaceFile(companionId, path, maxBytes) {
+    const { fd, info, name } = this.#openWorkspaceFile(companionId, path);
+    try {
+      if (info.size > maxBytes) refuse('FILE_TOO_LARGE', 413);
+      const bytes = Buffer.alloc(info.size); let offset = 0, size;
+      while (offset < bytes.length && (size = readSync(fd, bytes, offset, bytes.length - offset, null))) offset += size;
+      return { name, bytes: bytes.subarray(0, offset) };
+    } finally { closeSync(fd); }
+  }
+
+  async outgoing(companionId, { threadId, requestId, path, caption }, current) {
+    const { fd, info, name } = this.#openWorkspaceFile(companionId, path);
     const source = async function* () { const bytes = Buffer.alloc(64 * 1024); let size; while ((size = readSync(fd, bytes, 0, bytes.length, null))) yield Buffer.from(bytes.subarray(0, size)); };
-    try { return await this.upload(companionId, { threadId, requestId, name: basename(selected), size: info.size,
+    try { return await this.upload(companionId, { threadId, requestId, name, size: info.size,
       caption: caption ?? null, direction: 'companion' }, source(), { current }); }
     finally { closeSync(fd); }
   }
