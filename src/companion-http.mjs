@@ -6,6 +6,7 @@ import { ConversationError } from './conversations.mjs';
 import { outfitFor } from './wardrobe.mjs';
 import { DiscordError } from './discord.mjs';
 import { createHash } from 'node:crypto';
+import { PersonalityError, PERSONALITY_LIMITS } from './personality.mjs';
 
 const fail = (status, code, message) => ({ status, body: { error: { code, message } } });
 const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
@@ -14,9 +15,9 @@ const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
 // onForget(companionId): durable session reset BEFORE any memory bytes are replaced.
 // onLook(companionId): called when the name or look changed, so the agent's next session knows.
 // discord: the DiscordBridge (docs/DISCORD.md), or null when connections are unavailable.
-export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null }) {
+export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null }) {
   return async function companion(request) {
-    const parsed = await access.read(request, 32768);
+    const parsed = await access.read(request, PERSONALITY_LIMITS.requestBytes);
     if (parsed.failure) return parsed.failure;
     const admitted = await access.authorize(request);
     if (admitted.failure) return admitted.failure;
@@ -25,6 +26,32 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
     const only = keys => Object.keys(payload).every(key => keys.includes(key));
     try {
       switch (payload.action) {
+        case 'personality': {
+          if (!only(['action']) || !personality) break;
+          try { return { status: 200, body: personality.snapshot(companionId) }; }
+          catch (error) {
+            const workspace = workspaceFor(companionId);
+            if (!(error instanceof PersonalityError) || error.code !== 'PERSONALITY_NOT_FOUND' || !workspace) throw error;
+            // The fixed-file reader already checked the owning root and refused
+            // unsafe existing SOUL bytes. First use follows normal native setup.
+            ensureWorkspace(workspace.dir, workspace.owner);
+            return { status: 200, body: personality.snapshot(companionId) };
+          }
+        }
+        case 'personalityVersion': {
+          if (!only(['action', 'revision']) || !personality) break;
+          return { status: 200, body: { version: personality.version(companionId, payload.revision) } };
+        }
+        case 'editPersonality':
+        case 'restorePersonality': {
+          const restoring = payload.action === 'restorePersonality';
+          if (!personality || !only(restoring ? ['action', 'revision', 'expectedRevision', 'confirm'] : ['action', 'content', 'expectedRevision'])) break;
+          const { action, ...change } = payload;
+          const beforeChange = () => { assertMemoryIdle(companionId); return onForget(companionId); };
+          try { assertMemoryIdle(companionId); }
+          catch (error) { if (error?.code === 'MEMORY_BUSY') throw new PersonalityError('PERSONALITY_BUSY'); throw error; }
+          return { status: 200, body: restoring ? personality.restore(companionId, change, beforeChange) : personality.edit(companionId, change, beforeChange) };
+        }
         case 'get': {
           if (!only(['action'])) break;
           const runtime = await runtimeStatus(companionId);
@@ -88,6 +115,7 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
       }
       return fail(400, 'INVALID_REQUEST', 'Invalid request.');
     } catch (error) {
+      if (error instanceof PersonalityError) return fail(error.status, error.code, error.message);
       if (error instanceof CompanionError) return fail(error.status, error.code, 'Invalid request.');
       if (error instanceof MemoryError || error instanceof ConversationError) {
         const message = error.code === 'MEMORY_BUSY' ? 'Finish or stop the current reply, wait for it to stop, then try again.'

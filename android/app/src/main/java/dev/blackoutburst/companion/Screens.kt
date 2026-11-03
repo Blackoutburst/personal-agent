@@ -375,6 +375,8 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
         AnimatedVisibility(state.offline) { Text("Connection lost. Trying again…", color = Soft, modifier = Modifier.padding(top = 10.dp)) }
         if (!first) {
             Spacer(Modifier.height(32.dp))
+            PersonalityPanel(model, state)
+            Spacer(Modifier.height(32.dp))
             ThemePicker(model)
             Spacer(Modifier.height(32.dp))
             DiscordSection(model, state, profile?.name ?: shownName)

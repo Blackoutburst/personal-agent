@@ -3,12 +3,14 @@ import { createConversationClient, createFileTransport, AttachmentError, USER_CH
 import { renderCharacter, CHARACTERS, COLORS, OUTFITS, HAS_OUTFITS } from './companion-character.mjs';
 import { createRemindersUI } from './reminders-ui.mjs';
 import { createMemoryUI } from './memory-ui.mjs';
+import { createPersonalityUI } from './personality-ui.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
 const fileTransport = createFileTransport();
 const remindersUI = createRemindersUI({ document });
 const memoryUI = createMemoryUI({ document, api, onDenied: fileAccessDenied });
+const personalityUI = createPersonalityUI({ document, api, onDenied: fileAccessDenied });
 const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
 let profile = null, runtime = null, view = 'loading', chatOpened = false, state = client.getState();
@@ -96,14 +98,14 @@ function route() {
 }
 
 async function start() {
-  memoryUI.clear();
+  memoryUI.clear(); personalityUI.clear();
   try {
     const data = await api({ action: 'get' });
     profile = data.profile; runtime = data.runtime; wearing = data.wearing ?? 'base';
     applyColors(profile);
     route();
   } catch (error) {
-    if (error.status === 401 || error.status === 403) { memoryUI.clear(); gate('Hi there!', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true }); }
+    if (error.status === 401 || error.status === 403) { memoryUI.clear(); personalityUI.clear(); gate('Hi there!', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true }); }
     else gate('Hmm, I can’t reach your companion', 'The server didn’t answer. Check your connection and try again.', { retry: true });
   }
 }
@@ -285,7 +287,7 @@ function syncFiles() {
   if (state.opened && state.threadId && state.connection === 'ready') client.setFiles(uploads.filter(item => item.status === 'ready').map(item => item.dto));
 }
 function fileAccessDenied() {
-  memoryUI.clear(); client.clear(); remindersUI.clear();
+  memoryUI.clear(); personalityUI.clear(); client.clear(); remindersUI.clear();
   gate('Your session ended', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true });
 }
 function clearUploads() {
@@ -362,6 +364,8 @@ function loadMemories() { return memoryUI.load(companionName()); }
 // ---------- Look ----------
 
 function startLook() {
+  $('personality-panel').hidden = !profile;
+  if (profile) personalityUI.load(companionName()); else personalityUI.clear();
   draftLook = { ...(profile ?? { character: 'pip', color: 'peach', name: '' }) };
   $('name').value = draftLook.name ?? '';
   $('look-error').hidden = true;
@@ -488,7 +492,7 @@ client.subscribe(next => {
   if (uploads.length && uploads.every(item => item.dto) &&
       ((next.pending?.action === 'submit' && next.pending.status === 'accepted' && uploads.every(item => next.pending.attachments?.includes(item.dto.id))) ||
        next.messages.some(message => message.role === 'user' && uploads.every(item => message.attachments?.some(file => file.id === item.dto.id))))) clearUploads();
-  if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') { remindersUI.clear(); memoryUI.clear(); }
+  if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') { remindersUI.clear(); memoryUI.clear(); personalityUI.clear(); }
   renderAll();
   if (!polling) schedulePoll();
 });

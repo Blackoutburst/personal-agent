@@ -21,6 +21,7 @@ import { createSchedulerHttp, schedulerOperation } from './src/scheduler-http.mj
 import { DiscordLinks, DiscordBridge } from './src/discord.mjs';
 import { FileStore, FileError, FILE_LIMITS } from './src/files.mjs';
 import { createFileHttp, fileFailure } from './src/file-http.mjs';
+import { PersonalityStore } from './src/personality.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 // Claude-chan art (docs/COMPANION.md): outfits are whole pictures, faces are patches drawn over them.
@@ -35,6 +36,7 @@ const STATIC = new Map([
   ['/companion-app.mjs', ['companion-app.mjs', 'text/javascript; charset=utf-8']],
   ['/reminders-ui.mjs', ['reminders-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/memory-ui.mjs', ['memory-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/personality-ui.mjs', ['personality-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-character.mjs', ['companion-character.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-theme.js', ['companion-theme.js', 'text/javascript; charset=utf-8']],
   ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']],
@@ -238,6 +240,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         const owner = runner?.ownerFor(companionId);
         return owner ? { owner, dir: runner.paths(owner).workspace } : null;
       };
+      const personality = new PersonalityStore({ store, workspaceFor });
       files = new FileStore({ store, dataDir, workspaceFor, ...fileOptions });
       fileHttp = createFileHttp({ access, files });
       const fileToolsForTurn = (companionId, context) => {
@@ -261,6 +264,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         beforeStart: (companionId, id) => Boolean(runner?.ownerFor(companionId)) && schedulerStore.startInTransaction(companionId, id),
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id) },
         onSettled: event => discord?.settled(event),
+        onNativeSettled: companionId => {
+          try { if (workspaceFor(companionId)) personality.observe(companionId); }
+          catch { console.error('Personality history observation unavailable.'); }
+        },
         ...conversationOptions });
       // A native resumed session keeps its old instructions. Refresh only after binding the socket,
       // before recovery can start a queued turn; a competing process must not reset live sessions.
@@ -281,7 +288,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
       discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, ...discordOptions,
         log: message => console.error(message) });
-      companionHttp = createCompanionHttp({ access, profiles, workspaceFor,
+      companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
         discord,
         assertMemoryIdle: companionId => conversations.assertMemoryIdle(companionId),

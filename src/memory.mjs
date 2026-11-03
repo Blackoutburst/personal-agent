@@ -271,3 +271,42 @@ export function exportMemory(dir, { now = Date.now } = {}) {
     if (Buffer.byteLength(JSON.stringify(exported)) > MEMORY_LIMITS.jsonBytes) fail('MEMORY_TOO_LARGE'); return exported;
   } catch (error) { throw fixed(error); }
 }
+
+// Fixed SOUL-only access reuses the native-file checks, independently of the memory
+// allowlist. SOUL never enters snapshots, exports, diary controls or forget-all.
+export function readSoul(dir) {
+  try {
+    const root = rootFor(dir), raw = rawBytes(root, join(root.path, 'SOUL.md'), MEMORY_LIMITS.fileBytes);
+    if (!raw) fail('MEMORY_NOT_FOUND');
+    return { file: 'SOUL.md', content: contentOf(raw.bytes), revision: hash(raw.bytes), modifiedAtISO: raw.info.mtime.toISOString() };
+  } catch (error) { throw fixed(error); }
+}
+export function replaceSoul(dir, input, beforeChange) {
+  let temporary;
+  try {
+    const value = shape(input, ['content', 'expectedRevision']); revision(value.expectedRevision);
+    if (typeof value.content !== 'string' || !value.content.isWellFormed() || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value.content)) fail('INVALID_REQUEST');
+    const bytes = Buffer.from(value.content);
+    if (bytes.length > MEMORY_LIMITS.fileBytes) fail('MEMORY_TOO_LARGE');
+    const root = rootFor(dir), path = join(root.path, 'SOUL.md'), initial = readSoul(dir);
+    if (initial.revision !== value.expectedRevision) fail('MEMORY_CONFLICT');
+    if (initial.content === value.content) return { changed: false, ...initial };
+    const verify = () => { rootCurrent(root); if (readSoul(dir).revision !== initial.revision) fail('MEMORY_CONFLICT'); };
+    temporary = { root, path: join(root.path, `.soul-${process.pid}-${randomUUID()}.tmp`) };
+    let fd;
+    try {
+      rootCurrent(root);
+      fd = fs.openSync(temporary.path, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
+      temporary.created = true;
+      fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); temporary.info = fs.fstatSync(fd);
+    } finally { if (fd !== undefined) fs.closeSync(fd); }
+    verify(); beforePublish(beforeChange); verify();
+    const retained = rawBytes(root, temporary.path, MEMORY_LIMITS.fileBytes);
+    if (!retained || retained.info.ino !== temporary.info.ino || retained.info.dev !== temporary.info.dev || hash(retained.bytes) !== hash(bytes)) fail('MEMORY_UNSAFE');
+    fs.renameSync(temporary.path, path); temporary.published = true;
+    return { changed: true, ...readSoul(dir) };
+  } catch (error) { throw fixed(error); }
+  finally {
+    if (temporary?.created && !temporary.published) { try { rootCurrent(temporary.root); fs.unlinkSync(temporary.path); } catch { /* Refuse cleanup through substituted ancestors. */ } }
+  }
+}

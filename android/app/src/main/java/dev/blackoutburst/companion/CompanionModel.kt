@@ -57,6 +57,15 @@ data class UiState(
     val memoryErrorCode: String? = null,
     val memoryNotice: String? = null,
     val memoryDraft: MemoryDraft? = null,
+    val personality: Personality? = null,
+    val personalityDraft: PersonalityDraft? = null,
+    val personalityVersion: PersonalityVersion? = null,
+    val personalityLoading: Boolean = false,
+    val personalityVersionLoading: Boolean = false,
+    val personalityBusy: Boolean = false,
+    val personalityError: String? = null,
+    val personalityErrorCode: String? = null,
+    val personalityNotice: String? = null,
     val saving: Boolean = false,
     val discord: DiscordStatus? = null,
     val discordBusy: Boolean = false,
@@ -94,6 +103,10 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var memoryEpoch = 0L
     private var memoryJob: Job? = null
     private val memoryExports = mutableSetOf<TransferCancellation>()
+    @Volatile private var personalityEpoch = 0L
+    private var personalityVersionEpoch = 0L
+    private var personalityJob: Job? = null
+    private var personalityVersionJob: Job? = null
 
     init {
         // An interrupted prior process must not leave an unbounded or reusable private media cache.
@@ -248,6 +261,107 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ---- Personality: full owner-private SOUL bytes and observed history, never chat proposals. ----
+
+    private fun personalityCurrent(version: Long, request: Long) = current(version) && personalityEpoch == request
+    fun loadPersonality() {
+        if (_state.value.personalityBusy) return
+        val version = scope; val request = ++personalityEpoch
+        personalityJob?.cancel(); personalityVersionJob?.cancel(); personalityVersionEpoch++
+        _state.update { it.copy(personalityLoading = true, personalityError = null, personalityErrorCode = null,
+            personalityVersion = null, personalityVersionLoading = false) }
+        personalityJob = viewModelScope.launch {
+            if (!personalityCurrent(version, request)) return@launch
+            try {
+                val result = api.personality()
+                if (personalityCurrent(version, request)) _state.update {
+                    it.copy(personality = result, personalityDraft = it.personalityDraft?.let { draft ->
+                        draft.copy(conflicted = draft.conflicted || draft.expectedRevision != result.revision)
+                    })
+                }
+            } catch (error: ApiException) {
+                if (!personalityCurrent(version, request)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                _state.update { it.copy(personalityError = personalityProblem(error), personalityErrorCode = error.code) }
+            } finally { if (personalityCurrent(version, request)) _state.update { it.copy(personalityLoading = false) } }
+        }
+    }
+    fun editPersonality(expectedScope: Long) {
+        if (!current(expectedScope) || _state.value.personalityBusy || _state.value.personalityLoading || _state.value.personalityDraft != null) return
+        val value = _state.value.personality ?: return
+        _state.update { it.copy(personalityDraft = PersonalityDraft(value.content, value.revision), personalityNotice = null) }
+    }
+    fun updatePersonalityDraft(content: String, expectedScope: Long) {
+        if (!current(expectedScope) || _state.value.personalityBusy || !validPersonalityContent(content)) return
+        val draft = _state.value.personalityDraft ?: return
+        _state.update { it.copy(personalityDraft = draft.copy(content = content)) }
+    }
+    fun closePersonalityDraft(expectedScope: Long) {
+        if (current(expectedScope) && !_state.value.personalityBusy) _state.update { it.copy(personalityDraft = null) }
+    }
+    fun savePersonalityDraft(expectedScope: Long) {
+        val draft = _state.value.personalityDraft ?: return
+        if (!current(expectedScope) || draft.conflicted || !validPersonalityContent(draft.content)) return
+        mutatePersonality(expectedScope, { api.editPersonality(draft.content, draft.expectedRevision) }, "Personality saved.")
+    }
+    fun selectPersonalityVersion(revision: String, expectedScope: Long) {
+        if (!current(expectedScope) || !memoryRevision(revision) || _state.value.personalityBusy || _state.value.personalityLoading) return
+        val request = personalityEpoch; val selected = ++personalityVersionEpoch
+        personalityVersionJob?.cancel()
+        _state.update { it.copy(personalityVersion = null, personalityVersionLoading = true, personalityError = null, personalityErrorCode = null) }
+        personalityVersionJob = viewModelScope.launch {
+            if (!personalityCurrent(expectedScope, request) || selected != personalityVersionEpoch) return@launch
+            try {
+                val result = api.personalityVersion(revision)
+                if (personalityCurrent(expectedScope, request) && selected == personalityVersionEpoch)
+                    _state.update { it.copy(personalityVersion = result) }
+            } catch (error: ApiException) {
+                if (!personalityCurrent(expectedScope, request) || selected != personalityVersionEpoch) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                _state.update { it.copy(personalityError = personalityProblem(error), personalityErrorCode = error.code) }
+            } finally {
+                if (personalityCurrent(expectedScope, request) && selected == personalityVersionEpoch)
+                    _state.update { it.copy(personalityVersionLoading = false) }
+            }
+        }
+    }
+    /** Both revisions came from the owner-reviewed confirmation; never substitute a later current revision. */
+    fun restorePersonality(confirmation: PersonalityRestore) {
+        if (!current(confirmation.scope)) return
+        mutatePersonality(confirmation.scope,
+            { api.restorePersonality(confirmation.targetRevision, confirmation.expectedRevision) }, "Observed personality version restored.")
+    }
+    private fun mutatePersonality(expectedScope: Long, operation: suspend () -> Personality, notice: String) {
+        if (!current(expectedScope) || _state.value.personalityBusy) return
+        val request = ++personalityEpoch
+        personalityJob?.cancel(); personalityVersionJob?.cancel(); personalityVersionEpoch++
+        _state.update { it.copy(personalityBusy = true, personalityLoading = false, personalityVersionLoading = false,
+            personalityError = null, personalityErrorCode = null, personalityNotice = null) }
+        personalityJob = viewModelScope.launch {
+            if (!personalityCurrent(expectedScope, request)) return@launch
+            try {
+                val result = operation()
+                if (!personalityCurrent(expectedScope, request)) return@launch
+                _state.update { it.copy(personality = result, personalityDraft = null, personalityVersion = null,
+                    personalityNotice = if (result.changed == true) notice else "This personality version is already current.") }
+            } catch (error: ApiException) {
+                if (!personalityCurrent(expectedScope, request)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                if (error.code == "PERSONALITY_CONFLICT") {
+                    _state.update { it.copy(personalityDraft = it.personalityDraft?.copy(conflicted = true)) }
+                    val fresh = try { api.personality() } catch (failure: ApiException) {
+                        if (personalityCurrent(expectedScope, request) && failure.signedOut) signedOut()
+                        null
+                    }
+                    if (!personalityCurrent(expectedScope, request)) return@launch
+                    _state.update { it.copy(personality = fresh ?: it.personality, personalityErrorCode = error.code,
+                        personalityError = if (fresh != null) "The personality changed. The latest version is loaded; any draft is kept. Review before changing it."
+                        else "The personality changed, but the latest version could not be loaded. Any draft is kept. Reload before changing it.") }
+                } else _state.update { it.copy(personalityError = personalityProblem(error), personalityErrorCode = error.code) }
+            } finally { if (personalityCurrent(expectedScope, request)) _state.update { it.copy(personalityBusy = false) } }
+        }
+    }
+
     fun loadMemories() {
         if (_state.value.memoryBusy) return
         val version = scope
@@ -375,6 +489,11 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     private fun invalidateFiles(stopPolling: Boolean = true) {
         scope++
+        personalityEpoch++; personalityVersionEpoch++
+        personalityJob?.cancel(); personalityJob = null; personalityVersionJob?.cancel(); personalityVersionJob = null
+        _state.update { it.copy(personality = null, personalityDraft = null, personalityVersion = null,
+            personalityLoading = false, personalityVersionLoading = false, personalityBusy = false,
+            personalityError = null, personalityErrorCode = null, personalityNotice = null) }
         memoryEpoch++; memoryJob?.cancel(); memoryJob = null
         memoryExports.toList().forEach { it.cancel() }; memoryExports.clear()
         _state.update { it.copy(scope = scope, memories = null, memoryRevision = null, memoriesFailed = false,

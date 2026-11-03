@@ -136,6 +136,54 @@ Successful mutations return the canonical snapshot plus `changed`, `removed` or 
 are rejected; owner/workspace selection is always server-derived. Older clients without revisions must update
 before changing notes; they cannot bypass conflict checking.
 
+## Private personality controls and observed history
+
+The Look page on web and Android shows the complete native `SOUL.md`, its file-modified date, a full-text
+editor, and the last 20 distinct versions the app observed for this companion. Native personality growth and
+its one-sentence announcement stay as instructed in AGENTS; suggestions remain ordinary private chat.
+There is no proposal queue, trait framework, Board disclosure or new permission. Name/look remain the existing
+profile controls. Personality writes do not change goals, credentials, account identity or dispatch authority.
+
+History is app-observed history, not an audit of every native edit. An actual native turn is observed after its
+provider closes, including silent wakes, cancellation and errors; quiet queued wakes and delivery-only attempts
+do not invent observations. Owner edits/restores retain the previous bytes before replacing them, then record
+the resulting bytes. Identical bytes are deduplicated; revisiting a retained version moves it to the latest
+observation. Earlier versions beyond 20 distinct retained contents are evicted. File date and app-observed date
+are separate metadata, not per-trait provenance. Existing older bytes cannot be recovered retroactively.
+
+Select an observed version to see its complete text and a simple line comparison. Restore requires explicit
+confirmation pinned to that target and the current full-file revision. A changed file or evicted version is
+refused; clients keep an unsaved draft on conflict and require a fresh review rather than silently adopting a
+new revision. Edits/restores reuse the idle owner lane and durable session reset before atomic file replacement.
+Native edits can evolve the file again later. Prior chat, provider retention, exported copies and backups are
+not erased by personality controls. SOUL and its history stay outside memory export and Forget everything.
+
+**Deployment/backup:** this change adds one private SQLite table, `personality_versions`, without changing the
+bootstrap `user_version` or existing tables. Back up the private DB before first startup. The table retains full
+private SOUL bytes and must follow the installation's private-data/backup policy. Rolling back the application
+does not delete the additive table or old backups. No live migration, pairing or grant is performed by the
+source handoff. A history/reset failure before publication leaves SOUL unchanged; a later observation/read
+failure can occur after replacement and returns an error rather than claiming success. Reload to reconcile
+the current bytes before retrying. A failed turn observation does not fail the conversation; the operator gets
+a fixed diagnostic and only successfully observed versions appear in history.
+
+Protocol on the existing owner-authenticated `POST /api/companion`: `personality` returns
+`{file,content,revision,modifiedAtISO,history,historyLimit:20}`. History is newest first with
+`{revision,observedAtISO,modifiedAtISO,source}`; a first read can have no history and does not capture a version.
+`personalityVersion` plus `revision` returns `{version:{...metadata,content}}` for this owner's retained target.
+`editPersonality` takes `content,expectedRevision`; `restorePersonality` takes `revision,expectedRevision,confirm:true`.
+Mutations return the current snapshot plus `changed`. Sources are `settled_turn`, `before_owner_change`,
+`owner_edit`, `owner_restore`. Missing, malformed, oversized, unsafe and stale content is explicitly refused;
+file bytes are complete UTF8, at most 256KiB, with BOM/newlines preserved. There is no public SOUL/history route.
+
+The companion JSON request limit is now 2MiB, allowing escaped full-file edits while individual file limits remain
+256KiB. The installed nginx configuration from file sharing kept other routes at 64k: the deployment reviewer
+must inspect the effective mount and raise ONLY the exact private `/api/companion` location (typically externally
+`/companion/api/companion`) to `client_max_body_size 2m`, preserving its existing proxy path, headers and access
+rules. Leave the private file-upload location and all other limits unchanged. Back up the installed vhost, run
+`nginx -t` and reload through the operator, then verify signed-out refusal, a legitimate edit above 64k and an
+over-limit refusal. Do not modify or rerun the archived hash-pinned task5 bootstrap installer/templates.
+
 Voice comes later, with speech recognition and voices running on the server.
 
 ## Android app download

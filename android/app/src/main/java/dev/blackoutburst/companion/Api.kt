@@ -94,6 +94,25 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
         }), "cleared")
     }
     suspend fun exportMemory(): MemoryExport = parseMemoryExport(post(companion + "api/companion", buildJsonObject { put("action", "exportMemory") }))
+    suspend fun personality(): Personality = parsePersonality(post(companion + "api/companion", buildJsonObject { put("action", "personality") }))
+    suspend fun personalityVersion(revision: String): PersonalityVersion {
+        if (!memoryRevision(revision)) throw ApiException("INVALID_REQUEST")
+        return parsePersonalityVersion(post(companion + "api/companion", buildJsonObject {
+            put("action", "personalityVersion"); put("revision", revision)
+        }), revision)
+    }
+    suspend fun editPersonality(content: String, expectedRevision: String): Personality {
+        if (!validPersonalityContent(content) || !memoryRevision(expectedRevision)) throw ApiException("INVALID_REQUEST")
+        return parsePersonality(post(companion + "api/companion", buildJsonObject {
+            put("action", "editPersonality"); put("content", content); put("expectedRevision", expectedRevision)
+        }), mutation = true)
+    }
+    suspend fun restorePersonality(revision: String, expectedRevision: String): Personality {
+        if (!memoryRevision(revision) || !memoryRevision(expectedRevision)) throw ApiException("INVALID_REQUEST")
+        return parsePersonality(post(companion + "api/companion", buildJsonObject {
+            put("action", "restorePersonality"); put("revision", revision); put("expectedRevision", expectedRevision); put("confirm", true)
+        }), mutation = true)
+    }
     private fun checkMemoryChange(file: String, id: String, revision: String) {
         if (!writableMemory(file) || !memoryItemId(id) || !memoryRevision(revision)) throw ApiException("INVALID_REQUEST")
     }

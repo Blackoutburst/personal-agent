@@ -82,6 +82,49 @@ async function settle(app, proof, threadId, from = '0') {
 const newThread = async (app, proof = A, requestId = 'new-1') =>
   (await post(app, { action: 'createThread', requestId, title: 'New conversation' }, proof)).body.thread.id;
 
+test('personality HTTP controls are private, complete, revision-bound and preserve other owner sessions and memory', async t => {
+  const f=setup(t), app=await f.open(); await ready(f,app);
+  const api=async(body,proof=A)=>{
+    const response=await fetch(app.url+'/api/companion',{method:'POST',headers:{Origin:app.url,'Content-Type':'application/json',...(proof?{Cookie:COOKIE(proof)}:{})},body:JSON.stringify(body)});
+    return {status:response.status,body:await response.json()};
+  };
+  assert.equal((await api({action:'personality'},null)).status,401);
+  assert.equal((await fetch(app.url+'/SOUL.md')).status,404); assert.equal((await fetch(app.url+'/personality_versions')).status,404);
+  assert.equal((await fetch(app.url+'/personality-ui.mjs')).status,200);
+  assert.equal((await api({action:'personality'})).status,200,'first use initializes only the normal native workspace');
+  await api({action:'memory'}); await api({action:'memory'},B);
+  const workspace=join(dirname(f.home('blackout')),'workspace'), other=join(dirname(f.home('screamer')),'workspace');
+  writeFileSync(join(workspace,'SOUL.md'),'\uFEFF# Voice\r\nOriginal raw prose.\r\n'); writeFileSync(join(other,'SOUL.md'),'OTHER-OWNER-PERSONALITY');
+  const initial=(await api({action:'personality'})).body;
+  assert.equal(initial.content,'\uFEFF# Voice\r\nOriginal raw prose.\r\n'); assert.deepEqual(initial.history,[]);
+  assert.equal((await api({action:'personalityVersion',revision:initial.revision},B)).status,404);
+  const threadId=await newThread(app,A,'personality-owner-a'), otherThread=await newThread(app,B,'personality-owner-b');
+  await post(app,{action:'submit',threadId,requestId:'personality-a',text:'Hello'});
+  await post(app,{action:'submit',threadId:otherThread,requestId:'personality-b',text:'Hello'},B); await app.conversations.idle();
+  const otherSession=app.store.db.prepare('SELECT provider_session FROM conv_threads WHERE id=?').get(otherThread).provider_session;
+  const observed=(await api({action:'personality'})).body; assert.equal(observed.history[0].revision,initial.revision);
+  const content='\uFEFF# Voice\r\n'+('Full prose beyond old request limit.\t\r\n'.repeat(2400));
+  const changed=await api({action:'editPersonality',content,expectedRevision:initial.revision}); assert.equal(changed.status,200); assert.equal(changed.body.content,content);
+  assert.equal(app.store.db.prepare('SELECT provider_session FROM conv_threads WHERE id=?').get(threadId).provider_session,null);
+  assert.equal(app.store.db.prepare('SELECT provider_session FROM conv_threads WHERE id=?').get(otherThread).provider_session,otherSession);
+  assert.equal((await api({action:'editPersonality',content:'stale',expectedRevision:initial.revision})).status,409);
+  assert.equal((await api({action:'restorePersonality',revision:initial.revision,expectedRevision:changed.body.revision,confirm:true},B)).status,404);
+  const restored=await api({action:'restorePersonality',revision:initial.revision,expectedRevision:changed.body.revision,confirm:true});
+  assert.equal(restored.status,200); assert.equal(restored.body.content,initial.content); assert.equal(restored.body.history[0].source,'owner_restore');
+  const notes=(await api({action:'memory'})).body;
+  assert.equal((await api({action:'forgetAll',confirm:true,expectedRevision:notes.revision})).status,200);
+  assert.equal((await api({action:'personality'})).body.content,initial.content);
+  assert.ok(!JSON.stringify((await api({action:'exportMemory'})).body).includes('Original raw prose'));
+  assert.equal((await api({action:'personality',companionId:'foreign'})).status,400);
+  assert.equal((await api({action:'editPersonality',content:'x'.repeat(2*1024*1024+1),expectedRevision:initial.revision})).status,413);
+  await app.close();
+  const restarted=await f.open(); await ready(f,restarted);
+  const response=await fetch(restarted.url+'/api/companion',{method:'POST',headers:{Origin:restarted.url,'Content-Type':'application/json',Cookie:COOKIE(A)},body:JSON.stringify({action:'personality'})});
+  assert.equal(response.status,200); const retained=await response.json();
+  assert.equal(retained.content,initial.content); assert.equal(retained.history.length,2);
+  assert.equal(retained.history[0].revision,initial.revision,'private history survives a closed connection and server restart');
+});
+
 test('complete private memory controls use current file CAS and export only the signed-in owner notes and diary', async t => {
   const f = setup(t), app = await f.open(); await ready(f, app);
   const module = await fetch(app.url + '/memory-ui.mjs');

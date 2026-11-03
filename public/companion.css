@@ -158,6 +158,21 @@ main { flex: 1; min-height: 0; display: flex; }
 .memory-item .forget { flex: none; border: 0; background: none; color: var(--soft); font-size: 13px; font-weight: 600; padding: 6px 10px; border-radius: 999px; cursor: pointer; }
 .memory-item .forget:hover { background: var(--danger-bg); color: var(--danger); }
 .memory-item.confirming { background: var(--danger-bg); }
+.personality { min-width: 0; }
+.personality-actions, .personality-history li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.personality button { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 12px; padding: 8px 12px; cursor: pointer; }
+.personality button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.personality button:disabled { opacity: .55; cursor: default; }
+.personality-source { color: var(--soft); font-size: 12px; overflow-wrap: anywhere; line-height: 1.5; }
+.personality-content { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 14px; line-height: 1.5; padding: 16px; border-radius: 14px; background: var(--glass); }
+.personality-editor, .personality-version { min-width: 0; padding: 16px; margin: 16px 0; border: 1px solid var(--line); border-radius: 16px; }
+.personality-editor label { display: block; flex: 1 1 100%; min-width: 0; }
+.personality-editor textarea { display: block; box-sizing: border-box; width: 100%; margin: 10px 0; padding: 12px; font: inherit; color: var(--ink); background: var(--glass); border: 1px solid var(--line); border-radius: 12px; }
+.personality-history { list-style: none; padding: 0; }
+.personality-history li { justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.personality-history li span { min-width: 0; overflow-wrap: anywhere; }
+.personality-diff .removed { background: var(--danger-bg); }
+.personality-diff .added { border-left: 3px solid var(--shade); }
 .confirm { display: flex; gap: 6px; align-items: center; flex: none; font-size: 13px; color: var(--danger); }
 .confirm button { border: 0; border-radius: 999px; padding: 6px 12px; font-weight: 700; cursor: pointer; font-size: 13px; }
 .confirm .yes { background: var(--yes-bg); color: var(--yes-ink); } .confirm .no { background: var(--card); }
