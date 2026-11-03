@@ -9,6 +9,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { BootstrapStore } from '../src/store.mjs';
 import { Conversations, ConversationError } from '../src/conversations.mjs';
 import { DiscordLinks, DiscordBridge, chunks } from '../src/discord.mjs';
+import { FileStore } from '../src/files.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const TOKEN = 'MTA' + 'x'.repeat(56) + '.Gabcde.' + 'y'.repeat(30);
@@ -19,7 +20,12 @@ const STRANGER = { id: '333333333333333333', username: 'someone' };
 // A fake Discord: REST over fetch and a gateway socket the test drives.
 function fakeDiscord({ me = BOT } = {}) {
   const sent = [], sockets = [];
+  const PNG = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(64, 7)]);
   const fetchImpl = async (url, spec) => {
+    if (new URL(url).hostname === 'cdn.discordapp.com') {
+      assert.equal(spec.headers.Authorization, undefined, 'The bot token never goes to the CDN');
+      return url.includes('missing') ? new Response('', { status: 404 }) : new Response(PNG);
+    }
     const path = new URL(url).pathname.replace('/api/v10', '');
     assert.equal(spec.headers.Authorization, 'Bot ' + TOKEN);
     if (path === '/users/@me') return me ? Response.json(me) : new Response('{}', { status: 401 });
@@ -33,22 +39,24 @@ function fakeDiscord({ me = BOT } = {}) {
     send(text) { this.out.push(JSON.parse(text)); if (JSON.parse(text).op === 2) queueMicrotask(() => this.emit({ op: 0, t: 'READY', s: 1, d: { user: BOT } })); }
     close(code = 1000) { queueMicrotask(() => this.dispatchEvent(Object.assign(new Event('close'), { code }))); }
     emit(packet) { this.dispatchEvent(Object.assign(new Event('message'), { data: JSON.stringify(packet) })); }
-    dm(author, content, id = String(Date.now()) + String(Math.floor(Math.random() * 1000)).padStart(3, '0')) {
-      this.emit({ op: 0, t: 'MESSAGE_CREATE', s: 2, d: { id, channel_id: '444444444444444444', author, content } });
+    dm(author, content, id = String(Date.now()) + String(Math.floor(Math.random() * 1000)).padStart(3, '0'), attachments) {
+      this.emit({ op: 0, t: 'MESSAGE_CREATE', s: 2, d: { id, channel_id: '444444444444444444', author, content,
+        ...(attachments ? { attachments } : {}) } });
     }
   }
-  return { sent, sockets, fetchImpl, WebSocketImpl: Socket };
+  return { sent, sockets, fetchImpl, WebSocketImpl: Socket, PNG };
 }
 
-function fixture(t, { handler, me } = {}) {
+function fixture(t, { handler, me, withFiles = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'discord-')), store = new BootstrapStore(dir, ROOT);
   const discord = fakeDiscord({ me }), companionId = randomUUID();
+  const files = withFiles ? new FileStore({ store, dataDir: dir, workspaceFor: () => ({ dir }) }) : null;
   let bridge;
-  const conversations = new Conversations({ store, flushMs: 1, systemPrompt: () => 'persona',
+  const conversations = new Conversations({ store, flushMs: 1, systemPrompt: () => 'persona', files,
     runner: { turn: async (id, turn) => (handler ?? (() => ({ text: 'Hello from Pip!' })))(id, turn) },
     onSettled: event => bridge.settled(event) });
   const links = new DiscordLinks({ store });
-  bridge = new DiscordBridge({ links, conversations, fetchImpl: discord.fetchImpl, WebSocketImpl: discord.WebSocketImpl });
+  bridge = new DiscordBridge({ links, conversations, files, fetchImpl: discord.fetchImpl, WebSocketImpl: discord.WebSocketImpl });
   t.after(async () => { bridge.stop(); await conversations.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { store, discord, companionId, conversations, links, bridge };
 }
@@ -131,6 +139,51 @@ test('a DM from the owner becomes a turn in the ongoing chat and the reply comes
   assert.ok(replies.every(reply => reply.content.length <= 2000 && reply.channel === '444444444444444444'));
   assert.ok(!replies[0].content.includes('[feeling'), 'The feeling tag never shows');
   assert.deepEqual(replies[0].allowed_mentions, { parse: [] });
+});
+
+test('Discord turns carry a channel note; the stored message is only what the owner wrote', async t => {
+  const turns = [];
+  const f = await linked(t, { handler: (_id, turn) => { turns.push(turn); return { text: 'Hey!' }; } });
+  f.socket.dm(OWNER, 'Are we on Discord?');
+  await f.conversations.idle(); await sleep(10);
+  assert.match(turns[0].prompt, /^Are we on Discord\?/);
+  assert.match(turns[0].prompt, /Discord DM with you/);
+  assert.match(turns[0].prompt, /not tables/);
+  const stored = f.store.db.prepare("SELECT text FROM conv_messages WHERE role='user'").get().text;
+  assert.equal(stored, 'Are we on Discord?');
+});
+
+test('attachments from the DM are fetched into the chat and shown to the companion like app uploads', async t => {
+  const turns = [];
+  const f = await linked(t, { withFiles: true, handler: (_id, turn) => { turns.push(turn); return { text: 'Nice screenshot.' }; } });
+  const png = f.discord.PNG;
+  const shot = { id: '666666666666666666', filename: 'Capture d’écran.png', size: png.length,
+    url: 'https://cdn.discordapp.com/attachments/1/2/shot.png?ex=1&hm=2', content_type: 'image/png' };
+  f.socket.dm(OWNER, '', '777777777777777777', [shot]);
+  await f.conversations.idle(); await sleep(10);
+  assert.equal(turns.length, 1, 'An image-only message is a turn');
+  assert.equal(turns[0].images.length, 1);
+  assert.match(turns[0].prompt, /Capture d’écran\.png/);
+  const file = f.store.db.prepare('SELECT name, mime, size, message_id FROM conv_files').get();
+  assert.deepEqual({ ...file, message_id: Boolean(file.message_id) }, { name: 'Capture d’écran.png', mime: 'image/png', size: png.length, message_id: true });
+  assert.equal(f.discord.sent.at(-1).content, 'Nice screenshot.');
+  // Foreign hosts and failed downloads are skipped with a note; the text still gets an answer.
+  f.socket.dm(OWNER, 'And these?', '888888888888888888', [
+    { ...shot, id: '666666666666666667', filename: 'evil.png', url: 'https://example.com/evil.png' },
+    { ...shot, id: '666666666666666668', filename: 'gone.png', url: 'https://cdn.discordapp.com/attachments/missing.png' }]);
+  await f.conversations.idle(); await sleep(10);
+  assert.ok(f.discord.sent.some(item => /couldn’t receive “evil\.png”, “gone\.png”; answering the rest/.test(item.content)));
+  assert.equal(turns.length, 2);
+  assert.equal(turns[1].images.length, 0);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM conv_files').get().n, 1);
+});
+
+test('without a file store, attachments get a short refusal and no turn', async t => {
+  const f = await linked(t);
+  f.socket.dm(OWNER, '', '999999999999999990', [{ id: '666666666666666666', filename: 'a.png', size: 10, url: 'https://cdn.discordapp.com/a.png' }]);
+  await sleep(20);
+  assert.match(f.discord.sent.at(-1).content, /can’t receive files here yet/);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM conv_messages').get().n, 0);
 });
 
 test('a busy chat answers politely instead of losing the message', async t => {

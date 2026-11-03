@@ -13,6 +13,10 @@ const SNOWFLAKE = /^[0-9]{5,25}$/;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CODE_TTL_MS = 60 * 60_000;
 const DISCORD_CHARS = 2000;
+// Attachments the owner sends in the DM are fetched from Discord's CDN into the chat's file store, like app uploads.
+const CDN_HOSTS = new Set(['cdn.discordapp.com', 'media.discordapp.net']);
+const MAX_ATTACHMENTS = 8;
+const DOWNLOAD_MS = 60_000;
 // Close codes after which reconnecting with the same token can never work.
 const FATAL = { 4004: 'INVALID_TOKEN', 4010: 'INVALID_TOKEN', 4011: 'INVALID_TOKEN', 4012: 'INVALID_TOKEN', 4013: 'INVALID_TOKEN', 4014: 'DISALLOWED_INTENTS' };
 
@@ -131,9 +135,10 @@ class Gateway {
 }
 
 export class DiscordBridge {
-  #links; #conversations; #fetch; #WebSocket; #gateways = new Map(); #states = new Map(); #pending = new Map(); #log;
-  constructor({ links, conversations, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, log = () => {} }) {
-    this.#links = links; this.#conversations = conversations; this.#fetch = fetchImpl; this.#WebSocket = WebSocketImpl; this.#log = log;
+  #links; #conversations; #files; #fetch; #WebSocket; #gateways = new Map(); #states = new Map(); #pending = new Map(); #log;
+  // files: the chat FileStore. Without it, attachments are refused with a short note.
+  constructor({ links, conversations, files = null, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, log = () => {} }) {
+    this.#links = links; this.#conversations = conversations; this.#files = files; this.#fetch = fetchImpl; this.#WebSocket = WebSocketImpl; this.#log = log;
   }
 
   start() { for (const link of this.#links.all()) if (!link.problem) this.#connect(link.companion_id, link.token); }
@@ -221,15 +226,23 @@ export class DiscordBridge {
     }
     if (message.author.id !== link.user_id) return; // Only the paired owner.
     if (message.channel_id !== link.channel_id) this.#links.channel(companionId, message.channel_id);
-    if (!text) { await this.#say(link, message.channel_id, '*I can only read text messages for now.*'); return; }
+    const sent = Array.isArray(message.attachments) ? message.attachments : [];
+    if (!text && !sent.length) { await this.#say(link, message.channel_id, '*I can only read text and files.*'); return; }
     if (text.length > 8000) { await this.#say(link, message.channel_id, '*That message is too long for me (8,000 characters at most).*'); return; }
+    if (sent.length && !this.#files) { await this.#say(link, message.channel_id, '*I can’t receive files here yet. Send them in the app.*'); return; }
+    if (sent.length > MAX_ATTACHMENTS) { await this.#say(link, message.channel_id, `*Send at most ${MAX_ATTACHMENTS} files per message.*`); return; }
     const requestId = 'discord-' + message.id;
     try {
       const threadId = this.#conversations.ongoingThread(companionId);
       const typing = setInterval(() => this.#rest(link.token, 'POST', `/channels/${message.channel_id}/typing`).catch(() => {}), 8000);
       this.#pending.set(requestId, { id: message.channel_id, typing });
       this.#rest(link.token, 'POST', `/channels/${message.channel_id}/typing`).catch(() => {});
-      await this.#conversations.handle(companionId, { action: 'submit', requestId, threadId, text });
+      const { ids, skipped } = await this.#download(companionId, threadId, message.id, sent);
+      if (skipped.length) await this.#say(link, message.channel_id, `*I couldn’t receive ${skipped.map(name => `“${name}”`).join(', ')}${
+        ids.length || text ? '; answering the rest' : ''}.*`);
+      if (!ids.length && !text) { clearInterval(typing); this.#pending.delete(requestId); return; }
+      await this.#conversations.handle(companionId, { action: 'submit', requestId, threadId, text,
+        ...(ids.length ? { attachments: ids } : {}) });
     } catch (error) {
       clearInterval(this.#pending.get(requestId)?.typing);
       this.#pending.delete(requestId);
@@ -237,6 +250,29 @@ export class DiscordBridge {
       await this.#say(link, message.channel_id, busy ? '*I’m still answering something else. Send it again in a moment.*'
         : '*I couldn’t take that message right now. Try again in a moment.*');
     }
+  }
+
+  // Fetches each Discord attachment into the chat file store. Returns the stored ids and the names it could not take.
+  async #download(companionId, threadId, messageId, attachments) {
+    const ids = [], skipped = [];
+    for (const attachment of attachments) {
+      const name = safeName(attachment?.filename);
+      try {
+        const url = new URL(String(attachment?.url ?? ''));
+        if (url.protocol !== 'https:' || !CDN_HOSTS.has(url.hostname) || !SNOWFLAKE.test(attachment?.id ?? '')
+            || !Number.isSafeInteger(attachment?.size) || attachment.size <= 0) throw new Error('INVALID_ATTACHMENT');
+        const response = await this.#fetch(url.href, { redirect: 'error', signal: AbortSignal.timeout(DOWNLOAD_MS),
+          headers: { 'User-Agent': 'DiscordBot (https://blackoutburst.com, 1.0)' } });
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+        const file = await this.#files.upload(companionId, { threadId, requestId: `dc-${messageId}-${attachment.id}`, name,
+          size: attachment.size }, response.body);
+        ids.push(file.id);
+      } catch (error) {
+        this.#log(`Discord attachment skipped: ${error.code ?? error.message}`);
+        skipped.push(name);
+      }
+    }
+    return { ids, skipped };
   }
 
   async #say(link, channelId, text) {
@@ -258,4 +294,9 @@ export class DiscordBridge {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.status === 204 ? null : response.json();
   }
+}
+
+function safeName(value) {
+  const name = String(value ?? '').replace(/[\x00-\x1f\x7f/\\]/g, '_').trim().slice(0, 200);
+  return name && name !== '.' && name !== '..' && name.isWellFormed() ? name : 'file';
 }

@@ -19,6 +19,11 @@ const BOARD_PREFIX = 'mcp__board__';
 // the companion to answer on the Board, so those keep every Board tool the owner configured.
 const wakeToolFilter = kind => name => !['mcp__scheduler__create_release_watch', 'mcp__scheduler__update_release_watch'].includes(name)
   && (!name.startsWith(BOARD_PREFIX) || kind === 'board' || READ_ONLY_BOARD_TOOLS.includes(name.slice(BOARD_PREFIX.length)));
+// Turns that arrive through the owner's Discord DM (requestId "discord-<message id>", src/discord.mjs).
+const DISCORD_NOTE = '\n\n(Channel note from the app, not from the owner: this message came from your owner\'s Discord DM with you, '
+  + 'and your reply goes back there as Discord messages. It is the same conversation and memory as the app. Discord shows '
+  + 'bold, italic, strikethrough, inline and fenced code, quotes, lists, # headings and [text](url) links, but not tables: '
+  + 'use a list instead of a table there. Files you send with your file tool appear in the app, not in Discord.)';
 const ERROR_MESSAGES = {
   INTERRUPTED: 'The server restarted during this reply. Send your message again to retry.',
   BUSY: 'Wait for the current reply to finish or stop it first.'
@@ -791,7 +796,7 @@ export class Conversations {
         incoming.map(file => JSON.stringify({ name: file.name, type: file.mime, size: file.size, path: file.path })).join('\n') +
         '\nInspect attached images with your image input or native Read tool before describing them. For video or unsupported files, state what you can actually inspect; do not pretend you watched them.' : '';
       const turnInput = {
-        prompt: user.text + filePrompt, images: incoming.filter(file => file.mime.startsWith('image/')).map(file => file.path), appServers: fileTools.servers,
+        prompt: user.text + filePrompt + (requestId.startsWith('discord-') ? DISCORD_NOTE : ''), images: incoming.filter(file => file.mime.startsWith('image/')).map(file => file.path), appServers: fileTools.servers,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }), allowedTools: this.#allowedTools, signal: controller.signal,
         onEvent: event => {
           if (event.type === 'session' && live() && currentSession()) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(event.id, threadId);

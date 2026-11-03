@@ -356,7 +356,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       boardCompanion = new BoardCompanion({ store, owners, profiles, scheduler: schedulerService,
         companionIdFor: owner => companionIdFor(store, owner), log: message => console.error(message), ...boardOptions });
       // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
-      discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, ...discordOptions,
+      discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, files, ...discordOptions,
         log: message => console.error(message) });
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality, contacts, weather,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },

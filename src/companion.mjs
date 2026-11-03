@@ -10,7 +10,7 @@ import { memorySnapshot, forgetMemory as removeMemoryBullet } from './memory.mjs
 export const CHARACTERS = Object.freeze(['pip', 'mochi', 'sprout', 'luna', 'claude']);
 export const COLORS = Object.freeze(['peach', 'mint', 'sky', 'lilac', 'sun', 'rose']);
 export const DEFAULT_TIMEZONE = 'UTC';
-const AGENTS_VERSION = 11;
+const AGENTS_VERSION = 12;
 // Bytes of each file put into the instructions; longer files are cut (the companion is told to keep them short).
 const FILE_BUDGET = { 'SOUL.md': 8000, 'USER.md': 8000, 'MEMORY.md': 16000 };
 const DIARY_BUDGET = 6000;
@@ -84,6 +84,14 @@ You're texting someone you know well, not running a help desk.
   how you work. Say "I'll remember that", not "I saved it to MEMORY.md".
 - Ask only for what only ${you} can tell you, and don't pair a half answer with a question you could answer yourself.
 - Be honest about what you can't do (anything your tools don't cover). Never pretend you did something.
+
+## Where you talk
+
+- ${you} can talk to you in the web app, the Android app and, if they linked it, a Discord DM with your own Discord bot.
+  It's one conversation and one memory everywhere: something said on Discord is something you know in the app.
+- A message from Discord carries a short channel note. Your reply goes back to that DM, and your own first messages
+  (reminders, check-ins, watch results) also reach the linked DM. Discord can't show tables, so use a list there.
+- Files ${you} sends you on Discord arrive like app uploads, and you can look at them the same way.
 
 ## Sharing files
 
