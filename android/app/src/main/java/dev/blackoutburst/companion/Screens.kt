@@ -119,9 +119,9 @@ fun tonesFor(choice: ThemeChoice): Tones = when (choice) {
     ThemeChoice.Dark -> DarkTones
 }
 
-private enum class Tab(val label: String) { Chat("Chat"), Watches("Watches"), Me("Me") }
+private enum class Tab(val label: String) { Chat("Chat"), Calendar("Calendar"), Me("Me") }
 /** Sections of the Me tab; memories come first. */
-private enum class MeSection(val label: String) { Memories("Memories"), Companion("Companion"), Connectors("Connectors"), Settings("Settings") }
+private enum class MeSection(val label: String) { Memories("Memories"), Companion("Companion"), Watches("Watches"), Connectors("Connectors"), Settings("Settings") }
 
 @Composable
 fun CompanionApp(model: CompanionModel, tones: Tones, openBrowser: (android.net.Uri) -> Unit) {
@@ -177,7 +177,7 @@ private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExpo
         Box(Modifier.weight(1f)) {
             when (tab) {
                 Tab.Chat -> ChatScreen(model, state)
-                Tab.Watches -> WatchesScreen(model, state)
+                Tab.Calendar -> CalendarScreen(model, state)
                 Tab.Me -> MeScreen(model, state, memoryExport) { tab = Tab.Chat }
             }
         }
@@ -380,6 +380,7 @@ private fun MeScreen(model: CompanionModel, state: UiState, memoryExport: Memory
             when (section) {
                 MeSection.Memories -> MemoryPanel(model, state, memoryExport)
                 MeSection.Companion -> LookScreen(model, state, first = false, done = done)
+                MeSection.Watches -> WatchesScreen(model, state)
                 MeSection.Connectors -> ConnectorsScreen(model, state)
                 MeSection.Settings -> SettingsScreen(model, state)
             }

@@ -18,7 +18,7 @@
       </button>
       <nav id="nav" class="nav" aria-label="Pages" hidden>
         <a href="#chat" data-view="chat">Chat</a>
-        <a href="#watches" data-view="watches">Watches</a>
+        <a href="#calendar" data-view="calendar">Calendar</a>
         <a href="#me" data-view="me">Me</a>
       </nav>
     </header>
@@ -69,24 +69,17 @@
         </div>
       </section>
 
-      <section id="view-watches" class="view page watches-page" hidden>
-        <h1>Calendar &amp; watches</h1>
-        <p class="intro">Your calendar and everything your companion keeps an eye on for you. Ask in chat to add an event, a reminder, a release watch or a recurring topic watch.</p>
+      <section id="view-calendar" class="view page watches-page" hidden>
+        <h1>Calendar</h1>
+        <p class="intro">Your appointments, birthdays and plans. Add, edit or delete events here, or just ask in chat.</p>
         <section id="calendar-home" class="calendar-block" aria-label="Calendar" hidden></section>
-        <div id="upcoming" class="upcoming">
-          <div id="watches-home"></div>
-          <section class="reminders-block" aria-labelledby="reminders-title">
-            <h2 id="reminders-title">Reminders <span id="upcoming-count"></span></h2>
-            <p id="schedule-note" class="schedule-note" role="status"></p>
-            <ul id="schedule-list" class="schedule-list"></ul>
-          </section>
-        </div>
       </section>
 
       <section id="view-me" class="view page me-page" hidden>
       <nav id="me-tabs" class="me-tabs" aria-label="Me sections">
         <a href="#me" data-section="memories">Memories</a>
         <a href="#me/companion" data-section="companion">Companion</a>
+        <a href="#me/watches" data-section="watches">Watches</a>
         <a href="#me/connectors" data-section="connectors">Connectors</a>
         <a href="#me/settings" data-section="settings">Settings</a>
       </nav>
@@ -142,6 +135,18 @@
           <p>Talk to your companion from your phone. Everything stays in sync with this page.</p>
           <div class="actions"><a id="android-download" class="button primary" href="companion.apk" download>Download for Android</a></div>
           <p class="hint">Open the downloaded file on your phone to install it. Android may ask you to allow installs from your browser first.</p>
+        </div>
+      </section>
+      <section id="view-watches" class="me-section watches-page" aria-labelledby="watches-title" hidden>
+        <h1 id="watches-title">Watches &amp; reminders</h1>
+        <p class="intro">Everything your companion keeps an eye on for you. Ask in chat to add a reminder, a release watch or a recurring topic watch.</p>
+        <div id="upcoming" class="upcoming">
+          <div id="watches-home"></div>
+          <section class="reminders-block" aria-labelledby="reminders-title">
+            <h2 id="reminders-title">Reminders <span id="upcoming-count"></span></h2>
+            <p id="schedule-note" class="schedule-note" role="status"></p>
+            <ul id="schedule-list" class="schedule-list"></ul>
+          </section>
         </div>
       </section>
       <section id="view-connectors" class="me-section connectors" aria-labelledby="connectors-title" hidden>

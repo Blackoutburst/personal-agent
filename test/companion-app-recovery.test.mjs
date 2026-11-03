@@ -38,7 +38,7 @@ function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: prof
   for (const match of html.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"/g)) { const node = new Element(match[1]); node.id = match[2]; nodes.set(node.id, node); }
   const body = new Element('body'); for (const node of nodes.values()) body.append(node);
   const actions = new Element(), chat = new Element(); actions.className = 'conversation-actions'; body.append(actions, chat);
-  const nav = ['chat', 'watches', 'me'].map(view => Object.assign(new Element('a'), { dataset: { view } }));
+  const nav = ['chat', 'calendar', 'me'].map(view => Object.assign(new Element('a'), { dataset: { view } }));
   const theme = ['system', 'light', 'dark'].map(themeChoice => Object.assign(new Element('button'), { dataset: { themeChoice } }));
   const document = { body, title: '', visibilityState: 'visible', documentElement: new Element('html'), get activeElement() { return active; },
     getElementById: id => nodes.get(id) ?? all.find(node => node.id === id), createElement: tag => new Element(tag), createTextNode: text => Object.assign(new Element('#text'), { text }),

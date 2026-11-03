@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -87,6 +88,18 @@ internal fun calendarDays(view: CalendarView, mode: String): List<Pair<LocalDate
     }
     val days = if (mode == "week") (0 until 7).map { from.plusDays(it.toLong()) } else byDay.keys.sorted()
     return days.map { it to (byDay[it] ?: emptyList()) }
+}
+
+/** The Calendar tab: the calendar on its own page (watches and reminders are in Me › Watches). */
+@Composable
+fun CalendarScreen(model: CompanionModel, state: UiState) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
+        Text("Calendar", Modifier.padding(top = 20.dp), fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
+        Text("Your appointments, birthdays and plans. Add, edit or delete events here, or just ask ${state.name} in chat.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp)
+        CalendarSection(model, state)
+        Spacer(Modifier.height(24.dp))
+    }
 }
 
 @Composable

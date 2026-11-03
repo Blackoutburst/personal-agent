@@ -11,8 +11,8 @@ import { createWeatherUI } from './weather-ui.mjs';
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
 const fileTransport = createFileTransport();
-const calendarUI = createCalendarUI({ document, visible: () => view === 'watches' });
-const remindersUI = createRemindersUI({ document, visible: () => view === 'watches' || (view === 'me' && meSection === 'settings') });
+const calendarUI = createCalendarUI({ document, visible: () => view === 'calendar' });
+const remindersUI = createRemindersUI({ document, visible: () => view === 'me' && (meSection === 'watches' || meSection === 'settings') });
 const memoryUI = createMemoryUI({ document, api, onDenied: fileAccessDenied });
 const personalityUI = createPersonalityUI({ document, api, onDenied: fileAccessDenied });
 const contactUI = createContactUI({ document, api, onDenied: fileAccessDenied });
@@ -87,8 +87,8 @@ function linkify(container, text) {
 
 // ---------- Views ----------
 
-// Views: chat, watches, me (memories, the companion's look and settings), plus first-run setup ('look' alone).
-// The Me tab has sub-pages like the Android app: #me (memories), #me/companion and #me/settings.
+// Views: chat, calendar, me (memories, the companion's look, watches, connectors and settings), plus first-run setup ('look' alone).
+// The Me tab has sub-pages like the Android app: #me (memories), #me/companion, #me/watches, #me/connectors and #me/settings.
 let meSection = 'memories';
 const lookShown = () => view === 'look' || (view === 'me' && meSection === 'companion');
 const connectorsShown = () => view === 'me' && meSection === 'connectors';
@@ -96,13 +96,14 @@ function show(next) {
   view = next;
   if (!connectorsShown()) { clearTimeout(discordTimer); discordTimer = null; }
   $('app').dataset.view = next;
-  for (const name of ['loading', 'gate', 'chat', 'watches']) $(`view-${name}`).hidden = name !== next;
+  for (const name of ['loading', 'gate', 'chat', 'calendar']) $(`view-${name}`).hidden = name !== next;
   $('view-me').hidden = next !== 'me' && next !== 'look';
   $('me-tabs').hidden = next !== 'me';
   $('view-look').hidden = !lookShown();
   $('view-memories').hidden = !(next === 'me' && meSection === 'memories');
   $('view-settings').hidden = !(next === 'me' && meSection === 'settings');
   $('view-connectors').hidden = !connectorsShown();
+  $('view-watches').hidden = !(next === 'me' && meSection === 'watches');
   for (const link of document.querySelectorAll('#me-tabs a')) {
     if (next === 'me' && link.dataset.section === meSection) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   }
@@ -114,8 +115,8 @@ function show(next) {
   if (next === 'me' && meSection === 'memories') loadMemories();
   if (connectorsShown()) { $('discord-pick').hidden = false; void loadConnectors(); void loadDiscord(); }
   if (lookShown()) startLook();
-  if (next === 'watches' || (next === 'me' && meSection === 'settings')) void remindersUI.show();
-  if (next === 'watches') void calendarUI.show();
+  if (next === 'me' && (meSection === 'watches' || meSection === 'settings')) void remindersUI.show();
+  if (next === 'calendar') void calendarUI.show();
   if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); }
   renderAll();
 }
@@ -130,10 +131,11 @@ function gate(title, text, { signIn = false, retry = false } = {}) {
 function route() {
   if (!profile) return show('look');
   const hash = location.hash.replace('#', '');
-  // #memories and #look are older links into what is now the Me tab.
-  const me = { me: 'memories', memories: 'memories', 'me/companion': 'companion', look: 'companion', 'me/connectors': 'connectors', 'me/settings': 'settings' }[hash];
+  // #memories, #look and #watches are older links into what is now the Me tab.
+  const me = { me: 'memories', memories: 'memories', 'me/companion': 'companion', look: 'companion', 'me/watches': 'watches', watches: 'watches',
+    'me/connectors': 'connectors', 'me/settings': 'settings' }[hash];
   if (me) meSection = me;
-  show(hash === 'watches' ? 'watches' : me ? 'me' : 'chat');
+  show(hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
 }
 
 async function start() {

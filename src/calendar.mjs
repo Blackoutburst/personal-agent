@@ -1,4 +1,4 @@
-// Calendar (#44): the owner's events, shown in the Watches tab and editable by the owner or by the companion from chat.
+// Calendar (#44): the owner's events, shown in the Calendar tab and editable by the owner or by the companion from chat.
 //
 // Events are stored as the owner's local wall time ("2026-11-04T14:30", or a date for all-day events) so they stay put
 // when the clock changes for summer time. An event may repeat every year (birthdays, anniversaries); 29 February falls on

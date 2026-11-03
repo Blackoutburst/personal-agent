@@ -35,7 +35,7 @@ function watchList(value) {
   });
 }
 
-// The Watches tab (reminders, release and topic watches) and the schedule settings in the Me tab. Identity remains in the authenticated API.
+// Me › Watches (reminders, release and topic watches) and the schedule settings in the Me tab. Identity remains in the authenticated API.
 export function createRemindersUI({ document, fetchImpl = fetch, requestId = () => globalThis.crypto.randomUUID(), visible = () => false }) {
   const $ = id => document.getElementById(id);
   let schedules = null, generation = 0, ownerEpoch = 0, busy = false, message = null, dirty = false, editVersion = 0;

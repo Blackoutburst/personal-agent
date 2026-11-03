@@ -87,7 +87,7 @@ private fun WatchCard(content: @Composable () -> Unit) {
         .background(MaterialTheme.colorScheme.surface).padding(14.dp)) { content() }
 }
 
-/** The Watches tab: release and topic watches, then reminders (docs/SCHEDULER.md). */
+/** Me › Watches: release and topic watches, then reminders (docs/SCHEDULER.md). */
 @Composable
 fun WatchesScreen(model: CompanionModel, state: UiState) {
     LaunchedEffect(state.scope) { model.loadSchedules() }
@@ -102,8 +102,8 @@ fun WatchesScreen(model: CompanionModel, state: UiState) {
     val locked = state.schedulesBusy || state.watchRetry != null
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         item {
-            Text("Calendar & watches", Modifier.padding(top = 20.dp), fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = ink)
-            Text("Ask ${state.name} in chat to add an event, watch for a release, follow a topic or remind you of something.", color = soft, fontSize = 15.sp)
+            Text("Watches & reminders", Modifier.padding(top = 20.dp), fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = ink)
+            Text("Ask ${state.name} in chat to watch for a release, follow a topic or remind you of something.", color = soft, fontSize = 15.sp)
             Row {
                 ActionButton(enabled = !state.schedulesBusy && !state.schedulesLoading, onClick = { model.loadSchedules() }) {
                     Text(if (state.schedulesLoading) "Loading…" else "Reload")
@@ -118,7 +118,6 @@ fun WatchesScreen(model: CompanionModel, state: UiState) {
                 }
             }
         }
-        item { CalendarSection(model, state) }
         item {
             Spacer(Modifier.height(10.dp))
             Text("Watches", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = ink)

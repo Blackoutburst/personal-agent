@@ -1,4 +1,4 @@
-// The calendar (#44) at the top of the Watches tab: a week view and an agenda, an event editor, and the French public
+// The calendar (#44) on the Calendar tab: a week view and an agenda, an event editor, and the French public
 // holidays switch. Events and holidays come from /api/schedules (src/calendar.mjs); identity stays in the session.
 const DAY = 86400000;
 const REMINDERS = [[null, 'No reminder'], [0, 'When it starts'], [10, '10 minutes before'], [30, '30 minutes before'], [60, '1 hour before'],

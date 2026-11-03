@@ -91,13 +91,13 @@ data class UiState(
     val connectors: List<Connector>? = null,
     val connectorsBusy: Boolean = false,
     val connectorsError: String? = null,
-    /** Calendar (#44) at the top of the Watches tab. calendarMode: "week" or "agenda". */
+    /** Calendar (#44), the Calendar tab. calendarMode: "week" or "agenda". */
     val calendar: CalendarView? = null,
     val calendarMode: String = "week",
     val calendarBusy: Boolean = false,
     val calendarError: String? = null,
     val calendarNotice: String? = null,
-    /** Watches tab and schedule settings (api/schedules). */
+    /** Me › Watches and schedule settings (api/schedules). */
     val schedules: Schedules? = null,
     val schedulesLoading: Boolean = false,
     val schedulesBusy: Boolean = false,
