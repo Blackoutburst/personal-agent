@@ -44,6 +44,31 @@ function sessionCandidates(request) {
 }
 const MAX_SESSION_CANDIDATES = 3;
 
+// Temporary sign-in diagnostics (iPhone loop, Nov 2026): shapes only. Never cookie values, names of other cookies'
+// values, account ids or addresses. Remove once the loop is understood.
+function refusalDiagnostic(request, reason) {
+  try {
+    const sessions = [];
+    let cookieHeaders = 0, cookies = 0;
+    for (const header of rawValues(request, 'cookie')) {
+      cookieHeaders++;
+      for (const part of header.split(';')) {
+        const pair = part.trim(); if (!pair) continue; cookies++;
+        const equals = pair.indexOf('='), name = equals >= 0 ? pair.slice(0, equals).trim() : pair;
+        if (/blackout_session/i.test(name)) {
+          const value = equals >= 0 ? pair.slice(equals + 1) : '';
+          sessions.push(`${name}(len ${value.length}, ${/^[A-Za-z0-9_-]{43}$/.test(value) ? 'well-formed' : 'malformed'})`);
+        }
+      }
+    }
+    const agent = String(request.headers['user-agent'] ?? '');
+    const browser = /CriOS/.test(agent) ? 'chrome-ios' : /iPhone|iPad/.test(agent) ? 'ios-other' : /Android/.test(agent) ? 'android'
+      : /Chrome/.test(agent) ? 'chrome' : /Firefox/.test(agent) ? 'firefox' : /Safari/.test(agent) ? 'safari' : 'other';
+    console.error(`Companion sign-in refused: ${reason}; browser ${browser}; cookie headers ${cookieHeaders}; cookies ${cookies}; `
+      + `session cookies [${sessions.join(' ')}]; fetch-site ${request.headers['sec-fetch-site'] ?? '-'}`);
+  } catch { /* diagnostics never affect access */ }
+}
+
 export function readJsonBody(request, maximum) {
   if (Number(request.headers['content-length']) > maximum) return Promise.resolve({ failure: fail('BODY_TOO_LARGE', true) });
   return new Promise(resolve => {
@@ -110,7 +135,7 @@ export function createAccountAccess({ store, validateAccount, pilotSubjects, all
     },
     async authorize(request) {
       const candidates = sessionCandidates(request);
-      if (!candidates.length) return { failure: fail('AUTHENTICATION_REQUIRED') };
+      if (!candidates.length) { refusalDiagnostic(request, 'no-usable-session-cookie'); return { failure: fail('AUTHENTICATION_REQUIRED') }; }
       const provision = createCompanionProvisioner({ store, validateAccount, pilotSubjects });
       const admitted = new Set(), errors = [];
       for (const session of candidates) {
@@ -119,10 +144,11 @@ export function createAccountAccess({ store, validateAccount, pilotSubjects, all
       }
       // Exactly one account: a stale extra cookie is ignored, but two live sessions for different accounts are refused.
       if (admitted.size === 1) return { companionId: [...admitted][0] };
-      if (admitted.size > 1) return { failure: fail('AUTHENTICATION_REQUIRED') };
+      if (admitted.size > 1) { refusalDiagnostic(request, 'two-live-accounts'); return { failure: fail('AUTHENTICATION_REQUIRED') }; }
       const codes = errors.map(error => error instanceof CompanionAccessError ? error.code : null);
       const code = ['COMPANION_STATE_INVALID', 'COMPANION_STORE_UNAVAILABLE', 'ACCOUNT_VALIDATION_UNAVAILABLE', 'INVITATION_REQUIRED', 'AUTHENTICATION_REQUIRED']
         .find(known => codes.includes(known));
+      refusalDiagnostic(request, 'platform-said:' + codes.map(value => value ?? 'error').join(','));
       return { failure: fail(codes.includes(null) ? 'ACCOUNT_VALIDATION_UNAVAILABLE' : code) };
     }
   };
