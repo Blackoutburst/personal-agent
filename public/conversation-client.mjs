@@ -1,5 +1,6 @@
 const ID = /^[A-Za-z0-9._:-]{1,128}$/, REQUEST_ID = /^[A-Za-z0-9._-]{1,80}$/;
 const FILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const PEER_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const LIMIT = 16777216;
 // Mirrors src/conversations.mjs LIMITS.
 export const USER_CHARS = 8000, USER_BYTES = 32768;
@@ -213,8 +214,17 @@ function thread(value) {
 }
 function feeling(value, role) { check(role === 'assistant' && typeof value === 'string' && /^[a-z-]{1,20}$/.test(value)); return value; }
 function message(value, threadId) {
-  const selected = plain(value, ['id', 'threadId', 'role', 'text'], ['requestId', 'feeling', 'attachments']);
+  const selected = plain(value, ['id', 'threadId', 'role', 'text'], ['requestId', 'feeling', 'attachments', 'peer']);
   check(selected.threadId === threadId, 'RESYNC_REQUIRED');
+  if (selected.role === 'peer') {
+    check(Object.hasOwn(selected, 'peer') && !['requestId', 'feeling', 'attachments'].some(key => Object.hasOwn(selected, key)));
+    const peer = plain(selected.peer, ['direction', 'companionId', 'name', 'ownerLabel', 'sentAtISO']);
+    check(['sent', 'received'].includes(peer.direction) && typeof peer.companionId === 'string' && peer.companionId.length === 36 && PEER_ID.test(peer.companionId));
+    for (const key of ['name', 'ownerLabel']) { text(peer[key], 80, 320); check(peer[key] === peer[key].trim() && !/[\x00-\x1f\x7f]/.test(peer[key])); }
+    check(typeof peer.sentAtISO === 'string' && peer.sentAtISO.length === 24 && Number.isFinite(Date.parse(peer.sentAtISO)) && new Date(peer.sentAtISO).toISOString() === peer.sentAtISO);
+    return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: 'peer', text: text(selected.text, 4000, 16000), peer };
+  }
+  check(!Object.hasOwn(selected, 'peer'));
   check(selected.role === 'user' || selected.role === 'assistant');
   const files = Object.hasOwn(selected, 'attachments') ? array(selected.attachments, 8).map(parseAttachment) : [];
   check(new Set(files.map(file => file.id)).size === files.length && files.every(file => file.direction === (selected.role === 'user' ? 'user' : 'companion')));
@@ -277,7 +287,8 @@ function upsert(messages, next) {
   if (index === -1) { check(messages.length < 500); messages.push(next); }
   else { const before = messages[index]; check(before.threadId === next.threadId && before.role === next.role &&
     (!before.requestId || !next.requestId || before.requestId === next.requestId) &&
-    (before.role !== 'user' || (before.text === next.text && sameFiles(before.attachments ?? [], next.attachments ?? [])))); messages[index] = { ...before, ...next }; }
+    (before.role !== 'user' || (before.text === next.text && sameFiles(before.attachments ?? [], next.attachments ?? []))) &&
+    (before.role !== 'peer' || (before.text === next.text && ['direction', 'companionId', 'name', 'ownerLabel', 'sentAtISO'].every(key => before.peer[key] === next.peer[key])))); messages[index] = { ...before, ...next }; }
 }
 function sameFiles(before, after) {
   return before.length === after.length && before.every(file => after.some(other => file.id === other.id));

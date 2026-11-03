@@ -28,7 +28,7 @@ import kotlinx.serialization.json.put
 @Serializable data class SavedProfile(val profile: Profile, val wearing: String = "base")
 @Serializable data class ChatThread(val id: String, val title: String)
 @Serializable data class Message(val id: String, val threadId: String, val role: String, val text: String, val requestId: String? = null,
-    val feeling: String? = null, val attachments: List<Attachment> = emptyList())
+    val feeling: String? = null, val attachments: List<Attachment> = emptyList(), val peer: PeerMessage? = null)
 @Serializable data class TurnError(val code: String, val message: String, val resetsAt: String? = null)
 @Serializable data class Turn(val requestId: String, val state: String, val error: TurnError? = null)
 @Serializable data class Snapshot(
@@ -68,6 +68,16 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
     private val transfers = FileTransfers(session, open)
 
     suspend fun companionInfo(): CompanionInfo = call("api/companion", buildJsonObject { put("action", "get") })
+    suspend fun contacts(): ContactReply = parseContacts(post(companion + "api/companion", buildJsonObject { put("action", "contacts") }))
+    suspend fun setContact(id: String, enabled: Boolean, expectedRevision: Long): ContactReply {
+        if (!contactId(id) || !contactRevision(expectedRevision)) throw ApiException("INVALID_REQUEST")
+        val result = parseContacts(post(companion + "api/companion", buildJsonObject {
+            put("action", "setContact"); put("id", id); put("enabled", enabled); put("expectedRevision", expectedRevision)
+        }))
+        val selected = result.contacts.firstOrNull { it.id == id }
+        if (selected == null || selected.enabled != enabled || selected.revision < expectedRevision) throw ApiException("INVALID_RESPONSE")
+        return result
+    }
     suspend fun setProfile(profile: Profile): SavedProfile = decode(
         post(companion + "api/companion", buildJsonObject {
             put("action", "setProfile")
@@ -182,6 +192,11 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
     private fun validateMessages(value: JsonElement?) = verified {
         val messages = value as? JsonArray ?: throw ApiException("INVALID_RESPONSE")
         messages.forEach { message ->
+            if (message.jsonObject["role"]?.jsonPrimitive?.content == "peer") {
+                checkedPeerEnvelope(message)
+                return@forEach
+            }
+            if (message.jsonObject.containsKey("peer")) throw ApiException("INVALID_RESPONSE")
             val files = message.jsonObject["attachments"] ?: return@forEach
             val decoded = try { fileJson.decodeFromJsonElement<List<Attachment>>(files) } catch (_: Exception) { throw ApiException("INVALID_RESPONSE") }
             checkedFiles(decoded)

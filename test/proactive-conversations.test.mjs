@@ -156,7 +156,8 @@ test('pre-feeling history and old wake records migrate while user, ordinary and 
       : { text: '[feeling:happy] Upgraded ordinary reply.' }
   });
   assert.deepEqual(f.store.db.prepare('PRAGMA table_info(conv_messages)').all().map(column => column.name),
-    ['id', 'thread_id', 'role', 'text', 'request_id', 'created_at', 'feeling']);
+    ['id', 'thread_id', 'role', 'text', 'request_id', 'created_at', 'feeling', 'peer_json']);
+  assert.ok(f.store.db.prepare('SELECT peer_json FROM conv_messages').all().every(row=>row.peer_json===null),'legacy rows gain no invented peer attribution');
   const legacy = await f.conv.handle(f.a, { action: 'snapshot', threadId });
   assert.deepEqual(legacy.messages.map(row => [row.id, row.role, row.text, row.feeling]),
     [[oldUser, 'user', 'Old user text', undefined], [oldReply, 'assistant', 'Old assistant text', undefined]]);

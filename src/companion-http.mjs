@@ -7,6 +7,7 @@ import { outfitFor } from './wardrobe.mjs';
 import { DiscordError } from './discord.mjs';
 import { createHash } from 'node:crypto';
 import { PersonalityError, PERSONALITY_LIMITS } from './personality.mjs';
+import { ContactError } from './contacts.mjs';
 
 const fail = (status, code, message) => ({ status, body: { error: { code, message } } });
 const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
@@ -15,7 +16,7 @@ const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
 // onForget(companionId): durable session reset BEFORE any memory bytes are replaced.
 // onLook(companionId): called when the name or look changed, so the agent's next session knows.
 // discord: the DiscordBridge (docs/DISCORD.md), or null when connections are unavailable.
-export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null }) {
+export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null, contacts = null }) {
   return async function companion(request) {
     const parsed = await access.read(request, PERSONALITY_LIMITS.requestBytes);
     if (parsed.failure) return parsed.failure;
@@ -26,6 +27,15 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
     const only = keys => Object.keys(payload).every(key => keys.includes(key));
     try {
       switch (payload.action) {
+        case 'contacts': {
+          if(!only(['action'])||!contacts) break;
+          return {status:200,body:contacts.snapshot(companionId)};
+        }
+        case 'setContact': {
+          if(!only(['action','id','enabled','expectedRevision'])||!contacts) break;
+          const {action,...change}=payload;
+          return {status:200,body:contacts.set(companionId,change)};
+        }
         case 'personality': {
           if (!only(['action']) || !personality) break;
           try { return { status: 200, body: personality.snapshot(companionId) }; }
@@ -115,6 +125,7 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
       }
       return fail(400, 'INVALID_REQUEST', 'Invalid request.');
     } catch (error) {
+      if (error instanceof ContactError) return fail(error.status,error.code,error.message);
       if (error instanceof PersonalityError) return fail(error.status, error.code, error.message);
       if (error instanceof CompanionError) return fail(error.status, error.code, 'Invalid request.');
       if (error instanceof MemoryError || error instanceof ConversationError) {

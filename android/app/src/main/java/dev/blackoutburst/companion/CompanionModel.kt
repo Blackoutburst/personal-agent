@@ -66,6 +66,12 @@ data class UiState(
     val personalityError: String? = null,
     val personalityErrorCode: String? = null,
     val personalityNotice: String? = null,
+    val contacts: List<CompanionContact>? = null,
+    val contactsLoading: Boolean = false,
+    val contactsBusy: Boolean = false,
+    val contactsConfirmed: Boolean = false,
+    val contactsError: String? = null,
+    val contactsNotice: String? = null,
     val saving: Boolean = false,
     val discord: DiscordStatus? = null,
     val discordBusy: Boolean = false,
@@ -107,6 +113,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private var personalityVersionEpoch = 0L
     private var personalityJob: Job? = null
     private var personalityVersionJob: Job? = null
+    @Volatile private var contactsEpoch = 0L
+    private var contactsJob: Job? = null
 
     init {
         // An interrupted prior process must not leave an unbounded or reusable private media cache.
@@ -258,6 +266,57 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 }
                 _state.update { it.copy(discordBusy = false, discordError = message) }
             }
+        }
+    }
+
+    // ---- Contacts: consent settings only. Sending remains in the owner's native turn. ----
+
+    private fun contactsCurrent(version: Long, request: Long) = current(version) && contactsEpoch == request
+    fun loadContacts() {
+        if (_state.value.contactsBusy) return
+        val version = scope; val request = ++contactsEpoch
+        contactsJob?.cancel()
+        _state.update { it.copy(contactsLoading = true, contactsConfirmed = false, contactsError = null, contactsNotice = null) }
+        contactsJob = viewModelScope.launch {
+            if (!contactsCurrent(version, request)) return@launch
+            try {
+                val result = api.contacts()
+                if (contactsCurrent(version, request)) _state.update { it.copy(contacts = result.contacts, contactsConfirmed = true) }
+            } catch (error: ApiException) {
+                if (!contactsCurrent(version, request)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                _state.update { it.copy(contactsError = "Contacts could not be loaded. Reload to try again.") }
+            } finally { if (contactsCurrent(version, request)) _state.update { it.copy(contactsLoading = false) } }
+        }
+    }
+    /** The switch passes the exact canonical contact revision shown to this owner. No optimistic flip. */
+    fun setContact(id: String, enabled: Boolean, expectedRevision: Long, expectedScope: Long) {
+        if (!current(expectedScope) || _state.value.contactsBusy || _state.value.contactsLoading || !_state.value.contactsConfirmed) return
+        val request = ++contactsEpoch
+        contactsJob?.cancel()
+        _state.update { it.copy(contactsBusy = true, contactsConfirmed = false, contactsError = null, contactsNotice = null) }
+        contactsJob = viewModelScope.launch {
+            if (!contactsCurrent(expectedScope, request)) return@launch
+            try {
+                val result = api.setContact(id, enabled, expectedRevision)
+                if (!contactsCurrent(expectedScope, request)) return@launch
+                _state.update { it.copy(contacts = result.contacts, contactsConfirmed = true,
+                    contactsNotice = if (enabled) "Contact enabled for your companion. The other owner must also enable it."
+                    else "Contact disabled for your companion. Delivered messages stay in chat history.") }
+            } catch (error: ApiException) {
+                if (!contactsCurrent(expectedScope, request)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                if (error.code == "CONTACT_CONFLICT") {
+                    val fresh = try { api.contacts() } catch (failure: ApiException) {
+                        if (contactsCurrent(expectedScope, request) && failure.signedOut) signedOut()
+                        null
+                    }
+                    if (!contactsCurrent(expectedScope, request)) return@launch
+                    _state.update { it.copy(contacts = fresh?.contacts ?: it.contacts, contactsConfirmed = fresh != null,
+                        contactsError = if (fresh != null) "Contact settings changed. The latest settings are loaded; review them before choosing again."
+                        else "Contact settings changed, but the latest settings could not be loaded. Reload before choosing again.") }
+                } else _state.update { it.copy(contactsError = contactProblem(error)) }
+            } finally { if (contactsCurrent(expectedScope, request)) _state.update { it.copy(contactsBusy = false) } }
         }
     }
 
@@ -489,6 +548,9 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     private fun invalidateFiles(stopPolling: Boolean = true) {
         scope++
+        contactsEpoch++; contactsJob?.cancel(); contactsJob = null
+        _state.update { it.copy(contacts = null, contactsLoading = false, contactsBusy = false,
+            contactsConfirmed = false, contactsError = null, contactsNotice = null) }
         personalityEpoch++; personalityVersionEpoch++
         personalityJob?.cancel(); personalityJob = null; personalityVersionJob?.cancel(); personalityVersionJob = null
         _state.update { it.copy(personality = null, personalityDraft = null, personalityVersion = null,

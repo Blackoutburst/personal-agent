@@ -122,6 +122,7 @@ export class Conversations {
     if (!columns.has('session_at')) this.#db.exec('ALTER TABLE conv_threads ADD COLUMN session_at INTEGER NOT NULL DEFAULT 0');
     const messageColumns = new Set(this.#db.prepare('PRAGMA table_info(conv_messages)').all().map(column => column.name));
     if (!messageColumns.has('feeling')) this.#db.exec('ALTER TABLE conv_messages ADD COLUMN feeling TEXT');
+    if (!messageColumns.has('peer_json')) this.#db.exec('ALTER TABLE conv_messages ADD COLUMN peer_json TEXT');
     const wakeColumns = new Set(this.#db.prepare('PRAGMA table_info(conv_wakes)').all().map(column => column.name));
     if (!wakeColumns.has('result_feeling')) this.#db.exec('ALTER TABLE conv_wakes ADD COLUMN result_feeling TEXT');
   }
@@ -198,6 +199,21 @@ export class Conversations {
   ongoingThread(companionId) {
     if (typeof companionId !== 'string' || !UUID.test(companionId)) throw invalid();
     return this.#tx(() => this.#ongoing(companionId));
+  }
+  // App-internal, synchronous callback inside Contacts' delivery transaction.
+  // A peer card is never an owner/user turn and never queues provider work.
+  peerInTransaction(companionId, threadId, text, peer) {
+    if (this.#closing || typeof companionId !== 'string' || !UUID.test(companionId)
+        || !wellFormed(text,4000,16000) || !['sent','received'].includes(peer?.direction)) throw invalid();
+    const thread = threadId ? this.#thread(companionId,threadId) : this.#thread(companionId,this.#ongoing(companionId));
+    const messageId=randomUUID();
+    this.#db.prepare("INSERT INTO conv_messages(id,thread_id,role,text,created_at,peer_json) VALUES(?,?,'peer',?,?,?)")
+      .run(messageId,thread.id,text,this.#now(),JSON.stringify(peer));
+    this.#append(thread.id,{type:'message',messageId});
+    // Make the next recipient turn read the attributed card, including when a
+    // prior native turn closes late. This does not start or abort a provider.
+    if(peer.direction==='received') this.resetSessions(companionId);
+    return {messageId};
   }
   #ongoing(companionId) {
     const mapping = this.#db.prepare('SELECT thread_id FROM conv_ongoing WHERE companion_id=?').get(companionId);
@@ -297,6 +313,7 @@ export class Conversations {
   }
 
   #message(row) {
+    if(row.role==='peer') return {id:row.id,threadId:row.thread_id,role:'peer',text:row.text,peer:JSON.parse(row.peer_json)};
     const attachments = this.#files?.list(row.id) ?? [];
     return { id: row.id, threadId: row.thread_id, role: row.role, text: row.text, ...(row.request_id ? { requestId: row.request_id } : {}),
       ...(row.feeling ? { feeling: row.feeling } : {}), ...(attachments.length ? { attachments } : {}) };
@@ -517,8 +534,9 @@ export class Conversations {
     try {
       const thread = this.#thread(companionId, wake.thread_id), resume = this.#resume(thread);
       if (!resume) this.#db.prepare('UPDATE conv_threads SET provider_session=NULL,session_turns=0 WHERE id=?').run(thread.id);
-      const recent = resume ? [] : this.#db.prepare(`SELECT role,text FROM (SELECT rowid AS r,role,text,created_at FROM conv_messages
-        WHERE thread_id=? ORDER BY created_at DESC,r DESC LIMIT ?) ORDER BY created_at,r`).all(thread.id, this.#session.recentMessages);
+      const recent = resume ? [] : this.#db.prepare(`SELECT role,text,peer_json FROM (SELECT rowid AS r,role,text,peer_json,created_at FROM conv_messages
+        WHERE thread_id=? ORDER BY created_at DESC,r DESC LIMIT ?) ORDER BY created_at,r`).all(thread.id, this.#session.recentMessages)
+        .map(row=>({role:row.role,text:row.text,...(row.role==='peer'?{peer:JSON.parse(row.peer_json)}:{})}));
       let buffered = '', overflow = false;
       const turnInput = {
         prompt: 'This is a private background ' + wake.kind + ' wake, not a user message. Decide whether to contact the owner. '
@@ -611,12 +629,13 @@ export class Conversations {
     const schedule = () => { if (!timer) timer = setTimeout(flush, this.#flushMs); };
     const resume = this.#resume(thread);
     if (!resume) this.#db.prepare('UPDATE conv_threads SET provider_session=NULL, session_turns=0 WHERE id=?').run(threadId);
-    const recent = resume ? [] : this.#db.prepare(`SELECT role, text FROM (SELECT rowid AS r, role, text, created_at FROM conv_messages
+    const recent = resume ? [] : this.#db.prepare(`SELECT role, text, peer_json FROM (SELECT rowid AS r, role, text, peer_json, created_at FROM conv_messages
       WHERE thread_id=? AND id<>? ORDER BY created_at DESC, r DESC LIMIT ?) ORDER BY created_at, r`)
-      .all(threadId, turn.user_message_id, this.#session.recentMessages);
+      .all(threadId, turn.user_message_id, this.#session.recentMessages)
+      .map(row=>({role:row.role,text:row.text,...(row.role==='peer'?{peer:JSON.parse(row.peer_json)}:{})}));
     try {
       const incoming = this.#files?.incoming(companionId, turn.user_message_id) ?? [];
-      fileTools = this.#fileToolsForTurn(companionId, { threadId, requestId, current: live, attach: file => {
+      fileTools = this.#fileToolsForTurn(companionId, { threadId, requestId, ownerText:user.text, current: live, attach: file => {
         if (!live()) throw new FileError('FILE_TURN_ENDED', 409);
         this.#tx(() => {
           if (!live()) throw new FileError('FILE_TURN_ENDED', 409);

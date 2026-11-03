@@ -22,6 +22,7 @@ import { DiscordLinks, DiscordBridge } from './src/discord.mjs';
 import { FileStore, FileError, FILE_LIMITS } from './src/files.mjs';
 import { createFileHttp, fileFailure } from './src/file-http.mjs';
 import { PersonalityStore } from './src/personality.mjs';
+import { Contacts, ContactError } from './src/contacts.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 // Claude-chan art (docs/COMPANION.md): outfits are whole pictures, faces are patches drawn over them.
@@ -37,6 +38,7 @@ const STATIC = new Map([
   ['/reminders-ui.mjs', ['reminders-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/memory-ui.mjs', ['memory-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/personality-ui.mjs', ['personality-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/contact-ui.mjs', ['contact-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-character.mjs', ['companion-character.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-theme.js', ['companion-theme.js', 'text/javascript; charset=utf-8']],
   ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']],
@@ -88,8 +90,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let agentsConfigured = false;
   let companionHttp;
   let schedulerHttp, schedulerService, schedulerStore, discord = null;
-  let files = null, fileHttp;
+  let files = null, fileHttp, contacts = null;
   const fileTurns = new Map();
+  const contactTurns = new Map();
   const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
   const tokenFor = companionId => {
     if (!schedulerOwnerTokens.has(companionId)) {
@@ -118,6 +121,15 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       }
       // Exact raw paths only: queries cannot enable demo and traversal is rejected.
       const path = req.url;
+      if (path === '/internal/contacts' && mode === 'account') {
+        if(req.method!=='POST') return fail(405,'METHOD_NOT_ALLOWED','POST is required.');
+        const token=/^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization??'')?.[1], turn=token&&contactTurns.get(token);
+        if(!turn?.current()) return fail(401,'CONTACT_TURN_ENDED','This owner reply is no longer active.');
+        if(!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type']??'')) return fail(415,'UNSUPPORTED_MEDIA_TYPE','Use application/json.');
+        const parsed=await readJsonBody(req,32768); if(parsed.failure) return send(parsed.failure.status,parsed.failure.body);
+        try { return send(200,contacts.send(turn.companionId,parsed.value,turn)); }
+        catch(error) { const known=error instanceof ContactError?error:new ContactError(); return fail(known.status,known.code,known.message); }
+      }
       if (path === '/internal/files' && mode === 'account') {
         if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'POST is required.');
         const token = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? '')?.[1];
@@ -241,14 +253,40 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         return owner ? { owner, dir: runner.paths(owner).workspace } : null;
       };
       const personality = new PersonalityStore({ store, workspaceFor });
+      const displayLabel = (value, fallback) => {
+        let text='';
+        for(const char of String(value??fallback).replace(/[\x00-\x1f\x7f]/g,' ').trim()) {
+          if(text.length+char.length>80) break; text+=char;
+        }
+        return text.trim()||fallback;
+      };
+      contacts = new Contacts({ store,
+        directory: () => owners.flatMap(owner => {
+          const id=companionIdFor(store,owner), profile=id&&profiles.get(id);
+          return id?[{id,name:displayLabel(profile?.name,'Companion'),ownerLabel:displayLabel(owner.name??owner.label,'Owner')}]:[];
+        }),
+        deliver:(companionId,threadId,text,peer)=>conversations.peerInTransaction(companionId,threadId,text,peer)
+      });
       files = new FileStore({ store, dataDir, workspaceFor, ...fileOptions });
       fileHttp = createFileHttp({ access, files });
       const fileToolsForTurn = (companionId, context) => {
+        let available=[];
+        try { if(context.ownerText?.trim()) available=contacts.forTurn(companionId); }
+        catch { console.error('Contact tools unavailable for this turn.'); }
         const token = randomBytes(32).toString('hex');
         fileTurns.set(token, { companionId, ...context });
-        return { servers: [{ name: 'files', command: process.execPath, args: [join(ROOT, 'src', 'file-mcp.mjs')],
+        const servers=[{ name: 'files', command: process.execPath, args: [join(ROOT, 'src', 'file-mcp.mjs')],
           env: { COMPANION_FILE_URL: `http://127.0.0.1:${server.address().port}/internal/files`, COMPANION_FILE_TOKEN: token },
-          allowedTools: ['send_file'] }], dispose: () => fileTurns.delete(token) };
+          allowedTools: ['send_file'] }];
+        let contactToken;
+        if(available.length) {
+          contactToken=randomBytes(32).toString('hex'); contactTurns.set(contactToken,{companionId,...context,contacts:available});
+          servers.push({name:'contacts',command:process.execPath,args:[join(ROOT,'src','contact-mcp.mjs')],env:{
+            COMPANION_CONTACT_URL:`http://127.0.0.1:${server.address().port}/internal/contacts`,COMPANION_CONTACT_TOKEN:contactToken,
+            COMPANION_CONTACT_DIRECTORY:JSON.stringify(available.map(({id,name,ownerLabel})=>({id,name,ownerLabel})))
+          },allowedTools:['message_companion']});
+        }
+        return {servers,dispose:()=>{fileTurns.delete(token);if(contactToken)contactTurns.delete(contactToken);}};
       };
       // Claude gets the companion's files in every turn's system prompt (not kept in its history);
       // Codex only when a new session starts, since its instructions become part of the conversation.
@@ -288,7 +326,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
       discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, ...discordOptions,
         log: message => console.error(message) });
-      companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality,
+      companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality, contacts,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
         discord,
         assertMemoryIdle: companionId => conversations.assertMemoryIdle(companionId),

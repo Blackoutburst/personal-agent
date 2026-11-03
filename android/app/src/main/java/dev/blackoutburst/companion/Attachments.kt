@@ -49,7 +49,15 @@ internal fun checkedFileIds(ids: List<String>) {
     if (ids.size > MAX_FILES || ids.toSet().size != ids.size || ids.any { !fileId(it) }) throw ApiException("INVALID_REQUEST")
 }
 internal fun checkedMessage(message: Message, threadId: String): Message {
+    if (message.role == "peer") {
+        if (!fileId(message.id) || message.threadId != threadId || message.text.isBlank() ||
+            !validText(message.text, 4000, 16000) || message.requestId != null || message.feeling != null ||
+            message.attachments.isNotEmpty() || message.peer == null) throw ApiException("INVALID_RESPONSE")
+        checkedPeer(message.peer)
+        return message
+    }
     if (!fileId(message.id) || message.threadId != threadId || message.role !in setOf("user", "assistant") ||
+        message.peer != null ||
         !validText(message.text, if (message.role == "user") 8000 else 100000, if (message.role == "user") 32768 else 400000) ||
         message.requestId?.let { !requestKey(it) } == true) throw ApiException("INVALID_RESPONSE")
     val files = checkedFiles(message.attachments)

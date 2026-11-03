@@ -285,6 +285,7 @@ private fun note(state: UiState): String? {
 
 @Composable
 private fun Bubble(model: CompanionModel, message: Message, scope: Long) {
+    if (message.role == "peer") { PeerCard(message); return }
     val mine = message.role == "user"
     val bubbleShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = if (mine) 20.dp else 6.dp, bottomEnd = if (mine) 6.dp else 20.dp)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
@@ -376,6 +377,8 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
         if (!first) {
             Spacer(Modifier.height(32.dp))
             PersonalityPanel(model, state)
+            Spacer(Modifier.height(32.dp))
+            ContactPanel(model, state)
             Spacer(Modifier.height(32.dp))
             ThemePicker(model)
             Spacer(Modifier.height(32.dp))

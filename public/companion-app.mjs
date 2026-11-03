@@ -4,6 +4,7 @@ import { renderCharacter, CHARACTERS, COLORS, OUTFITS, HAS_OUTFITS } from './com
 import { createRemindersUI } from './reminders-ui.mjs';
 import { createMemoryUI } from './memory-ui.mjs';
 import { createPersonalityUI } from './personality-ui.mjs';
+import { createContactUI, renderPeerCard } from './contact-ui.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
@@ -11,6 +12,7 @@ const fileTransport = createFileTransport();
 const remindersUI = createRemindersUI({ document });
 const memoryUI = createMemoryUI({ document, api, onDenied: fileAccessDenied });
 const personalityUI = createPersonalityUI({ document, api, onDenied: fileAccessDenied });
+const contactUI = createContactUI({ document, api, onDenied: fileAccessDenied });
 const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
 let profile = null, runtime = null, view = 'loading', chatOpened = false, state = client.getState();
@@ -98,14 +100,14 @@ function route() {
 }
 
 async function start() {
-  memoryUI.clear(); personalityUI.clear();
+  memoryUI.clear(); personalityUI.clear(); contactUI.clear();
   try {
     const data = await api({ action: 'get' });
     profile = data.profile; runtime = data.runtime; wearing = data.wearing ?? 'base';
     applyColors(profile);
     route();
   } catch (error) {
-    if (error.status === 401 || error.status === 403) { memoryUI.clear(); personalityUI.clear(); gate('Hi there!', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true }); }
+    if (error.status === 401 || error.status === 403) { memoryUI.clear(); personalityUI.clear(); contactUI.clear(); gate('Hi there!', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true }); }
     else gate('Hmm, I can’t reach your companion', 'The server didn’t answer. Check your connection and try again.', { retry: true });
   }
 }
@@ -181,14 +183,17 @@ function renderMessages() {
     let node = messageNodes.get(message.id);
     if (!node) {
       node = document.createElement('li');
-      node.className = `bubble ${message.role === 'user' ? 'user' : 'companion'}`;
-      node.append(el('div', { className: 'message-text' }), el('div', { className: 'message-files' }));
+      node.className = message.role === 'peer' ? `bubble peer-card ${message.peer.direction}` : `bubble ${message.role === 'user' ? 'user' : 'companion'}`;
+      if (message.role === 'peer') node.append(renderPeerCard(document, message));
+      else node.append(el('div', { className: 'message-text' }), el('div', { className: 'message-files' }));
       messageNodes.set(message.id, node);
     }
-    if (node.dataset.text !== message.text) { textWithLinks(node.querySelector('.message-text'), message.text); node.dataset.text = message.text; }
-    const filesKey = JSON.stringify(message.attachments ?? []);
-    if (node.dataset.files !== filesKey) {
-      node.querySelector('.message-files').replaceChildren(...(message.attachments ?? []).map(fileView)); node.dataset.files = filesKey;
+    if (message.role !== 'peer') {
+      if (node.dataset.text !== message.text) { textWithLinks(node.querySelector('.message-text'), message.text); node.dataset.text = message.text; }
+      const filesKey = JSON.stringify(message.attachments ?? []);
+      if (node.dataset.files !== filesKey) {
+        node.querySelector('.message-files').replaceChildren(...(message.attachments ?? []).map(fileView)); node.dataset.files = filesKey;
+      }
     }
     if (list.children[index] !== node) list.insertBefore(node, list.children[index] ?? null);
     index++;
@@ -287,7 +292,7 @@ function syncFiles() {
   if (state.opened && state.threadId && state.connection === 'ready') client.setFiles(uploads.filter(item => item.status === 'ready').map(item => item.dto));
 }
 function fileAccessDenied() {
-  memoryUI.clear(); personalityUI.clear(); client.clear(); remindersUI.clear();
+  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); client.clear(); remindersUI.clear();
   gate('Your session ended', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true });
 }
 function clearUploads() {
@@ -364,6 +369,8 @@ function loadMemories() { return memoryUI.load(companionName()); }
 // ---------- Look ----------
 
 function startLook() {
+  $('contacts-panel').hidden = !profile;
+  if (profile) contactUI.load(); else contactUI.clear();
   $('personality-panel').hidden = !profile;
   if (profile) personalityUI.load(companionName()); else personalityUI.clear();
   draftLook = { ...(profile ?? { character: 'pip', color: 'peach', name: '' }) };
@@ -492,7 +499,7 @@ client.subscribe(next => {
   if (uploads.length && uploads.every(item => item.dto) &&
       ((next.pending?.action === 'submit' && next.pending.status === 'accepted' && uploads.every(item => next.pending.attachments?.includes(item.dto.id))) ||
        next.messages.some(message => message.role === 'user' && uploads.every(item => message.attachments?.some(file => file.id === item.dto.id))))) clearUploads();
-  if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') { remindersUI.clear(); memoryUI.clear(); personalityUI.clear(); }
+  if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') { remindersUI.clear(); memoryUI.clear(); personalityUI.clear(); contactUI.clear(); }
   renderAll();
   if (!polling) schedulePoll();
 });

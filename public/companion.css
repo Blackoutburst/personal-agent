@@ -173,6 +173,19 @@ main { flex: 1; min-height: 0; display: flex; }
 .personality-history li span { min-width: 0; overflow-wrap: anywhere; }
 .personality-diff .removed { background: var(--danger-bg); }
 .personality-diff .added { border-left: 3px solid var(--shade); }
+.contacts-list { list-style: none; padding: 0; }
+.contact-row { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.contact-toggle { display: flex; gap: 10px; align-items: flex-start; font-weight: 600; color: var(--ink); }
+.contacts .contact-toggle input { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; margin: 2px 0 0; accent-color: var(--body); }
+.contact-toggle span { min-width: 0; overflow-wrap: anywhere; }
+.contact-status { font-size: 13px; margin-top: 6px !important; }
+.contacts button { border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 8px 12px; cursor: pointer; }
+.contacts button:focus-visible, .contact-toggle input:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.bubble.peer-card { align-self: stretch; max-width: 100%; border: 1px solid var(--line); border-radius: 16px; background: var(--glass); font-size: 14px; }
+.peer-content { display: grid; gap: 5px; min-width: 0; }
+.peer-heading, .peer-owner { white-space: normal; overflow-wrap: anywhere; }
+.peer-owner, .peer-time { color: var(--soft); font-size: 12px; }
+.peer-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .confirm { display: flex; gap: 6px; align-items: center; flex: none; font-size: 13px; color: var(--danger); }
 .confirm button { border: 0; border-radius: 999px; padding: 6px 12px; font-weight: 700; cursor: pointer; font-size: 13px; }
 .confirm .yes { background: var(--yes-bg); color: var(--yes-ink); } .confirm .no { background: var(--card); }

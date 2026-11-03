@@ -32,6 +32,56 @@ function deferred() {
 async function ready(f, title = 'Synthetic thread') { await f.client.open(); await f.client.create(title); return f.client.getState().threadId; }
 async function denied(run, code) { await assert.rejects(run, error => error instanceof ConversationError && error.code === code); }
 
+const peerMessage = (threadId, patch = {}) => ({ id: 'peer-message', threadId, role: 'peer', text: 'Exact peer text\nwith a second line.',
+  peer: { direction: 'received', companionId: '1e80ef85-15aa-4afb-99cf-e415fa3e4971', name: 'Pip', ownerLabel: 'Screamer', sentAtISO: '2026-11-03T04:13:00.000Z' }, ...patch });
+const peerSnapshot = message => ({ version: 1, synthetic: false, threads: [{ id: message.threadId, title: 'Own companion' }], threadId: message.threadId,
+  messages: [message], cursor: '0', runtime: { state: 'ready', provider: 'claude' } });
+
+test('strict peer cards join snapshots/events without impersonating owner or assistant messages', async () => {
+  const threadId = randomUUID(), incoming = peerMessage(threadId), outgoing = peerMessage(threadId, { id: 'sent-peer', peer: { ...incoming.peer, direction: 'sent' } });
+  const initial = peerSnapshot(incoming); initial.messages.push({ id: 'normal-user', threadId, role: 'user', text: 'My own request', requestId: 'own-request' },
+    { id: 'normal-assistant', threadId, role: 'assistant', text: 'My own companion', feeling: 'tender' });
+  const client = createConversationClient({ transport: async action => action === 'snapshot' ? clone(initial) : {
+    version: 1, synthetic: false, threadId, events: [{ seq: 1, threadId, type: 'message', message: outgoing }], cursor: '1', lastSeq: 1, hasMore: false } });
+  await client.open(); await client.poll(); const state = client.getState();
+  assert.deepEqual(state.messages.filter(message => message.role === 'peer'), [incoming, outgoing]);
+  assert.equal(state.messages[1].role, 'user'); assert.equal(state.messages[2].feeling, 'tender'); assert.equal(state.turn, null);
+});
+
+test('peer DTO rejects missing/foreign metadata, malformed bytes and every legacy optional field even empty or null', async () => {
+  const threadId = randomUUID(), good = peerMessage(threadId); let accessed = 0;
+  const variants = [value => { delete value.peer; }, value => { value.peer = null; }, value => { value.peer.owner = 'foreign'; },
+    value => { value.peer.direction = 'reply'; }, value => { value.peer.companionId += '\n'; }, value => { value.peer.companionId = '1e80ef85-15aa-3afb-99cf-e415fa3e4971'; },
+    value => { value.peer.name = ' '; }, value => { value.peer.ownerLabel = ' padded'; }, value => { value.peer.name = 'x'.repeat(81); },
+    value => { value.peer.name = '\ud800'; }, value => { value.peer.ownerLabel = 'bad\nlabel'; }, value => { value.peer.sentAtISO = '2026-11-03'; },
+    value => { value.peer.sentAtISO = '2026-02-30T04:13:00.000Z'; }, value => { value.text = ''; }, value => { value.text = 'x'.repeat(4001); },
+    value => { value.text = '\ud800'; }, value => { value.attachments = []; }, value => { value.requestId = null; }, value => { value.feeling = null; },
+    value => { value.role = 'assistant'; }, value => { Object.defineProperty(value.peer, 'name', { enumerable: true, get() { accessed++; return 'bad'; } }); }];
+  for (const modify of variants) {
+    const value = clone(good); modify(value); const client = createConversationClient({ transport: async () => peerSnapshot(value) }); await client.open();
+    assert.deepEqual(client.getState().messages, []); assert.equal(client.getState().error, 'INVALID_RESPONSE');
+  }
+  assert.equal(accessed, 0);
+});
+
+test('existing peer messages are immutable across upserts, while exact repeated events do not duplicate cards', async () => {
+  const threadId = randomUUID(), good = peerMessage(threadId);
+  const patches = [value => { value.text = 'Changed text'; }, value => { value.peer.direction = 'sent'; }, value => { value.peer.companionId = randomUUID(); },
+    value => { value.peer.name = 'Another name'; }, value => { value.peer.ownerLabel = 'Another owner'; }, value => { value.peer.sentAtISO = '2026-11-03T04:14:00.000Z'; }];
+  for (const modify of patches) {
+    const changed = clone(good); modify(changed);
+    const client = createConversationClient({ transport: async action => action === 'snapshot' ? peerSnapshot(clone(good)) : {
+      version: 1, synthetic: false, threadId, events: [{ seq: 1, threadId, type: 'message', message: changed }], cursor: '1', lastSeq: 1, hasMore: false } });
+    const visible = []; client.subscribe(state => visible.push(state.messages));
+    await client.open(); assert.deepEqual(client.getState().messages, [good]); await client.poll();
+    assert.ok(visible.every(messages => messages.length === 0 || JSON.stringify(messages) === JSON.stringify([good])), 'changed peer bytes must never enter a subscribed view');
+    assert.deepEqual(client.getState().messages, []); assert.equal(client.getState().cursor, null); assert.equal(client.getState().error, 'INVALID_RESPONSE');
+  }
+  const client = createConversationClient({ transport: async action => action === 'snapshot' ? peerSnapshot(clone(good)) : {
+    version: 1, synthetic: false, threadId, events: [{ seq: 1, threadId, type: 'message', message: clone(good) }], cursor: '1', lastSeq: 1, hasMore: false } });
+  await client.open(); await client.poll(); assert.deepEqual(client.getState().messages, [good]); assert.equal(client.getState().cursor, '1');
+});
+
 test('explicit synthetic conversation streams accumulated text without advancing the cursor from submit ACK', async t => {
   const f = fixture(t);
   assert.equal(f.client.getState().connection, 'disconnected'); assert.equal(f.calls.length, 0);

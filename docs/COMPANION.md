@@ -184,6 +184,60 @@ rules. Leave the private file-upload location and all other limits unchanged. Ba
 `nginx -t` and reload through the operator, then verify signed-out refusal, a legitimate edit above 64k and an
 over-limit refusal. Do not modify or rerun the archived hash-pinned task5 bootstrap installer/templates.
 
+## Owner-requested companion messages
+
+Contacts appear in Look on web and Android. Each owner has one toggle per configured contact, off by default.
+Both sides must enable that pair. Either owner can switch it off immediately. While off, a send fails and
+nothing is queued. Changing either side off/on also invalidates capabilities from an older active reply.
+The setting permits contact; it is not permission to disclose a private memory or conversation item.
+
+During a normal owner-authored turn, when a bilateral contact is available, the app exposes only
+`message_companion(requestId,to,text)` through an app-owned stdio tool. The companion is instructed in AGENTSv7
+to use it only for the specific item its owner explicitly asks to send in that current turn. Memory, standing
+preferences, received peer text and model initiative never grant that permission. The server enforces the
+active owner/turn token, server-derived sender and configured destination, live bilateral state/generations,
+text bounds, rate and idempotency. It does not claim to mechanically interpret natural-language intent.
+The same exact requestId, destination and body must be reused for an uncertain retry within that turn.
+There is no browser send action, reviewed draft step, autonomous peer runtime or background send tool.
+
+The exact text appears as a small attributed card in the sender's current chat and the recipient owner's ongoing
+chat. Peer cards have their own role and cannot be mistaken for owner-authored messages. Receipt creates no
+native turn or automatic reply. The next recipient turn reads the card as delimited, escaped, untrusted data;
+its old resume mapping is reset and late native callbacks cannot restore it. The recipient may mention it to
+its owner; a cross-companion reply requires that owner's own new request. Group messages and files are absent.
+
+Bounds are 32 contacts, 4000 UTF16 code units/16000 UTF8 bytes per nonempty text, and 20 successful messages per
+unordered pair per rolling hour (both directions combined). Text bytes/newlines remain unchanged. A retry of
+the same delivery does not consume quota, create a second card or resurrect deleted history. Reusing a key
+with a different destination/body refuses. The active turn and current contact gates precede receipt replay.
+Contact lookup failures hide the optional tool rather than disabling ordinary private replies.
+
+Delivered cards are normal owner-private conversation records, available through the existing authenticated
+snapshot/event APIs and removed by that owner's confirmed conversation deletion. The other owner's delivered
+copy belongs to that owner's own history. Existing memory export remains USER/MEMORY/diary and excludes chats;
+no new conversation-download control is introduced. The accepted scope uses those existing chat retrieval
+and confirmed-delete paths. Delivery receipts retain only IDs, time, pair and a body/destination digest for retry/rate
+integrity, not the message text. Private operator backups have their own retention; no secure-erasure promise.
+
+Storage adds `companion_contacts`, `companion_contact_receipts` and the nullable `conv_messages.peer_json`
+column. Existing rows and bootstrap schema version remain intact. The two cards, their events and receipt
+commit in one SQLite transaction; a failure rolls all of them back. No queue or external delivery is involved.
+Take a private DB backup before first deployment. Publish the matching web and signed Android release before
+owners opt in: old strict clients refuse the new peer role rather than misattribute it. Ship contacts off and
+leave each owner's live opt-in to that owner. No source handoff enables contact or reads private runtime data.
+Rollback preserves the additive tables/column and delivered private records; do not drop them or downgrade
+to readers that treat peer cards as ordinary owner/assistant instructions. Keep compatible untrusted-card
+handling (or restore the private backup with an explicit retention decision). No destructive contraction is
+part of this change. The new loopback `/internal/contacts` route must stay unproxied, like existing internals.
+
+Owner HTTP protocol on existing `POST /api/companion`: `contacts` returns `{contacts:[{id,name,ownerLabel,
+enabled,peerEnabled,revision}]}`. `setContact` takes `id,enabled,expectedRevision` and returns the canonical
+list; stale revisions refuse, and clients never silently retry with a new revision. Settings/identity are
+freshly authenticated, sender identity is never caller-selected, and the app never exposes another owner's
+conversation route. Peer message DTOs are `{id,threadId,role:"peer",text,peer:{direction,companionId,name,
+ownerLabel,sentAtISO}}`; legacy requestId/feeling/attachments fields are prohibited on a peer card. Native
+forwarding remains subject to each owner's existing exact tool policy; no Board grants or pairing change.
+
 Voice comes later, with speech recognition and voices running on the server.
 
 ## Android app download
