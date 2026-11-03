@@ -76,14 +76,15 @@ test('tool traffic requires initialization and the initialized notification; pin
 test('the tool catalogue keeps reminders and distinct release-watch tools in closed finite schemas', async () => {
   const result = await exchange([...handshake(), request('tools', 'tools/list', {})]);
   const tools = resultFor(result, 'tools').result.tools;
-  assert.deepEqual(tools.map(tool => tool.name).sort(), ['cancel_schedule', 'create_release_watch', 'create_schedule', 'list_schedules', 'update_release_watch']);
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ['cancel_schedule', 'create_release_watch', 'create_schedule', 'create_topic_watch', 'list_schedules', 'update_release_watch']);
   const expected = { create_schedule: ['requestId', 'text', 'dueAt'], list_schedules: [], cancel_schedule: ['id'],
-    create_release_watch: ['requestId', 'condition'], update_release_watch: ['requestId', 'id', 'expectedVersion', 'operation', 'condition'] };
+    create_release_watch: ['requestId', 'condition'], create_topic_watch: ['requestId', 'topic', 'intervalHours'],
+    update_release_watch: ['requestId', 'id', 'expectedVersion', 'operation', 'condition', 'intervalHours'] };
   for (const tool of tools) {
     assert.equal(tool.inputSchema.type, 'object'); assert.equal(tool.inputSchema.additionalProperties, false);
     assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), [...expected[tool.name]].sort());
-    assert.deepEqual([...tool.inputSchema.required].sort(), [...expected[tool.name]].filter(key => tool.name !== 'update_release_watch' || key !== 'condition').sort());
-    for (const [name, property] of Object.entries(tool.inputSchema.properties)) assert.equal(property.type, name === 'expectedVersion' ? 'integer' : 'string');
+    assert.deepEqual([...tool.inputSchema.required].sort(), [...expected[tool.name]].filter(key => tool.name !== 'update_release_watch' || !['condition', 'intervalHours'].includes(key)).sort());
+    for (const [name, property] of Object.entries(tool.inputSchema.properties)) assert.equal(property.type, ['expectedVersion', 'intervalHours'].includes(name) ? 'integer' : 'string');
   }
   const invalid = await exchange([...handshake(), request('cursor', 'tools/list', { cursor: 'arbitrary' })]);
   assert.equal(resultFor(invalid, 'cursor').error.code, -32602); assert.equal(invalid.forwards.length, 0);
@@ -315,9 +316,23 @@ test('tool calls accept the _meta field real clients attach (Claude Code sends a
     request('listed', 'tools/list', { _meta: { progressToken: 1 } }),
     request('called', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: meta }),
     request('bad-meta', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: 'nope' })]);
-  assert.equal(resultFor(result, 'listed').result.tools.length, 5);
+  assert.equal(resultFor(result, 'listed').result.tools.length, 6);
   assert.equal(resultFor(result, 'called').result.isError, false);
   assert.equal(resultFor(result, 'bad-meta').error.code, -32602);
   assert.equal(result.forwards.length, 1);
   assert.deepEqual(JSON.parse(result.forwards[0].spec.body), { action: 'list' });
+});
+
+test('topic watch tools forward a recurring watch with its interval and refuse out-of-range or mixed edits', async () => {
+  const id = randomUUID(), create = { requestId: 'topic-1', topic: 'NVIDIA stock news', intervalHours: 24 };
+  const interval = { requestId: 'every-12', id, expectedVersion: 2, operation: 'edit', intervalHours: 12 };
+  const result = await exchange([...handshake(), call('create', 'create_topic_watch', create), call('interval', 'update_release_watch', interval),
+    call('too-often', 'create_topic_watch', { ...create, requestId: 'topic-2', intervalHours: 1 }),
+    call('no-interval', 'create_topic_watch', { requestId: 'topic-3', topic: 'NVIDIA' }),
+    call('empty-edit', 'update_release_watch', { requestId: 'e', id, expectedVersion: 2, operation: 'edit' }),
+    call('pause-with-interval', 'update_release_watch', { requestId: 'p', id, expectedVersion: 2, operation: 'pause', intervalHours: 12 })]);
+  assert.deepEqual(result.forwards.map(value => JSON.parse(value.spec.body)), [
+    { action: 'createWatch', input: { requestId: 'topic-1', condition: 'NVIDIA stock news', mode: 'topic', intervalHours: 24 } },
+    { action: 'updateWatch', input: interval }]);
+  for (const key of ['too-often', 'no-interval', 'empty-edit', 'pause-with-interval']) assert.ok(resultFor(result, key).error || resultFor(result, key).result.isError, key);
 });

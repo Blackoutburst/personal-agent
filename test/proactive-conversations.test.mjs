@@ -59,16 +59,16 @@ function fixture(t, options = {}) {
 }
 test('generic wakes cannot create or update release watches, while owner turns retain those app tools', async t => {
   const f = fixture(t, { beforeCreate(f) {
-    f.apps.a[0].allowedTools.push('create_release_watch', 'update_release_watch');
+    f.apps.a[0].allowedTools.push('create_release_watch', 'create_topic_watch', 'update_release_watch');
   } });
   await f.conv.enqueueProactive(f.a, wake()); await f.conv.idle();
-  for (const name of ['create_release_watch', 'update_release_watch'])
+  for (const name of ['create_release_watch', 'create_topic_watch', 'update_release_watch'])
     assert.ok(!f.calls[0].allowedTools.includes('mcp__scheduler__' + name));
   assert.ok(f.calls[0].allowedTools.includes('mcp__scheduler__list_schedules'));
   const threadId = (await f.conv.handle(f.a, { action: 'createThread', requestId: 'release-owner-thread', title: 'Watch' })).thread.id;
   await f.conv.handle(f.a, { action: 'submit', requestId: 'release-owner-turn', threadId, text: 'Manage my watch' });
   await f.conv.idle();
-  for (const name of ['create_release_watch', 'update_release_watch'])
+  for (const name of ['create_release_watch', 'create_topic_watch', 'update_release_watch'])
     assert.ok(f.calls.at(-1).allowedTools.includes('mcp__scheduler__' + name));
 });
 

@@ -268,7 +268,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
             if (!Array.isArray(additional) || !companionId || !server.address()) throw new TypeError('Invalid app tools');
             return [...additional, { name: 'scheduler', command: process.execPath, args: [join(ROOT, 'src', 'scheduler-mcp.mjs')],
               env: { COMPANION_SCHEDULER_URL: `http://127.0.0.1:${server.address().port}/internal/scheduler`,
-                COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'update_release_watch'] }];
+                COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'create_topic_watch', 'update_release_watch'] }];
           } });
         agentsConfigured = true;
       }

@@ -299,3 +299,42 @@ test('management rejects injected fields and malformed keys while condition text
   assert.equal((await schedulerOperation(f.service, f.a, { action: 'createWatch', input: valid, companionId: f.b })).status, 400);
   assert.equal(f.rows('scheduler_release_watches').length, 1); assert.equal(f.calls.length, 0);
 });
+
+test('a topic watch keeps running, reports only new sources at its own interval, and edits keep or reset what it reported', async t => {
+  const f = fixture(t), A = 'https://news.example/nvda-earnings', B = 'https://news.example/nvda-new-chip';
+  const digest = (url, text) => () => ({ text: JSON.stringify({ action: 'found', urls: [url], evidence: text, text: text + ' ' + url }) });
+  const prior = new Set(f.snapshot().releaseWatches.map(row => row.id));
+  const created = f.service.createWatch(f.a, { requestId: 'topic-nvda', condition: 'NVIDIA stock news', mode: 'topic', intervalHours: 24 })
+    .releaseWatches.find(row => !prior.has(row.id));
+  assert.equal(created.kind, 'topic_watch'); assert.equal(created.intervalHours, 24); assert.deepEqual(created.digests, []);
+  denied(() => f.service.createWatch(f.a, { requestId: 'topic-fast', condition: 'NVIDIA', mode: 'topic', intervalHours: 2 }));
+  denied(() => f.service.createWatch(f.a, { requestId: 'release-interval', condition: 'Qwen4', intervalHours: 24 }));
+
+  f.handler = digest(A, 'NVIDIA beat earnings expectations.');
+  await f.pump();
+  let watch = f.watch(created.id);
+  assert.equal(watch.state, 'active', 'A topic watch does not complete when it finds something');
+  assert.equal(watch.digests.length, 1); assert.deepEqual(watch.digests[0].urls, [A]);
+  assert.equal(Date.parse(watch.nextCheckAt) - Date.parse(watch.lastCheckAt), 24 * HOUR);
+  const assistant = async () => (await f.transcript()).filter(message => message.role === 'assistant').length;
+  assert.equal(await assistant(), 1);
+
+  f.advance(24 * HOUR); f.handler = digest(A, 'NVIDIA beat earnings (another outlet).');
+  await f.pump();
+  assert.equal(await assistant(), 1, 'Already reported sources stay silent');
+  assert.equal(f.watch(created.id).lastResult, 'not_yet');
+  assert.match(f.calls.at(-1).prompt, /nvda-earnings/, 'The check sees what was already reported');
+
+  f.advance(24 * HOUR); f.handler = digest(B, 'NVIDIA announced a new chip.');
+  await f.pump();
+  assert.equal(await assistant(), 2);
+  watch = f.watch(created.id);
+  assert.equal(watch.digests.length, 2); assert.deepEqual(watch.digests[0].urls, [B], 'Newest digest first');
+
+  f.update(watch, 'edit', { intervalHours: 12 }); watch = f.watch(created.id);
+  assert.equal(watch.intervalHours, 12); assert.equal(watch.digests.length, 2, 'An interval change keeps the reported history');
+  f.update(watch, 'edit', { condition: 'AMD stock news' }); watch = f.watch(created.id);
+  assert.deepEqual(watch.digests, [], 'A new topic starts fresh');
+  denied(() => f.update(f.create('release-x'), 'edit', { intervalHours: 12 }));
+  f.update(watch, 'pause'); assert.equal(f.watch(created.id).state, 'paused');
+});

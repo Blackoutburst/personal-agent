@@ -210,7 +210,7 @@ test('generated owner MCP bindings run the actual scheduler child and permit onl
   assert.equal(configA.env.COMPANION_SCHEDULER_URL, app.url + '/internal/scheduler');
   const ownerA = await mcpChild(f, configA), ownerB = await mcpChild(f, configB);
   const tools = await ownerA.request('tools/list', {});
-  assert.deepEqual(tools.result.tools.map(tool => tool.name), ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'update_release_watch']);
+  assert.deepEqual(tools.result.tools.map(tool => tool.name), ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'create_topic_watch', 'update_release_watch']);
   const input = { requestId: 'from-real-mcp-child', text: 'Created through the owned scheduler tool', dueAt: iso(f.clock + 10 * MINUTE) };
   const created = toolValue(await ownerA.call('create_schedule', input));
   assert.equal(created.items.length, 1); const id = created.items[0].id;

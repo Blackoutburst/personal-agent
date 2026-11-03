@@ -20,14 +20,18 @@ function watchList(value) {
   if (value.filter(row => ['active', 'paused'].includes(row?.state)).length > 10 || value.filter(row => ['complete', 'cancelled'].includes(row?.state)).length > 10) throw new Error('INVALID_WATCH_RESPONSE');
   const ids = new Set();
   return value.map(row => {
-    if (!row || typeof row !== 'object' || Array.isArray(row) || Object.keys(row).length !== WATCH_FIELDS.length || !WATCH_FIELDS.every(field => Object.hasOwn(row, field)) ||
-        typeof row.id !== 'string' || row.id.length !== 36 || !WATCH_ID.test(row.id) || ids.has(row.id) || row.kind !== 'release_watch' ||
+    // Topic watches (#40) add their interval and recent digests.
+    const topic = row?.kind === 'topic_watch', fields = topic ? [...WATCH_FIELDS, 'intervalHours', 'digests'] : WATCH_FIELDS;
+    if (!row || typeof row !== 'object' || Array.isArray(row) || Object.keys(row).length !== fields.length || !fields.every(field => Object.hasOwn(row, field)) ||
+        typeof row.id !== 'string' || row.id.length !== 36 || !WATCH_ID.test(row.id) || ids.has(row.id) || !['release_watch', 'topic_watch'].includes(row.kind) ||
+        topic && (!Number.isSafeInteger(row.intervalHours) || row.intervalHours < 6 || row.intervalHours > 168 || !Array.isArray(row.digests) || row.digests.length > 5
+          || !row.digests.every(item => item && watchDate(item.at) && noteText(item.evidence, 1000, 4000) && Array.isArray(item.urls) && item.urls.length <= 8 && item.urls.every(watchUrl))) ||
         !Number.isSafeInteger(row.version) || row.version < 1 || !noteText(row.condition, 1000, 4000) ||
         !['active', 'paused', 'complete', 'cancelled'].includes(row.state) || !watchDate(row.createdAt) ||
         ![row.nextCheckAt, row.lastCheckAt].every(value => value === null || watchDate(value)) || ![null, 'found', 'not_yet', 'stale'].includes(row.lastResult) ||
         !Array.isArray(row.urls) || row.urls.length > 8 || !row.urls.every(watchUrl) || (row.evidence !== null && (!noteText(row.evidence, 1000, 4000) || /[\r\n]/.test(row.evidence))) ||
         !Number.isSafeInteger(row.consecutiveStale) || row.consecutiveStale < 0 || typeof row.deliveryPending !== 'boolean') throw new Error('INVALID_WATCH_RESPONSE');
-    ids.add(row.id); return { ...row, urls: [...row.urls] };
+    ids.add(row.id); return { ...row, urls: [...row.urls], ...(topic ? { digests: row.digests.map(item => ({ ...item, urls: [...item.urls] })) } : {}) };
   });
 }
 
@@ -150,7 +154,7 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
     const renderedOwner = ownerEpoch;
     if (!watches.length) watchRows.append(node('li', { textContent: 'No release watches yet.' }));
     for (const watch of watches) {
-      const row = node('li', { className: 'watch-row' }), title = node('strong', { textContent: watch.condition });
+      const row = node('li', { className: 'watch-row' }), title = node('strong', { textContent: watch.kind === 'topic_watch' ? `${watch.condition} · topic, every ${watch.intervalHours} h` : watch.condition });
       const state = watch.deliveryPending ? (watch.lastResult === 'found' ? 'Found · waiting for delivery after quiet hours' : 'Check unavailable · notice waiting for delivery after quiet hours')
         : ({ active: 'Active', paused: 'Paused', complete: 'Complete', cancelled: 'Cancelled' })[watch.state];
       row.append(title, node('small', { textContent: state + (watch.state === 'active' && !watch.deliveryPending ? ` · Next check: ${watchTime(watch.nextCheckAt)}` : '') }));
