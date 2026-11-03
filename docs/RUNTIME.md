@@ -99,7 +99,7 @@ Web tools are used only in owner chat turns (web, Android, Discord) and the app'
 watch checks; background wakes (reminders, check-ins, Board and peer events) run
 without them. Each owner has a daily allowance of 60 web tool calls (UTC day,
 `src/web-budget.mjs`, table `web_usage`, counts only). Once it is spent, chat turns run
-without web tools and the companion is told so. The instructions (AGENTS v14) ask for
+without web tools and the companion is told so. The instructions (AGENTS v14+) ask for
 a few lookups per reply, source links as markdown, and treating page content as
 untrusted data. No new shell or execution-policy flag is set
 by this tool configuration change. The existing companion workspace and Claude
@@ -223,3 +223,22 @@ Me › Connectors lists every link the companion has (`src/connectors.mjs`, acti
 admin in `owners.json`; the owner can switch it off and on (table `connector_settings`). Off removes the Board MCP
 tools and `attach_to_board` from every turn and stops Board polling and wakes for that owner; nothing on the Board is
 changed. New connectors add an entry to `Connectors.list()` and, if they bring tools, a rule to `toolFilter()`.
+
+## Calendar (#44)
+
+Events live in `src/calendar.mjs` (tables `calendar_events`, `calendar_settings`). Each event has a title, a local
+wall-time start (`YYYY-MM-DDTHH:MM`, or `YYYY-MM-DD` for all day), an optional end, location and notes, an optional
+yearly repeat (29 February falls on the 28th in other years) and an optional reminder N minutes before (all-day events
+count back from 09:00 local). French public holidays (Easter Monday, Ascension and Whit Monday included) are computed,
+never stored, and shown only when the owner turns them on. At most 500 events per owner.
+
+Actions travel with the reminder actions: the owner UI posts `calendar`, `createEvent`, `updateEvent`, `deleteEvent`
+and `calendarSettings` to `/api/schedules`; the companion's scheduler MCP has `list_calendar`, `create_event`,
+`update_event` and `delete_event` (no settings). Creates retry exactly by `requestId`; updates replace the whole event
+and need the current `version`.
+
+Reminders: every scheduler tick runs `Calendar.enqueueDue`, which queues an event wake of kind `calendar`
+(request key `cal-<event>-<YYYYMMDD>-v<version>`) once its reminder time has come and the occurrence has not started
+(all day: until the day ends). Delivery follows the usual wake path: quiet hours, spacing, daily cap, push and the
+Discord DM. Each occurrence is reminded once; editing or deleting an event cancels a reminder still waiting.
+Calendar wakes cannot create, edit or delete events.

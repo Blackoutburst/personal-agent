@@ -76,11 +76,13 @@ test('tool traffic requires initialization and the initialized notification; pin
 test('the tool catalogue keeps reminders and distinct release-watch tools in closed finite schemas', async () => {
   const result = await exchange([...handshake(), request('tools', 'tools/list', {})]);
   const tools = resultFor(result, 'tools').result.tools;
-  assert.deepEqual(tools.map(tool => tool.name).sort(), ['cancel_schedule', 'create_release_watch', 'create_schedule', 'create_topic_watch', 'list_schedules', 'update_release_watch']);
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ['cancel_schedule', 'create_event', 'create_release_watch', 'create_schedule', 'create_topic_watch',
+    'delete_event', 'list_calendar', 'list_schedules', 'update_event', 'update_release_watch']);
   const expected = { create_schedule: ['requestId', 'text', 'dueAt'], list_schedules: [], cancel_schedule: ['id'],
     create_release_watch: ['requestId', 'condition'], create_topic_watch: ['requestId', 'topic', 'intervalHours'],
     update_release_watch: ['requestId', 'id', 'expectedVersion', 'operation', 'condition', 'intervalHours'] };
-  for (const tool of tools) {
+  // Calendar tools (#44) are checked in test/calendar.test.mjs.
+  for (const tool of tools.filter(tool => expected[tool.name])) {
     assert.equal(tool.inputSchema.type, 'object'); assert.equal(tool.inputSchema.additionalProperties, false);
     assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), [...expected[tool.name]].sort());
     assert.deepEqual([...tool.inputSchema.required].sort(), [...expected[tool.name]].filter(key => tool.name !== 'update_release_watch' || !['condition', 'intervalHours'].includes(key)).sort());
@@ -316,7 +318,7 @@ test('tool calls accept the _meta field real clients attach (Claude Code sends a
     request('listed', 'tools/list', { _meta: { progressToken: 1 } }),
     request('called', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: meta }),
     request('bad-meta', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: 'nope' })]);
-  assert.equal(resultFor(result, 'listed').result.tools.length, 6);
+  assert.equal(resultFor(result, 'listed').result.tools.length, 10);
   assert.equal(resultFor(result, 'called').result.isError, false);
   assert.equal(resultFor(result, 'bad-meta').error.code, -32602);
   assert.equal(result.forwards.length, 1);

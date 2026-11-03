@@ -297,13 +297,29 @@ export class SchedulerStore {
   }
   enqueueEvent(companionId, input) {
     const value = shape(input, ['requestId', 'kind', 'prompt']);
-    requireSchedule(typeof value.requestId === 'string' && REQUEST.test(value.requestId) && ['watch', 'board'].includes(value.kind));
+    requireSchedule(typeof value.requestId === 'string' && REQUEST.test(value.requestId) && ['watch', 'board', 'calendar'].includes(value.kind));
     const prompt = text(value.prompt), fingerprint = digest({ kind: value.kind, prompt });
     return this.#tx(() => {
       this.#owner(companionId);
       const prior = this.#db.prepare('SELECT * FROM scheduler_occurrences WHERE companion_id=? AND slot_key=?').get(companionId, 'event:' + value.requestId);
       requireSchedule(prior || this.#db.prepare("SELECT COUNT(*) AS n FROM scheduler_occurrences WHERE companion_id=? AND state IN ('queued','admitted')").get(companionId).n < 200, 'CAPACITY');
       return occurrence(this.#insert(companionId, { slot: 'event:' + value.requestId, fingerprint, kind: value.kind, prompt, dueAt: this.#time() }));
+    });
+  }
+  // Event wakes whose request key starts with prefix (calendar reminders: "cal-<event>-<date>-"), newest first.
+  eventStates(companionId, prefix) {
+    requireSchedule(typeof prefix === 'string' && REQUEST.test(prefix));
+    return this.#db.prepare("SELECT state FROM scheduler_occurrences WHERE companion_id=? AND substr(slot_key,1,?)=? ORDER BY due_at DESC")
+      .all(companionId, prefix.length + 6, 'event:' + prefix).map(row => row.state);
+  }
+  // Cancels the waiting event wakes under prefix and returns their ids, so the caller can cancel a queued conversation wake.
+  cancelEvents(companionId, prefix) {
+    requireSchedule(typeof prefix === 'string' && REQUEST.test(prefix));
+    return this.#tx(() => {
+      const rows = this.#db.prepare("SELECT id FROM scheduler_occurrences WHERE companion_id=? AND substr(slot_key,1,?)=? AND state IN ('queued','admitted')")
+        .all(companionId, prefix.length + 6, 'event:' + prefix);
+      for (const row of rows) this.#db.prepare("UPDATE scheduler_occurrences SET state='cancelled' WHERE id=?").run(row.id);
+      return rows.map(row => row.id);
     });
   }
   prepareDue(companionId) {
@@ -422,7 +438,10 @@ export class SchedulerStore {
 
 export class SchedulerService {
   #scheduler; #conversations; #companions; #ready; #poll; #timer = null; #running = null; #stopped = false;
-  constructor({ scheduler, conversations, companions = () => [], ready = () => true, pollMs = 30000 }) {
+  #prepare;
+  // prepare(companionId) runs first on every tick for each owner (calendar reminders queue their event wakes there).
+  constructor({ scheduler, conversations, companions = () => [], ready = () => true, pollMs = 30000, prepare = () => {} }) {
+    this.#prepare = prepare;
     requireSchedule(scheduler && conversations && typeof companions === 'function' && typeof ready === 'function' && integer(pollMs, 1, 3600000));
     this.#scheduler = scheduler; this.#conversations = conversations; this.#companions = companions; this.#ready = ready; this.#poll = pollMs;
   }
@@ -442,6 +461,7 @@ export class SchedulerService {
     for (const companionId of new Set(owners)) {
       if (this.#stopped) break;
       try {
+        try { this.#prepare(companionId); } catch { /* A calendar problem never blocks reminders. */ }
         this.#scheduler.prepareDue(companionId);
         this.#cancelRoutineWakes(companionId);
         this.#cancelReleaseWakes(companionId);
@@ -507,6 +527,12 @@ export class SchedulerService {
       catch { /* The generation fence already prevents delivery; a later tick observes completion. */ }
     }
     this.#kick(); return result;
+  }
+  cancelEvents(companionId, prefix) {
+    for (const id of this.#scheduler.cancelEvents(companionId, prefix)) {
+      try { Promise.resolve(this.#conversations.cancelProactive(companionId, id)).catch(() => {}); }
+      catch { /* The cancelled occurrence is no longer deliverable either way. */ }
+    }
   }
   enqueueEvent(companionId, input) { const result = this.#scheduler.enqueueEvent(companionId, input); this.#kick(); return result; }
   async cancel(companionId, input) {

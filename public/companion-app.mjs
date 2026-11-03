@@ -2,6 +2,7 @@
 import { createConversationClient, createFileTransport, AttachmentError, USER_CHARS } from './conversation-client.mjs';
 import { renderCharacter, CHARACTERS, COLORS, OUTFITS, HAS_OUTFITS } from './companion-character.mjs';
 import { createRemindersUI } from './reminders-ui.mjs';
+import { createCalendarUI } from './calendar-ui.mjs';
 import { createMemoryUI } from './memory-ui.mjs';
 import { createPersonalityUI } from './personality-ui.mjs';
 import { createContactUI, renderPeerCard } from './contact-ui.mjs';
@@ -10,6 +11,7 @@ import { createWeatherUI } from './weather-ui.mjs';
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
 const fileTransport = createFileTransport();
+const calendarUI = createCalendarUI({ document, visible: () => view === 'watches' });
 const remindersUI = createRemindersUI({ document, visible: () => view === 'watches' || (view === 'me' && meSection === 'settings') });
 const memoryUI = createMemoryUI({ document, api, onDenied: fileAccessDenied });
 const personalityUI = createPersonalityUI({ document, api, onDenied: fileAccessDenied });
@@ -113,6 +115,7 @@ function show(next) {
   if (connectorsShown()) { $('discord-pick').hidden = false; void loadConnectors(); void loadDiscord(); }
   if (lookShown()) startLook();
   if (next === 'watches' || (next === 'me' && meSection === 'settings')) void remindersUI.show();
+  if (next === 'watches') void calendarUI.show();
   if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); }
   renderAll();
 }
@@ -196,7 +199,7 @@ async function readChat() {
       initialThreadAttempted = true; await client.create('Companion');
     }
     if (ticket.owner !== ownerEpoch || readTicket !== ticket) return;
-    if (state.connection === 'ready') { readFailures = 0; await remindersUI.refreshIfOpen(); }
+    if (state.connection === 'ready') { readFailures = 0; await remindersUI.refreshIfOpen(); await calendarUI.refreshIfOpen(); }
     else readFailures++;
     if (before?.state === 'streaming' && state.turn?.requestId === before.requestId && state.turn.state === 'complete') happyUntil = Date.now() + 5000;
   } catch { if (ticket.owner === ownerEpoch && readTicket === ticket) readFailures++; }
@@ -379,7 +382,7 @@ function resetShell(denied) {
   for (const id of ['discord-pick', 'android-pick']) $(id).hidden = true;
   connectors = null; connectorsBusy = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
   kept.hidden = true; keptText.textContent = ''; reconnect.hidden = true;
-  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); remindersUI.clear(); client.clear(); clearUploads(); clearFullImage();
+  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); remindersUI.clear(); calendarUI.clear(); client.clear(); clearUploads(); clearFullImage();
 }
 function clearUploads() {
   uploadEpoch++;

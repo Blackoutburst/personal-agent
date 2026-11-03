@@ -210,7 +210,8 @@ test('generated owner MCP bindings run the actual scheduler child and permit onl
   assert.equal(configA.env.COMPANION_SCHEDULER_URL, app.url + '/internal/scheduler');
   const ownerA = await mcpChild(f, configA), ownerB = await mcpChild(f, configB);
   const tools = await ownerA.request('tools/list', {});
-  assert.deepEqual(tools.result.tools.map(tool => tool.name), ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'create_topic_watch', 'update_release_watch']);
+  assert.deepEqual(tools.result.tools.map(tool => tool.name), ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'create_topic_watch', 'update_release_watch',
+    'list_calendar', 'create_event', 'update_event', 'delete_event']);
   const input = { requestId: 'from-real-mcp-child', text: 'Created through the owned scheduler tool', dueAt: iso(f.clock + 10 * MINUTE) };
   const created = toolValue(await ownerA.call('create_schedule', input));
   assert.equal(created.items.length, 1); const id = created.items[0].id;
@@ -349,4 +350,50 @@ test('daily and weekly routines privately deliver with closed clients once and t
   await f.close(app); const reopened = await f.open(); await settle(reopened);
   assert.equal(f.calls('blackout').length, 2, 'Neither admitted local period is replayed after restart');
   assert.equal(f.calls('screamer').length, 0);
+});
+
+test('calendar events (#44): owner UI and the real MCP child share one owner-bound calendar, and reminders arrive as wakes', async t => {
+  const f = fixture(t), app = await f.open(); await ready(f, app);
+  const thread = await chat(app, { action: 'createThread', requestId: 'calendar-thread', title: 'Calendar' });
+  await chat(app, { action: 'submit', requestId: 'calendar-hello', threadId: thread.body.thread.id, text: 'hello' });
+  await app.conversations.idle();
+  const child = await mcpChild(f, descriptor(f.calls('blackout')[0]));
+  // f.clock is 2026-11-02 12:00 UTC; the dentist is at 14:00 with a reminder 60 minutes before.
+  const event = { title: 'Dentist', start: '2026-11-02T14:00', location: 'Rue de la Paix', reminderMinutes: 60 };
+  const created = toolValue(await child.call('create_event', { requestId: 'cal-tool-1', event }));
+  assert.equal(created.event.title, 'Dentist'); assert.equal(created.event.allDay, false);
+  assert.equal(toolValue(await child.call('create_event', { requestId: 'cal-tool-1', event })).event.id, created.event.id, 'Exact retry');
+  const conflict = await child.call('create_event', { requestId: 'cal-tool-1', event: { ...event, title: 'Other' } });
+  assert.equal(conflict.result.isError, true); assert.match(conflict.result.content[0].text, /^CALENDAR_CONFLICT/);
+  const bad = await child.call('create_event', { requestId: 'cal-tool-2', event: { title: 'x', start: '2026-02-30' } });
+  assert.match(bad.result.content[0].text, /^CALENDAR_INVALID_REQUEST/);
+
+  const view = await schedules(app, { action: 'calendar', input: { from: '2026-11-01', days: 7 } });
+  assert.equal(view.status, 200); assert.deepEqual(view.body.occurrences.map(item => item.title), ['Dentist']);
+  assert.deepEqual((await schedules(app, { action: 'calendar' }, B)).body.occurrences, [], 'The other owner sees nothing');
+  assert.equal((await schedules(app, { action: 'deleteEvent', input: { id: created.event.id } }, B)).body.deleted, false);
+  const token = { Authorization: 'Bearer ' + descriptor(f.calls('blackout')[0]).env.COMPANION_SCHEDULER_TOKEN };
+  assert.equal((await post(app, '/internal/scheduler', { action: 'calendarSettings', input: { holidaysFr: true } }, null, token)).status, 400,
+    'Only the owner UI changes calendar settings');
+  assert.equal((await schedules(app, { action: 'calendarSettings', input: { holidaysFr: true } })).status, 200);
+  const holidays = toolValue(await child.call('list_calendar', { from: '2026-11-01', days: 14 }));
+  assert.deepEqual(holidays.occurrences.map(item => item.title), ['Toussaint', 'Dentist', 'Armistice 1918']);
+
+  // Not yet due: nothing is queued. At 13:00 the reminder becomes a calendar wake with the event details.
+  await settle(app);
+  assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM conv_wakes WHERE kind='calendar'").get().n, 0);
+  f.clock += HOUR; await settle(app);
+  const wake = app.store.db.prepare("SELECT * FROM conv_wakes WHERE kind='calendar'").all();
+  assert.equal(wake.length, 1); assert.match(wake[0].prompt, /"Dentist" on Monday 2 November at 14:00/);
+  assert.equal(wake[0].state, 'message');
+  f.clock += 5 * MINUTE; await settle(app);
+  assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM conv_wakes WHERE kind='calendar'").get().n, 1, 'Reminded once');
+  const wakeCall = f.calls('blackout').find(call => call.prompt.includes('background calendar wake'));
+  assert.ok(wakeCall && !wakeCall.args.join(',').includes('mcp__scheduler__create_event'), 'Calendar wakes cannot edit the calendar');
+
+  const updated = toolValue(await child.call('update_event', { id: created.event.id, expectedVersion: 1, event: { ...event, title: 'Dentist (moved)' } }));
+  assert.equal(updated.event.version, 2);
+  assert.match((await child.call('update_event', { id: created.event.id, expectedVersion: 1, event: { ...event, title: 'Again' } })).result.content[0].text, /CONFLICT/);
+  assert.equal(toolValue(await child.call('delete_event', { id: created.event.id })).deleted, true);
+  child.child.stdin.end();
 });

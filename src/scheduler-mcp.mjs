@@ -13,6 +13,12 @@ const exact = (value, keys) => object(value) && Object.keys(value).length === ke
 const empty = value => value === undefined || exact(value, []);
 const string = (maximum, description) => ({ type: 'string', maxLength: maximum, description });
 const schema = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
+const EVENT = { type: 'object', properties: { title: string(200, 'Short event title'),
+  start: string(16, 'Local start: YYYY-MM-DDTHH:MM, or YYYY-MM-DD for all day'), allDay: { type: 'boolean' },
+  end: string(16, 'Optional local end, same format as start'), location: string(200, 'Optional place'), notes: string(1000, 'Optional notes'),
+  yearly: { type: 'boolean', description: 'Repeat every year' },
+  reminderMinutes: { type: 'integer', minimum: 0, maximum: 10080, description: 'Optional reminder this many minutes before' } },
+  required: ['title', 'start'], additionalProperties: false };
 const TOOLS = [
   { name: 'create_schedule', description: 'Create a one-time reminder for this owner. First check list_schedules for their timezone. Resolve the requested time to an ISO timestamp with an explicit offset or Z. Reuse requestId for exact retries.',
     inputSchema: schema({ requestId: string(80, 'Stable logical request key'), text: string(1000, 'What to remind this owner about'), dueAt: string(40, 'ISO timestamp with explicit timezone offset') }) },
@@ -28,7 +34,17 @@ const TOOLS = [
       expectedVersion: { type: 'integer', minimum: 1 }, operation: { type: 'string', enum: ['edit', 'pause', 'resume', 'cancel'] },
       condition: string(1000, 'New confirmed condition or topic, only for edit'),
       intervalHours: { type: 'integer', minimum: 6, maximum: 168, description: 'New check interval in hours, only for editing a topic watch' } },
-      required: ['requestId', 'id', 'expectedVersion', 'operation'], additionalProperties: false } }
+      required: ['requestId', 'id', 'expectedVersion', 'operation'], additionalProperties: false } },
+  { name: 'list_calendar', description: 'Read this owner\'s calendar: events (and French public holidays if they turned them on) from a local date for a number of days, plus their timezone and today\'s date. Defaults to today and the next 42 days.',
+    inputSchema: { type: 'object', properties: { from: string(10, 'Local start date YYYY-MM-DD'), days: { type: 'integer', minimum: 1, maximum: 400 } },
+      additionalProperties: false } },
+  { name: 'create_event', description: 'Add an event to this owner\'s calendar when they ask. Times are the owner\'s local wall time: start is YYYY-MM-DDTHH:MM, or YYYY-MM-DD for an all-day event. yearly repeats it every year (birthdays). reminderMinutes asks for a reminder that many minutes before (all-day events: before 09:00 that day); leave it out for none. Reuse requestId for exact retries.',
+    inputSchema: { type: 'object', properties: { requestId: string(80, 'Stable logical request key'), event: EVENT }, required: ['requestId', 'event'], additionalProperties: false } },
+  { name: 'update_event', description: 'Change an event after this owner asks. Send the whole event as it should be (unchanged fields too), with the version from list_calendar. A yearly event changes for every year.',
+    inputSchema: { type: 'object', properties: { id: string(36, 'Event ID'), expectedVersion: { type: 'integer', minimum: 1 }, event: EVENT },
+      required: ['id', 'expectedVersion', 'event'], additionalProperties: false } },
+  { name: 'delete_event', description: 'Delete an event after this owner asks. A yearly event is deleted for every year.',
+    inputSchema: schema({ id: string(36, 'Event ID') }) }
 ];
 function configuration(endpoint, token) {
   let url;
@@ -60,6 +76,16 @@ function toolInput(name, args) {
     return { action: 'updateWatch', input: { ...args } };
   }
   if (name === 'list_schedules' && exact(args, [])) return { action: 'list' };
+  // Calendar arguments are checked in full by the application (src/calendar.mjs); only the envelope is checked here.
+  if (name === 'list_calendar' && object(args) && Object.keys(args).every(key => ['from', 'days'].includes(key))) return { action: 'calendar', input: { ...args } };
+  if (name === 'create_event' && exact(args, ['requestId', 'event']) && stableKey(args.requestId) && object(args.event)) {
+    return { action: 'createEvent', input: { requestId: args.requestId, event: { ...args.event } } };
+  }
+  if (name === 'update_event' && exact(args, ['id', 'expectedVersion', 'event']) && typeof args.id === 'string' && UUID.test(args.id)
+    && Number.isSafeInteger(args.expectedVersion) && args.expectedVersion > 0 && object(args.event)) {
+    return { action: 'updateEvent', input: { id: args.id, expectedVersion: args.expectedVersion, event: { ...args.event } } };
+  }
+  if (name === 'delete_event' && exact(args, ['id']) && typeof args.id === 'string' && UUID.test(args.id)) return { action: 'deleteEvent', input: { id: args.id } };
   if (name === 'cancel_schedule' && exact(args, ['id']) && typeof args.id === 'string' && UUID.test(args.id)) {
     return { action: 'cancel', input: { id: args.id } };
   }
@@ -74,7 +100,7 @@ function toolInput(name, args) {
   return null;
 }
 async function readJson(response) {
-  if (!response.ok || !response.body) throw new Error();
+  if (!response.body) throw new Error();
   const chunks = []; let size = 0;
   for await (const chunk of response.body) {
     size += chunk.length;
@@ -135,6 +161,12 @@ export async function runSchedulerMcp({ input = process.stdin, output = process.
         headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: 'Bearer ' + token },
         body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
       const data = await readJson(response);
+      if (!response.ok) {
+        // Say why (invalid, conflict, not found) so the model can fix its request; messages are fixed server text.
+        const code = typeof data.error?.code === 'string' ? data.error.code.slice(0, 60) : 'UNAVAILABLE';
+        const message = typeof data.error?.message === 'string' ? data.error.message.slice(0, 200) : 'The request could not be completed.';
+        return result({ content: [{ type: 'text', text: `${code}: ${message}` }], isError: true });
+      }
       return result({ content: [{ type: 'text', text: JSON.stringify(data) }], isError: false });
     } catch {
       return result({ content: [{ type: 'text', text: 'The reminder service could not complete this request. Retry with the same request key.' }], isError: true });

@@ -102,8 +102,8 @@ fun WatchesScreen(model: CompanionModel, state: UiState) {
     val locked = state.schedulesBusy || state.watchRetry != null
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         item {
-            Text("Watches & reminders", Modifier.padding(top = 20.dp), fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = ink)
-            Text("Ask ${state.name} in chat to watch for a release, follow a topic or remind you of something.", color = soft, fontSize = 15.sp)
+            Text("Calendar & watches", Modifier.padding(top = 20.dp), fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = ink)
+            Text("Ask ${state.name} in chat to add an event, watch for a release, follow a topic or remind you of something.", color = soft, fontSize = 15.sp)
             Row {
                 ActionButton(enabled = !state.schedulesBusy && !state.schedulesLoading, onClick = { model.loadSchedules() }) {
                     Text(if (state.schedulesLoading) "Loading…" else "Reload")
@@ -117,6 +117,9 @@ fun WatchesScreen(model: CompanionModel, state: UiState) {
                     ActionButton(enabled = !state.schedulesBusy, onClick = { model.dropWatchChange() }) { Text("Stop and reload") }
                 }
             }
+        }
+        item { CalendarSection(model, state) }
+        item {
             Spacer(Modifier.height(10.dp))
             Text("Watches", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = ink)
             Text("Release watches check every six hours until the release is out. Topic watches send a short digest with sources whenever there is something new. " +

@@ -396,3 +396,45 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .connector .status[data-state="pending"]::before { background: #d29922; }
 .connector .status[data-state="error"]::before { background: var(--danger); }
 @media (max-width: 480px) { .me-tabs { gap: 4px; } .me-tabs a { padding: 6px 10px; font-size: 13px; } }
+
+/* Calendar (#44), top of the Watches tab */
+.calendar-block { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); min-width: 0; }
+.calendar-block h2 { font-size: 18px; margin: 0 0 8px; }
+.cal-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+.cal-range { font-weight: 600; font-size: 14px; min-width: 9em; text-align: center; }
+.cal-modes { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-left: auto; }
+.cal-modes button { border: 0 !important; border-radius: 0 !important; }
+.cal-modes button[aria-pressed="true"] { background: var(--bg2); font-weight: 700; }
+.calendar-block button { border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink); font: inherit; font-size: 13px; padding: 6px 10px; cursor: pointer; }
+.calendar-block button:disabled { opacity: .55; cursor: default; }
+.calendar-block button:focus-visible, .cal-editor :is(input, select, textarea):focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.calendar-block .cal-nav { font-size: 18px; line-height: 1; padding: 4px 11px; }
+.calendar-block .cal-add { background: var(--ink); color: var(--card); border-color: transparent; font-weight: 600; }
+.calendar-block button.danger { color: #B3261E; }
+.cal-notice { font-size: 12px; color: var(--soft); margin: 4px 0; }
+.cal-notice:empty { display: none; }
+.cal-days { display: grid; gap: 4px; }
+.cal-day { padding: 8px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.cal-day:last-child { border-bottom: 0; }
+.cal-day h3 { font-size: 13px; margin: 0 0 4px; color: var(--soft); font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.cal-day.today h3 { color: var(--ink); }
+.cal-today { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: var(--bg2); }
+.cal-day ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.cal-item { display: flex; align-items: flex-start; gap: 10px; padding: 6px 8px; border-radius: 10px; background: var(--bg); min-width: 0; }
+.cal-item.holiday { background: transparent; border: 1px dashed var(--line); }
+.cal-time { flex: 0 0 6.2em; font-size: 12px; font-weight: 600; color: var(--soft); padding-top: 2px; font-variant-numeric: tabular-nums; }
+.cal-body { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.cal-body strong { display: block; font-size: 14px; }
+.cal-extra { display: block; font-size: 12px; color: var(--soft); margin-top: 2px; }
+.calendar-block .cal-edit { flex: 0 0 auto; font-size: 12px; padding: 4px 8px; }
+.cal-empty { margin: 0; font-size: 12px; color: var(--muted-ink); }
+.cal-holidays { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-top: 10px; color: var(--soft); }
+.cal-editor { display: grid; gap: 10px; padding: 12px; margin: 6px 0 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+.cal-field { display: grid; gap: 4px; font-size: 12px; color: var(--soft); min-width: 0; }
+.cal-field :is(input, select, textarea) { font: inherit; font-size: 14px; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.cal-field input[hidden] { display: none; }
+.cal-field:has(input[hidden]) { display: none; }
+.cal-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.cal-check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.cal-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 480px) { .cal-modes { margin-left: 0; } .cal-range { min-width: 0; flex: 1 1 auto; } .cal-time { flex-basis: 5.6em; } }

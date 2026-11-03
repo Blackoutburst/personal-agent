@@ -64,7 +64,7 @@ function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: prof
     document, navigator: { onLine: true }, crypto: { randomUUID: () => '9d23bd88-cc69-4067-b375-e32bf5d7b338' }, location: { get hash() { return locationHash; }, set hash(value) { const changed = value !== locationHash; locationHash = value; if (changed) queueMicrotask(() => windowListeners.get('hashchange')?.()); } }, matchMedia: () => ({ matches: false }), confirm: () => true,
     createConversationClient: () => client, createFileTransport: () => ({ async upload(file, options) { uploads.push({ file, options }); return { id: '4d317b44-1f1a-46f1-b515-822d93c8246c', name: file.name, size: file.size, mime: 'application/octet-stream', url: '/api/files/4d317b44-1f1a-46f1-b515-822d93c8246c' }; } }), USER_CHARS: 8000, AttachmentError: class extends Error {},
     renderCharacter: () => '<svg></svg>', CHARACTERS: [{ id: 'pip', label: 'Pip', hint: 'Synthetic' }], COLORS: { peach: { body: '#a', shade: '#b', light: '#c' } }, OUTFITS: [], HAS_OUTFITS: () => false,
-    createRemindersUI: feature, createMemoryUI: feature, createPersonalityUI: feature, createContactUI: feature, createWeatherUI: feature, renderPeerCard: () => new Element(),
+    createRemindersUI: feature, createCalendarUI: feature, createMemoryUI: feature, createPersonalityUI: feature, createContactUI: feature, createWeatherUI: feature, renderPeerCard: () => new Element(),
     fetch: async (url, options = {}) => { if (url === 'android.json') return response({}, 404); const input = JSON.parse(options.body); requests.push(input); const queue = queues.get(input.action), next = queue?.shift();
       if (next) return await next;
       if (input.action === 'setProfile') setupSaved = true;

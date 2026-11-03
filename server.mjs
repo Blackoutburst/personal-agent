@@ -20,6 +20,7 @@ import { Profiles, ensureWorkspace, instructions } from './src/companion.mjs';
 import { createCompanionHttp } from './src/companion-http.mjs';
 import { SchedulerStore, SchedulerService } from './src/scheduler.mjs';
 import { createSchedulerHttp, schedulerOperation } from './src/scheduler-http.mjs';
+import { Calendar } from './src/calendar.mjs';
 import { DiscordLinks, DiscordBridge } from './src/discord.mjs';
 import { FileStore, FileError, FILE_LIMITS } from './src/files.mjs';
 import { createFileHttp, fileFailure } from './src/file-http.mjs';
@@ -46,6 +47,7 @@ const STATIC = new Map([
   ['/companion.css', ['companion.css', 'text/css; charset=utf-8']],
   ['/companion-app.mjs', ['companion-app.mjs', 'text/javascript; charset=utf-8']],
   ['/reminders-ui.mjs', ['reminders-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/calendar-ui.mjs', ['calendar-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/memory-ui.mjs', ['memory-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/personality-ui.mjs', ['personality-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/contact-ui.mjs', ['contact-ui.mjs', 'text/javascript; charset=utf-8']],
@@ -100,7 +102,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let conversationHttp;
   let agentsConfigured = false;
   let companionHttp;
-  let schedulerHttp, schedulerService, schedulerStore, discord = null;
+  let schedulerHttp, schedulerService, schedulerStore, calendar = null, discord = null;
   let files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, connectors = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
@@ -192,7 +194,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           return fail(415, 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json.');
         }
         const parsed = await readJsonBody(req, 16384);
-        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value);
+        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value, { calendar });
         if (result.closeConnection) res.setHeader('connection', 'close');
         return send(result.status, result.body);
       }
@@ -270,7 +272,8 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
             if (!Array.isArray(additional) || !companionId || !server.address()) throw new TypeError('Invalid app tools');
             return [...additional, { name: 'scheduler', command: process.execPath, args: [join(ROOT, 'src', 'scheduler-mcp.mjs')],
               env: { COMPANION_SCHEDULER_URL: `http://127.0.0.1:${server.address().port}/internal/scheduler`,
-                COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'create_topic_watch', 'update_release_watch'] }];
+                COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'create_topic_watch', 'update_release_watch',
+                  'list_calendar', 'create_event', 'update_event', 'delete_event'] }];
           } });
         agentsConfigured = true;
       }
@@ -352,11 +355,14 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           });
         }
       };
-      schedulerService = new SchedulerService({ scheduler: schedulerStore, conversations,
+      calendar = new Calendar({ store, timezoneFor: companionId => profiles.get(companionId)?.timezone ?? 'UTC',
+        ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}), reminders: schedulerStore,
+        changed: (companionId, eventId) => schedulerService?.cancelEvents(companionId, `cal-${eventId}-`) });
+      schedulerService = new SchedulerService({ scheduler: schedulerStore, conversations, prepare: companionId => calendar.enqueueDue(companionId),
         companions: () => [...new Set([...owners.map(owner => companionIdFor(store, owner)).filter(id => id && profiles.get(id)),
           ...schedulerStore.releaseCompanions()])],
         ready: companionId => Boolean(runner?.ownerFor(companionId)), ...(schedulerOptions.pollMs ? { pollMs: schedulerOptions.pollMs } : {}) });
-      schedulerHttp = createSchedulerHttp({ access, scheduler: schedulerService });
+      schedulerHttp = createSchedulerHttp({ access, scheduler: schedulerService, calendar });
       // Board companion duties (docs/BOARD-COMPANION.md): Needs-you wakes, profile sync and attachments.
       boardCompanion = new BoardCompanion({ store, owners, profiles, scheduler: schedulerService,
         companionIdFor: owner => companionIdFor(store, owner), active: companionId => connectors.enabled(companionId, 'board'),

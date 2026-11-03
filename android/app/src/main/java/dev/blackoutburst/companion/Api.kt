@@ -77,6 +77,18 @@ import kotlinx.serialization.json.put
 @Serializable data class Schedules(val timezone: String, val settings: ScheduleSettings, val items: List<Reminder> = emptyList(),
     val releaseWatches: List<Watch> = emptyList())
 
+/** Calendar (#44, src/calendar.mjs). start is the owner's local time: "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" all day. */
+@Serializable data class CalEvent(val id: String, val version: Long, val title: String, val allDay: Boolean, val start: String,
+    val end: String? = null, val location: String? = null, val notes: String? = null, val yearly: Boolean = false, val reminderMinutes: Int? = null)
+@Serializable data class CalOccurrence(val eventId: String? = null, val holiday: Boolean = false, val title: String, val date: String,
+    val allDay: Boolean, val start: String, val end: String? = null, val location: String? = null, val yearly: Boolean = false,
+    val reminderMinutes: Int? = null)
+@Serializable data class CalendarView(val timezone: String, val today: String, val from: String, val days: Int, val holidaysFr: Boolean = false,
+    val occurrences: List<CalOccurrence> = emptyList(), val events: List<CalEvent> = emptyList(), val total: Int = 0)
+@Serializable data class CalEventReply(val event: CalEvent)
+data class EventDraft(val title: String, val allDay: Boolean, val start: String, val end: String?, val location: String?,
+    val notes: String?, val yearly: Boolean, val reminderMinutes: Int?)
+
 /** Only plain http(s) links without credentials are ever shown as tappable sources. */
 fun safeLink(url: String): Boolean = url.length <= 2048 && runCatching {
     val parsed = java.net.URI(url)
@@ -180,6 +192,24 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
         }) })
     suspend fun configureSchedules(input: JsonObject): Schedules =
         scheduleCall(buildJsonObject { put("action", "configure"); put("input", input) })
+    suspend fun calendar(from: String?, days: Int): CalendarView = call("api/schedules", buildJsonObject {
+        put("action", "calendar"); put("input", buildJsonObject { from?.let { put("from", it) }; put("days", days) })
+    })
+    suspend fun createEvent(requestId: String, draft: EventDraft): CalEvent = call<CalEventReply>("api/schedules", buildJsonObject {
+        put("action", "createEvent"); put("input", buildJsonObject { put("requestId", requestId); put("event", eventJson(draft)) })
+    }).event
+    suspend fun updateEvent(event: CalEvent, draft: EventDraft): CalEvent = call<CalEventReply>("api/schedules", buildJsonObject {
+        put("action", "updateEvent"); put("input", buildJsonObject { put("id", event.id); put("expectedVersion", event.version); put("event", eventJson(draft)) })
+    }).event
+    suspend fun deleteEvent(id: String) { post(companion + "api/schedules", buildJsonObject { put("action", "deleteEvent"); put("input", buildJsonObject { put("id", id) }) }) }
+    suspend fun calendarSettings(holidaysFr: Boolean) {
+        post(companion + "api/schedules", buildJsonObject { put("action", "calendarSettings"); put("input", buildJsonObject { put("holidaysFr", holidaysFr) }) })
+    }
+    private fun eventJson(draft: EventDraft) = buildJsonObject {
+        put("title", draft.title); put("allDay", draft.allDay); put("start", draft.start); draft.end?.let { put("end", it) }
+        draft.location?.let { put("location", it) }; draft.notes?.let { put("notes", it) }; put("yearly", draft.yearly)
+        draft.reminderMinutes?.let { put("reminderMinutes", it) }
+    }
     private suspend fun scheduleCall(body: JsonObject): Schedules {
         val raw = post(companion + "api/schedules", body)
         return verified {

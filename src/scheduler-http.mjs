@@ -1,4 +1,5 @@
 import { SchedulerError } from './scheduler.mjs';
+import { calendarOperation, isCalendarAction } from './calendar.mjs';
 
 const failure = (status, code, message) => ({ status, body: { error: { code, message } } });
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
@@ -6,7 +7,9 @@ const exact = (value, keys) => value && typeof value === 'object' && !Array.isAr
 
 // Shared by the freshly authenticated owner UI and the application-owned tool broker.
 // Only the browser path may change quiet hours or opt in to proactive heartbeats.
-export async function schedulerOperation(scheduler, companionId, payload, { allowSettings = false } = {}) {
+// Calendar actions (#44) travel the same two paths.
+export async function schedulerOperation(scheduler, companionId, payload, { allowSettings = false, calendar = null } = {}) {
+  if (payload && typeof payload === 'object' && isCalendarAction(payload.action)) return calendarOperation(calendar, companionId, payload, { allowSettings });
   if (!scheduler) return failure(503, 'SCHEDULER_UNAVAILABLE', 'Reminders are unavailable right now.');
   try {
     let value;
@@ -25,12 +28,12 @@ export async function schedulerOperation(scheduler, companionId, payload, { allo
   }
 }
 
-export function createSchedulerHttp({ access, scheduler }) {
+export function createSchedulerHttp({ access, scheduler, calendar = null }) {
   return async request => {
     const parsed = await access.read(request, 16384);
     if (parsed.failure) return parsed.failure;
     const admitted = await access.authorize(request);
     if (admitted.failure) return admitted.failure;
-    return schedulerOperation(scheduler, admitted.companionId, parsed.value, { allowSettings: true });
+    return schedulerOperation(scheduler, admitted.companionId, parsed.value, { allowSettings: true, calendar });
   };
 }

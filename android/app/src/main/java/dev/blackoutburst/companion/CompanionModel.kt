@@ -91,6 +91,12 @@ data class UiState(
     val connectors: List<Connector>? = null,
     val connectorsBusy: Boolean = false,
     val connectorsError: String? = null,
+    /** Calendar (#44) at the top of the Watches tab. calendarMode: "week" or "agenda". */
+    val calendar: CalendarView? = null,
+    val calendarMode: String = "week",
+    val calendarBusy: Boolean = false,
+    val calendarError: String? = null,
+    val calendarNotice: String? = null,
     /** Watches tab and schedule settings (api/schedules). */
     val schedules: Schedules? = null,
     val schedulesLoading: Boolean = false,
@@ -348,6 +354,61 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             } finally { if (current(version)) _state.update { it.copy(connectorsBusy = false) } }
         }
     }
+
+    // ---- Calendar (#44, api/schedules) ----
+    /** from: the first day to show; null means this week (week view) or today (agenda). */
+    fun loadCalendar(from: String? = _state.value.calendar?.from, mode: String = _state.value.calendarMode) {
+        val version = scope
+        _state.update { it.copy(calendarMode = mode, calendarBusy = true) }
+        viewModelScope.launch {
+            try {
+                val start = from ?: calendarStart(java.time.LocalDate.parse(api.calendar(null, 1).today), mode).toString()
+                val result = api.calendar(start, if (mode == "week") 7 else 60)
+                if (current(version)) _state.update { it.copy(calendar = result, calendarError = null) }
+            } catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) signedOut() else _state.update { it.copy(calendarError = "Your calendar could not be loaded.") }
+            } catch (_: Exception) {
+                if (current(version)) _state.update { it.copy(calendarError = "Your calendar could not be loaded.") }
+            } finally { if (current(version)) _state.update { it.copy(calendarBusy = false) } }
+        }
+    }
+    fun calendarWeek(delta: Long) {
+        val from = _state.value.calendar?.from ?: return
+        _state.update { it.copy(calendarNotice = null) }
+        loadCalendar(java.time.LocalDate.parse(from).plusWeeks(delta).toString(), "week")
+    }
+    fun calendarToday() { _state.update { it.copy(calendarNotice = null) }; loadCalendar(null) }
+    fun calendarMode(mode: String) { if (mode != _state.value.calendarMode) loadCalendar(null, mode) }
+
+    private fun mutateCalendar(done: String, call: suspend () -> Unit, after: () -> Unit = {}) {
+        if (_state.value.calendarBusy) return
+        val version = scope
+        _state.update { it.copy(calendarBusy = true, calendarError = null, calendarNotice = null) }
+        viewModelScope.launch {
+            try {
+                call()
+                if (current(version)) { _state.update { it.copy(calendarNotice = done) }; after() }
+            } catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                _state.update { it.copy(calendarError = when {
+                    error.code == "CALENDAR_CONFLICT" || error.status == 404 -> "This event changed somewhere else. Here is the current calendar."
+                    error.code == "CALENDAR_CAPACITY" -> "The calendar is full (500 events)."
+                    error.code == "CALENDAR_INVALID_REQUEST" -> "Check the dates: the end must not be before the start."
+                    error.code == "NETWORK" -> "Connection lost. The change may or may not have been saved."
+                    else -> "That change could not be saved."
+                }) }
+            } finally { if (current(version)) _state.update { it.copy(calendarBusy = false) } }
+            if (current(version)) loadCalendar()
+        }
+    }
+    /** existing == null creates; requestId stays the same while one editor is open, so a resend never duplicates. */
+    fun saveEvent(existing: CalEvent?, requestId: String, draft: EventDraft, onSaved: () -> Unit) =
+        mutateCalendar(if (existing == null) "Event added." else "Event saved.",
+            { if (existing == null) api.createEvent(requestId, draft) else api.updateEvent(existing, draft) }, onSaved)
+    fun deleteEvent(event: CalEvent, onDone: () -> Unit) = mutateCalendar("Event deleted.", { api.deleteEvent(event.id) }, onDone)
+    fun setHolidays(on: Boolean) = mutateCalendar(if (on) "French public holidays shown." else "Holidays hidden.", { api.calendarSettings(on) })
 
     // ---- Watches, reminders and schedule settings (api/schedules) ----
     fun loadSchedules() {
