@@ -227,10 +227,18 @@ changed. New connectors add an entry to `Connectors.list()` and, if they bring t
 ## Calendar (#44)
 
 Events live in `src/calendar.mjs` (tables `calendar_events`, `calendar_settings`). Each event has a title, a local
-wall-time start (`YYYY-MM-DDTHH:MM`, or `YYYY-MM-DD` for all day), an optional end, location and notes, an optional
-yearly repeat (29 February falls on the 28th in other years) and an optional reminder N minutes before (all-day events
+wall-time start (`YYYY-MM-DDTHH:MM`, or `YYYY-MM-DD` for all day), an optional end, location and notes, a repeat
+(`repeat`: `none`, `daily`, `weekly`, `monthly` on the same day of the month with the 29th–31st on the last day of
+shorter months, or `yearly` with 29 February on the 28th; #47, column `repeat`, the old `yearly` column kept in step
+and still accepted from older clients) and an optional reminder N minutes before (all-day events
 count back from 09:00 local). French public holidays (Easter Monday, Ascension and Whit Monday included) are computed,
-never stored, and shown only when the owner turns them on. At most 500 events per owner.
+never stored, and shown only when the owner turns them on. At most 500 events per owner. A repeating event may span at
+most 0 (daily), 6 (weekly) or 27 (monthly) days so its occurrences never overlap.
+
+The apps show a Monday-first month grid (#47): whole weeks around the month, multi-day events as one bar per week row
+(lanes, cut at week ends), single-day chips with "+N" past three lines, holidays in the note colour, the selected
+day's events below and a + button. The web layout is `weekLayout` in `public/calendar-ui.mjs`; Android mirrors it in
+`CalendarViews.kt` (debug `CalendarGalleryActivity` renders it from a pushed sample view).
 
 Actions travel with the reminder actions: the owner UI posts `calendar`, `createEvent`, `updateEvent`, `deleteEvent`
 and `calendarSettings` to `/api/schedules`; the companion's scheduler MCP has `list_calendar`, `create_event`,

@@ -91,9 +91,10 @@ data class UiState(
     val connectors: List<Connector>? = null,
     val connectorsBusy: Boolean = false,
     val connectorsError: String? = null,
-    /** Calendar (#44), the Calendar tab. calendarMode: "week" or "agenda". */
+    /** Calendar (#44, month grid #47), the Calendar tab. calendarMonth: "2026-11"; calendarDay: the selected day. */
     val calendar: CalendarView? = null,
-    val calendarMode: String = "week",
+    val calendarMonth: String? = null,
+    val calendarDay: String? = null,
     val calendarBusy: Boolean = false,
     val calendarError: String? = null,
     val calendarNotice: String? = null,
@@ -392,15 +393,19 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ---- Calendar (#44, api/schedules) ----
-    /** from: the first day to show; null means this week (week view) or today (agenda). */
-    fun loadCalendar(from: String? = _state.value.calendar?.from, mode: String = _state.value.calendarMode) {
+    /** month: "2026-11" to show; null means this month (and today selected). The grid covers whole Monday-first weeks. */
+    fun loadCalendar(month: String? = _state.value.calendarMonth, day: String? = null) {
         val version = scope
-        _state.update { it.copy(calendarMode = mode, calendarBusy = true) }
+        _state.update { it.copy(calendarBusy = true) }
         viewModelScope.launch {
             try {
-                val start = from ?: calendarStart(java.time.LocalDate.parse(api.calendar(null, 1).today), mode).toString()
-                val result = api.calendar(start, if (mode == "week") 7 else 60)
-                if (current(version)) _state.update { it.copy(calendar = result, calendarError = null) }
+                val today = if (month == null || _state.value.calendar == null) api.calendar(null, 1).today else _state.value.calendar!!.today
+                val shown = java.time.YearMonth.parse(month ?: today.take(7))
+                val (from, days) = monthGrid(shown)
+                val result = api.calendar(from.toString(), days)
+                val selected = day ?: _state.value.calendarDay?.takeIf { month != null && it.take(7) == shown.toString() }
+                    ?: if (today.take(7) == shown.toString()) today else shown.atDay(1).toString()
+                if (current(version)) _state.update { it.copy(calendar = result, calendarMonth = shown.toString(), calendarDay = selected, calendarError = null) }
             } catch (error: ApiException) {
                 if (!current(version)) return@launch
                 if (error.signedOut) signedOut() else _state.update { it.copy(calendarError = "Your calendar could not be loaded.") }
@@ -409,13 +414,17 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             } finally { if (current(version)) _state.update { it.copy(calendarBusy = false) } }
         }
     }
-    fun calendarWeek(delta: Long) {
-        val from = _state.value.calendar?.from ?: return
+    fun calendarShift(months: Long) {
+        val month = _state.value.calendarMonth ?: return
+        if (_state.value.calendarBusy) return
         _state.update { it.copy(calendarNotice = null) }
-        loadCalendar(java.time.LocalDate.parse(from).plusWeeks(delta).toString(), "week")
+        loadCalendar(java.time.YearMonth.parse(month).plusMonths(months).toString())
     }
     fun calendarToday() { _state.update { it.copy(calendarNotice = null) }; loadCalendar(null) }
-    fun calendarMode(mode: String) { if (mode != _state.value.calendarMode) loadCalendar(null, mode) }
+    /** A tap on a day: select it, moving to its month when it is a leading or trailing day. */
+    fun selectDay(day: String) {
+        if (day.take(7) == _state.value.calendarMonth) _state.update { it.copy(calendarDay = day) } else loadCalendar(day.take(7), day)
+    }
 
     private fun mutateCalendar(done: String, call: suspend () -> Unit, after: () -> Unit = {}) {
         if (_state.value.calendarBusy) return

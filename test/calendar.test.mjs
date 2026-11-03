@@ -126,3 +126,65 @@ test('the web calendar labels times, spans and reminders', async () => {
   assert.equal(reminderLabel(60), '1 hour before'); assert.equal(reminderLabel(4320), '3 days before');
   assert.equal(reminderLabel(0, true), 'At 09:00'); assert.equal(reminderLabel(null), '');
 });
+
+test('daily, weekly and monthly repeats (#47): month-end fallback, spans, old clients and reminders every month', () => {
+  const f = fixture({ now: Date.UTC(2026, 10, 30, 7) }), c = f.calendar;      // 30 Nov 2026, 08:00 in Paris
+  const rent = f.add({ title: 'Pay rent', start: '2026-01-01', repeat: 'monthly', reminderMinutes: 0 });
+  const end = f.add({ title: 'Month end', start: '2026-01-31', repeat: 'monthly' });
+  f.add({ title: 'Gym', start: '2026-11-02T18:00', end: '2026-11-02T19:00', repeat: 'weekly' });
+  f.add({ title: 'Pills', start: '2026-11-28T08:00', repeat: 'daily' });
+  f.add({ title: 'Ski week', start: '2026-12-26', end: '2027-01-02' });
+  assert.equal(rent.repeat, 'monthly'); assert.equal(rent.yearly, false);
+  const year = c.view(f.A, { from: '2027-01-01', days: 365 }).occurrences;
+  assert.equal(year.filter(item => item.title === 'Pay rent').length, 12);
+  assert.deepEqual(year.filter(item => item.title === 'Month end').slice(0, 4).map(item => item.date), ['2027-01-31', '2027-02-28', '2027-03-31', '2027-04-30']);
+  assert.deepEqual(c.view(f.A, { from: '2028-02-01', days: 29 }).occurrences.filter(item => item.title === 'Month end').map(item => item.date), ['2028-02-29']);
+  const week = c.view(f.A, { from: '2026-11-30', days: 7 }).occurrences;
+  assert.deepEqual(week.filter(item => item.title === 'Gym').map(item => item.start), ['2026-11-30T18:00']);
+  assert.equal(week.filter(item => item.title === 'Pills').length, 7);
+  assert.equal(c.view(f.A, { from: '2026-11-01', days: 27 }).occurrences.filter(item => item.title === 'Pills').length, 0, 'Not before it began');
+  const ski = c.view(f.A, { from: '2027-01-01', days: 1 }).occurrences.find(item => item.title === 'Ski week');
+  assert.deepEqual([ski.date, ski.end], ['2026-12-26', '2027-01-02'], 'A span across months shows from its first day');
+  for (const event of [{ title: 'x', start: '2026-11-04', end: '2026-11-05', repeat: 'daily' }, { title: 'x', start: '2026-11-04', end: '2026-11-11', repeat: 'weekly' },
+    { title: 'x', start: '2026-11-04', repeat: 'hourly' }, { title: 'x', start: '2026-11-04', repeat: 'monthly', yearly: true }]) {
+    assert.throws(() => c.create(f.A, { requestId: 'bad', event }), error => error.code === 'CALENDAR_INVALID_REQUEST', JSON.stringify(event));
+  }
+  // An older app sends only "yearly": its edit keeps the monthly repeat it cannot show.
+  const kept = c.update(f.A, { id: rent.id, expectedVersion: 1, event: { title: 'Pay the rent', start: '2026-01-01', yearly: false, reminderMinutes: 0 } }).event;
+  assert.equal(kept.repeat, 'monthly');
+  // The 1 December reminder (09:00 that day) is not due yet on 30 November; on the 1st it is, and again on 1 January.
+  assert.equal(c.enqueueDue(f.A), 0);
+  f.now = Date.UTC(2026, 11, 1, 8, 5); assert.equal(c.enqueueDue(f.A), 1);
+  assert.match(f.queued.at(-1).prompt, /"Pay the rent" on Tuesday 1 December \(all day\)[\s\S]*repeats every month/);
+  f.now = Date.UTC(2027, 0, 1, 8, 5); assert.equal(c.enqueueDue(f.A), 1);
+  assert.equal(f.queued.at(-1).requestId, `cal-${rent.id}-20270101-v2`);
+});
+
+test('an existing yearly column becomes repeat on upgrade', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE calendar_events(companion_id TEXT NOT NULL, id TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    title TEXT NOT NULL, all_day INTEGER NOT NULL, start TEXT NOT NULL, end_at TEXT, location TEXT, notes TEXT, yearly INTEGER NOT NULL,
+    reminder_minutes INTEGER, version INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(companion_id, id),
+    UNIQUE(companion_id, request_id))`);
+  const A = randomUUID(), B = randomUUID();
+  db.prepare("INSERT INTO calendar_events VALUES(?,?,'r1','f','Léa',1,'1990-11-04',NULL,NULL,NULL,1,NULL,1,0,0)").run(A, randomUUID());
+  db.prepare("INSERT INTO calendar_events VALUES(?,?,'r2','f','Dentist',0,'2026-11-05T10:00',NULL,NULL,NULL,0,NULL,1,0,0)").run(A, randomUUID());
+  void B;
+  const c = new Calendar({ store: { db }, timezoneFor: () => 'Europe/Paris', now: () => Date.UTC(2026, 10, 3) });
+  assert.deepEqual(c.view(A, { from: '2026-11-01', days: 30 }).events.map(event => [event.title, event.repeat]).sort(), [['Dentist', 'none'], ['Léa', 'yearly']]);
+});
+
+test('the month grid lays multi-day events as bars across a week and counts overflow (#47)', async () => {
+  const { weekLayout } = await import('../public/calendar-ui.mjs');
+  const days = ['2026-11-23', '2026-11-24', '2026-11-25', '2026-11-26', '2026-11-27', '2026-11-28', '2026-11-29'];
+  const one = (title, date, extra = {}) => ({ eventId: title, title, date, allDay: true, start: date, end: null, ...extra });
+  const layout = weekLayout(days, [
+    one('Ski', '2026-11-26', { end: '2026-12-02' }), one('Trip', '2026-11-20', { end: '2026-11-24' }), one('Expo', '2026-11-24', { end: '2026-11-25' }),
+    one('A', '2026-11-27'), one('B', '2026-11-27'), one('C', '2026-11-27'), one('Noël', '2026-11-23', { holiday: true })
+  ]);
+  assert.deepEqual(layout.bars.map(bar => [bar.item.title, bar.from, bar.to, bar.lane, bar.continuesBefore, bar.continuesAfter]),
+    [['Trip', 0, 1, 0, true, false], ['Expo', 1, 2, 1, false, false], ['Ski', 3, 6, 0, false, true]]);
+  assert.equal(layout.lanes, 2);
+  assert.deepEqual(layout.cells[4], { day: '2026-11-27', chips: [], more: 3 }, 'One free line: "+3" instead of a cut list');
+  assert.deepEqual(layout.cells[0].chips.map(item => item.title), ['Noël']);
+});

@@ -79,15 +79,15 @@ import kotlinx.serialization.json.put
 
 /** Calendar (#44, src/calendar.mjs). start is the owner's local time: "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" all day. */
 @Serializable data class CalEvent(val id: String, val version: Long, val title: String, val allDay: Boolean, val start: String,
-    val end: String? = null, val location: String? = null, val notes: String? = null, val yearly: Boolean = false, val reminderMinutes: Int? = null)
+    val end: String? = null, val location: String? = null, val notes: String? = null, val yearly: Boolean = false, val repeat: String = if (yearly) "yearly" else "none", val reminderMinutes: Int? = null)
 @Serializable data class CalOccurrence(val eventId: String? = null, val holiday: Boolean = false, val title: String, val date: String,
     val allDay: Boolean, val start: String, val end: String? = null, val location: String? = null, val yearly: Boolean = false,
-    val reminderMinutes: Int? = null)
+    val repeat: String = if (yearly) "yearly" else "none", val reminderMinutes: Int? = null)
 @Serializable data class CalendarView(val timezone: String, val today: String, val from: String, val days: Int, val holidaysFr: Boolean = false,
     val occurrences: List<CalOccurrence> = emptyList(), val events: List<CalEvent> = emptyList(), val total: Int = 0)
 @Serializable data class CalEventReply(val event: CalEvent)
 data class EventDraft(val title: String, val allDay: Boolean, val start: String, val end: String?, val location: String?,
-    val notes: String?, val yearly: Boolean, val reminderMinutes: Int?)
+    val notes: String?, val repeat: String, val reminderMinutes: Int?)
 
 /** Only plain http(s) links without credentials are ever shown as tappable sources. */
 fun safeLink(url: String): Boolean = url.length <= 2048 && runCatching {
@@ -214,7 +214,7 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
     }
     private fun eventJson(draft: EventDraft) = buildJsonObject {
         put("title", draft.title); put("allDay", draft.allDay); put("start", draft.start); draft.end?.let { put("end", it) }
-        draft.location?.let { put("location", it) }; draft.notes?.let { put("notes", it) }; put("yearly", draft.yearly)
+        draft.location?.let { put("location", it) }; draft.notes?.let { put("notes", it) }; put("repeat", draft.repeat)
         draft.reminderMinutes?.let { put("reminderMinutes", it) }
     }
     private suspend fun scheduleCall(body: JsonObject): Schedules {
