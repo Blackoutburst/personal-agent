@@ -353,6 +353,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
       conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget: new WebBudget({ store }),
         linkContext: (companionId, text) => x.forTurn(companionId, text),
+        turnNote: (companionId, requestId) => requestId.startsWith('discord-') ? discord?.turnNote(requestId) ?? null : null,
         toolFilterFor: companionId => connectors.toolFilter(companionId), wakePolicy: {
         beforeStart: (companionId, id) => (schedulerStore.isReleaseOccurrence(companionId, id) || Boolean(runner?.ownerFor(companionId))) && schedulerStore.startInTransaction(companionId, id),
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id),

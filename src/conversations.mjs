@@ -142,7 +142,7 @@ function titleFrom(text) {
 }
 
 export class Conversations {
-  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext;
+  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote;
   // Both filters must keep a tool (connector switches, #43, on top of the wake or web-allowance filter).
   #filter(companionId, own) {
     const extra = this.#toolFilterFor(companionId);
@@ -158,13 +158,15 @@ export class Conversations {
   // Omitted tools inherit owner policy; [] is an explicit turn-level narrowing.
   constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools,
     session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 }, wakePolicy = {}, onSettled = () => {}, files = null,
-    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null }) {
+    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
     this.#session = session; this.#allowedTools = allowedTools; this.#onSettled = onSettled;
     this.#files = files; this.#fileToolsForTurn = fileToolsForTurn;
     this.#onNativeSettled = onNativeSettled; this.#webBudget = webBudget; this.#toolFilterFor = toolFilterFor;
     // linkContext(companionId, text): reads links the owner sent (X posts, #46) → { prompt, images } or null.
     this.#linkContext = linkContext;
+    // turnNote(companionId, requestId): a short app note for this turn (Discord files that could not be received, #48).
+    this.#turnNote = turnNote;
     this.#wakePolicy = { beforeStart: () => true, canDeliver: () => true, ...wakePolicy };
     if (['beforeStart', 'canDeliver'].some(key => typeof this.#wakePolicy[key] !== 'function')) throw invalid();
     if (['recordReleaseCheck', 'releaseDelivered'].some(key => this.#wakePolicy[key] !== undefined
@@ -866,7 +868,7 @@ export class Conversations {
       }
       const webSpent = this.#webBudget ? !this.#webBudget.available(companionId) : false;
       const turnInput = {
-        prompt: user.text + filePrompt + (linked?.prompt ?? '') + (requestId.startsWith('discord-') ? DISCORD_NOTE : '') + (webSpent ? WEB_SPENT_NOTE : ''),
+        prompt: user.text + filePrompt + (this.#turnNote?.(companionId, requestId) ?? '') + (linked?.prompt ?? '') + (requestId.startsWith('discord-') ? DISCORD_NOTE : '') + (webSpent ? WEB_SPENT_NOTE : ''),
         ...((filter => filter ? { toolFilter: filter } : {})(this.#filter(companionId, webSpent ? withoutWeb : null))), images: [...incoming.filter(file => file.mime.startsWith('image/')).map(file => file.path), ...(linked?.images ?? [])].slice(0, 8), appServers: fileTools.servers,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }), allowedTools: this.#allowedTools, signal: controller.signal,
         onEvent: event => {

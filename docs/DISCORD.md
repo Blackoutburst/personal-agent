@@ -16,7 +16,11 @@ Each owner can link **their own Discord bot** so they can talk to their companio
 - **Busy chat.** If a reply is already running, for example one started from the web, the bot says so and doesn't queue the message.
 - **Files.** Attachments in the owner's DM (at most 8) are downloaded from Discord's CDN (`cdn.discordapp.com` /
   `media.discordapp.net` only, no bot token sent) into the chat file store, the same as app uploads, so the companion
-  sees images and can read files. Anything it couldn't fetch is named in a short note and the rest is answered.
+  sees images and can read files. Anything it couldn't fetch is named in a short note with the reason (too large,
+  storage full, download failed or timed out…) and the rest is answered (#48). The companion's turn gets a matching
+  app note (name, type, size, reason) so it knows a file is missing, and the server logs the code with type and sizes
+  only. The bytes actually received are stored: Discord's declared `size` can be smaller than what the CDN serves, which
+  used to reject iPhone PNG screenshots as FILE_TOO_LARGE.
   Files the companion sends with `send_file` in a reply to a Discord message (or in a proactive message) are posted
   in the DM after the text, one per message; over 10 MiB they get a short "it's in the app" note instead.
 - **App stays in the app.** Turns started in the web or Android app are never mirrored to Discord. Only replies to

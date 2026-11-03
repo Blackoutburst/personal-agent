@@ -19,12 +19,19 @@ const CDN_HOSTS = new Set(['cdn.discordapp.com', 'media.discordapp.net']);
 const MAX_ATTACHMENTS = 8;
 const DOWNLOAD_MS = 60_000;
 const UPLOAD_BYTES = 10 * 1024 ** 2; // Discord's upload limit for a bot in a DM.
+const MB = bytes => `${Math.round(bytes / 1024 ** 2 * 10) / 10} MB`;
+// #48: why an attachment could not be taken, said briefly to the owner, the server log and the companion.
+const REASONS = { TOO_LARGE: limit => `too large, max ${MB(limit)}`, FILE_QUOTA: () => 'your file storage is full',
+  TIMEOUT: () => 'the download from Discord timed out', DOWNLOAD_FAILED: () => 'Discord’s download failed',
+  INVALID_ATTACHMENT: () => 'not a Discord file', EMPTY: () => 'the file is empty' };
 // Close codes after which reconnecting with the same token can never work.
 const FATAL = { 4004: 'INVALID_TOKEN', 4010: 'INVALID_TOKEN', 4011: 'INVALID_TOKEN', 4012: 'INVALID_TOKEN', 4013: 'INVALID_TOKEN', 4014: 'DISALLOWED_INTENTS' };
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS companion_discord(companion_id TEXT PRIMARY KEY, token TEXT NOT NULL,
   bot_id TEXT NOT NULL UNIQUE, bot_name TEXT NOT NULL, application_id TEXT NOT NULL, code TEXT, code_expires INTEGER,
   user_id TEXT, user_name TEXT, channel_id TEXT, problem TEXT, updated_at INTEGER NOT NULL)`;
+
+function fail(code) { const error = new Error(code); error.code = code; throw error; }
 
 export class DiscordError extends Error {
   constructor(code, status = 400) { super(code); this.name = 'DiscordError'; this.code = code; this.status = status; }
@@ -137,11 +144,14 @@ class Gateway {
 }
 
 export class DiscordBridge {
-  #links; #conversations; #files; #fetch; #WebSocket; #gateways = new Map(); #states = new Map(); #pending = new Map(); #log;
+  #links; #conversations; #files; #fetch; #WebSocket; #gateways = new Map(); #states = new Map(); #pending = new Map(); #log; #notes = new Map();
   // files: the chat FileStore. Without it, attachments are refused with a short note.
   constructor({ links, conversations, files = null, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, log = () => {} }) {
     this.#links = links; this.#conversations = conversations; this.#files = files; this.#fetch = fetchImpl; this.#WebSocket = WebSocketImpl; this.#log = log;
   }
+
+  // #48: the failed-attachment note for this Discord turn, read once by Conversations (turnNote hook).
+  turnNote(requestId) { const note = this.#notes.get(requestId) ?? null; this.#notes.delete(requestId); return note; }
 
   start() { for (const link of this.#links.all()) if (!link.problem) this.#connect(link.companion_id, link.token); }
   stop() { for (const gateway of this.#gateways.values()) gateway.stop(); this.#gateways.clear(); }
@@ -269,38 +279,60 @@ export class DiscordBridge {
       this.#pending.set(requestId, { id: message.channel_id, typing });
       this.#rest(link.token, 'POST', `/channels/${message.channel_id}/typing`).catch(() => {});
       const { ids, skipped } = await this.#download(companionId, threadId, message.id, sent);
-      if (skipped.length) await this.#say(link, message.channel_id, `*I couldn’t receive ${skipped.map(name => `“${name}”`).join(', ')}${
+      if (skipped.length) await this.#say(link, message.channel_id, `*I couldn’t receive ${skipped.map(item => `“${item.name}” (${item.reason})`).join(', ')}${
         ids.length || text ? '; answering the rest' : ''}.*`);
       if (!ids.length && !text) { clearInterval(typing); this.#pending.delete(requestId); return; }
+      if (skipped.length) this.#notes.set(requestId, '\n\n(Note from the app, not from the owner: they also sent '
+        + skipped.map(item => `“${item.name}” (${item.type}, ${MB(item.size)}), which could not be received: ${item.reason}`).join('; ')
+        + '. You cannot see it. If it matters, say so briefly and suggest sending it again or through the app.)');
       await this.#conversations.handle(companionId, { action: 'submit', requestId, threadId, text,
         ...(ids.length ? { attachments: ids } : {}) });
     } catch (error) {
       clearInterval(this.#pending.get(requestId)?.typing);
-      this.#pending.delete(requestId);
+      this.#pending.delete(requestId); this.#notes.delete(requestId);
       const busy = error instanceof ConversationError && error.code === 'BUSY';
       await this.#say(link, message.channel_id, busy ? '*I’m still answering something else. Send it again in a moment.*'
         : '*I couldn’t take that message right now. Try again in a moment.*');
     }
   }
 
-  // Fetches each Discord attachment into the chat file store. Returns the stored ids and the names it could not take.
+  // Fetches each Discord attachment into the chat file store. Returns the stored ids and, for the others, why not.
+  // The bytes actually received are stored: Discord's declared size can differ from what its CDN serves (#48).
   async #download(companionId, threadId, messageId, attachments) {
     const ids = [], skipped = [];
     for (const attachment of attachments) {
-      const name = safeName(attachment?.filename);
+      const name = safeName(attachment?.filename), declared = Number.isSafeInteger(attachment?.size) ? attachment.size : 0;
+      const type = typeof attachment?.content_type === 'string' ? attachment.content_type.split(';')[0].slice(0, 60) : 'unknown type';
+      const limit = type.startsWith('video/') ? this.#files.limits.video : this.#files.limits.normal;
+      let received = 0, status = 0;
       try {
         const url = new URL(String(attachment?.url ?? ''));
-        if (url.protocol !== 'https:' || !CDN_HOSTS.has(url.hostname) || !SNOWFLAKE.test(attachment?.id ?? '')
-            || !Number.isSafeInteger(attachment?.size) || attachment.size <= 0) throw new Error('INVALID_ATTACHMENT');
+        if (url.protocol !== 'https:' || !CDN_HOSTS.has(url.hostname) || !SNOWFLAKE.test(attachment?.id ?? '')) fail('INVALID_ATTACHMENT');
+        if (declared > limit) fail('TOO_LARGE');
         const response = await this.#fetch(url.href, { redirect: 'error', signal: AbortSignal.timeout(DOWNLOAD_MS),
-          headers: { 'User-Agent': 'DiscordBot (https://blackoutburst.com, 1.0)' } });
-        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+          headers: { 'User-Agent': 'DiscordBot (https://blackoutburst.com, 1.0)' } }).catch(error => fail(error?.name === 'TimeoutError' ? 'TIMEOUT' : 'DOWNLOAD_FAILED'));
+        status = response.status;
+        if (!response.ok || !response.body) fail('DOWNLOAD_FAILED');
+        if (Number(response.headers?.get?.('content-length')) > limit) fail('TOO_LARGE');
+        const chunks = [];
+        try {
+          for await (const value of response.body) {
+            const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+            received += chunk.length;
+            if (received > limit) fail('TOO_LARGE');
+            chunks.push(chunk);
+          }
+        } catch (error) { if (typeof error.code === 'string') throw error; fail(error?.name === 'TimeoutError' ? 'TIMEOUT' : 'DOWNLOAD_FAILED'); }
+        if (!received) fail('EMPTY');
+        if (received !== declared) this.#log(`Discord attachment size differs: declared ${declared} bytes, received ${received} (${type})`);
         const file = await this.#files.upload(companionId, { threadId, requestId: `dc-${messageId}-${attachment.id}`, name,
-          size: attachment.size }, response.body);
+          size: received }, [Buffer.concat(chunks)]).catch(error => fail(error.code === 'FILE_TOO_LARGE' ? 'TOO_LARGE' : error.code === 'FILE_QUOTA' ? 'FILE_QUOTA' : error.code ?? 'SAVE_FAILED'));
         ids.push(file.id);
       } catch (error) {
-        this.#log(`Discord attachment skipped: ${error.code ?? error.message}`);
-        skipped.push(name);
+        const code = typeof error.code === 'string' ? error.code : error?.name === 'TimeoutError' ? 'TIMEOUT' : 'DOWNLOAD_FAILED';
+        // Sizes, type and status only: no file names or links in the log.
+        this.#log(`Discord attachment skipped: ${code} (${type}, declared ${declared} bytes, received ${received}${status ? `, HTTP ${status}` : ''}, limit ${limit})`);
+        skipped.push({ name, type, size: declared || received, reason: (REASONS[code] ?? (() => 'it couldn’t be saved'))(limit) });
       }
     }
     return { ids, skipped };

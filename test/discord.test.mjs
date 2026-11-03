@@ -55,11 +55,11 @@ function fakeDiscord({ me = BOT } = {}) {
 function fixture(t, { handler, me, withFiles = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'discord-')), store = new BootstrapStore(dir, ROOT);
   const discord = fakeDiscord({ me }), companionId = randomUUID();
-  const files = withFiles ? new FileStore({ store, dataDir: dir, workspaceFor: () => ({ dir }) }) : null;
+  const files = withFiles ? new FileStore({ store, dataDir: dir, workspaceFor: () => ({ dir }), limits: { normal: 1024 } }) : null;
   let bridge;
   const conversations = new Conversations({ store, flushMs: 1, systemPrompt: () => 'persona', files,
     runner: { turn: async (id, turn) => (handler ?? (() => ({ text: 'Hello from Pip!' })))(id, turn) },
-    onSettled: event => bridge.settled(event) });
+    onSettled: event => bridge.settled(event), turnNote: (_id, requestId) => bridge.turnNote(requestId) });
   const links = new DiscordLinks({ store });
   bridge = new DiscordBridge({ links, conversations, files, fetchImpl: discord.fetchImpl, WebSocketImpl: discord.WebSocketImpl });
   t.after(async () => { bridge.stop(); await conversations.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -177,10 +177,25 @@ test('attachments from the DM are fetched into the chat and shown to the compani
     { ...shot, id: '666666666666666667', filename: 'evil.png', url: 'https://example.com/evil.png' },
     { ...shot, id: '666666666666666668', filename: 'gone.png', url: 'https://cdn.discordapp.com/attachments/missing.png' }]);
   await f.conversations.idle(); await sleep(10);
-  assert.ok(f.discord.sent.some(item => /couldn’t receive “evil\.png”, “gone\.png”; answering the rest/.test(item.content)));
+  // #48: each one says why, and the companion's turn is told which files it can't see.
+  assert.ok(f.discord.sent.some(item => item.content.includes('couldn’t receive “evil.png” (not a Discord file), “gone.png” (Discord’s download failed); answering the rest')),
+    f.discord.sent.map(item => item.content).join(' | '));
   assert.equal(turns.length, 2);
   assert.equal(turns[1].images.length, 0);
+  assert.match(turns[1].prompt, /^And these\?\n\n\(Note from the app, not from the owner: they also sent “evil\.png” \(image\/png, 0 MB\), which could not be received: not a Discord file; “gone\.png”/);
   assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM conv_files').get().n, 1);
+  // Discord's declared size can be smaller than what its CDN serves (the IMG_3396 case): the real bytes are stored.
+  f.socket.dm(OWNER, '', '888888888888888889', [{ ...shot, id: '666666666666666669', filename: 'IMG_3396.png', size: png.length - 20 }]);
+  await f.conversations.idle(); await sleep(10);
+  assert.equal(turns.length, 3); assert.equal(turns[2].images.length, 1);
+  assert.doesNotMatch(turns[2].prompt, /Note from the app/, 'The note was for one turn only');
+  assert.equal(f.store.db.prepare("SELECT size FROM conv_files WHERE name='IMG_3396.png'").get().size, png.length);
+  // Over the limit: refused before downloading, with the limit in the notice; no turn without text.
+  const before = turns.length;
+  f.socket.dm(OWNER, '', '888888888888888890', [{ ...shot, id: '666666666666666670', filename: 'huge.png', size: 5000 }]);
+  await f.conversations.idle(); await sleep(10);
+  assert.equal(f.discord.sent.at(-1).content, '*I couldn’t receive “huge.png” (too large, max 0 MB).*');
+  assert.equal(turns.length, before);
 });
 
 test('files the companion attaches go to the DM after the text; app-only turns never reach Discord', async t => {
