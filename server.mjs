@@ -6,7 +6,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { BootstrapStore } from './src/store.mjs';
 import { adapterStatus, syntheticPreview } from './src/adapters.mjs';
 import { createAccountValidator } from './src/account-validator.mjs';
-import { createAccountAccess, createAccountHttp, readJsonBody } from './src/account-http.mjs';
+import { createAccountAccess, createAccountHttp, readJsonBody, sameOriginFetch } from './src/account-http.mjs';
 import { loadPilotSubjects } from './src/pilot-config.mjs';
 import { PrivateStateStore } from './src/private-state.mjs';
 import { createPrivateHttp } from './src/private-http.mjs';
@@ -131,7 +131,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       const address = server.address();
       const allowedHosts = new Set([`127.0.0.1:${address.port}`, `localhost:${address.port}`]);
       if (!allowedHosts.has(req.headers.host)) return fail(403, 'HOST_REJECTED', 'Local development host required.');
-      if (req.headers.origin && !allowedOrigins().has(req.headers.origin)) {
+      if (req.headers.origin && !allowedOrigins().has(req.headers.origin) && !(req.headers.origin === 'null' && sameOriginFetch(req))) {
         return fail(403, 'ORIGIN_REJECTED', 'Same-origin access required.');
       }
       // Exact raw paths only: queries cannot enable demo and traversal is rejected.

@@ -82,6 +82,16 @@ test('exact Origin and fetch-site guards reject forged requests before validatio
   assert.equal(f.calls.length, 0); assert.equal(f.store.count(), 0);
 });
 
+test('WebKit "Origin: null" is admitted only together with a browser-set same-origin fetch site', async t => {
+  const f = await fixture(t);
+  const send = sites => f.send({ rawHeaders: ['Origin', 'null', 'Content-Type', 'application/json', 'Cookie', COOKIE(A),
+    ...sites.flatMap(site => ['Sec-Fetch-Site', site])] });
+  assert.equal((await send(['same-origin'])).status, 200);
+  for (const sites of [[], ['cross-site'], ['same-site'], ['none'], ['same-origin', 'same-origin']]) {
+    assert.equal((await send(sites)).body.error.code, 'ORIGIN_REJECTED', JSON.stringify(sites));
+  }
+});
+
 test('one account per request: a stale duplicate cookie is ignored, two live accounts or malformed values are refused', async t => {
   const f = await fixture(t);
   for (const cookie of [null, 'blackout_session=' + A, COOKIE(A + 'x'), '__Secure-blackout_session="' + A + '"', COOKIE(A) + '; ' + COOKIE(A + 'x')]) {

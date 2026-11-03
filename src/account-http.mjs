@@ -19,6 +19,11 @@ function fail(code, closeConnection = false) {
   return { status, body: { error: { code, message } }, ...(closeConnection ? { closeConnection: true } : {}) };
 }
 
+export function sameOriginFetch(request) {
+  const sites = rawValues(request, 'sec-fetch-site');
+  return sites.length === 1 && sites[0].trim().toLowerCase() === 'same-origin';
+}
+
 function rawValues(request, name) {
   const values = [];
   for (let index = 0; index < request.rawHeaders.length; index += 2) {
@@ -120,6 +125,9 @@ export function createAccountAccess({ store, validateAccount, pilotSubjects, all
     let valid = false;
     try { const parsed = new URL(origins[0]); valid = origins.length === 1 && ['http:', 'https:'].includes(parsed.protocol)
       && parsed.origin === origins[0] && allowed.has(origins[0]); } catch { /* rejected */ }
+    // iPhone browsers (WebKit) send "Origin: null" for some same-origin requests under Referrer-Policy: no-referrer.
+    // The browser-set Sec-Fetch-Site header still proves same-origin, so only that exact pairing is admitted.
+    if (!valid && origins.length === 1 && origins[0] === 'null' && sameOriginFetch(request)) valid = true;
     if (!valid || rawValues(request, 'sec-fetch-site').some(value => value.split(',').some(part => part.trim().toLowerCase() === 'cross-site'))) {
       let shown = 'none';
       try { shown = origins.length ? origins.map(value => value === 'null' ? 'null' : new URL(value).origin).join(',') : 'none'; } catch { shown = 'unparsable'; }
