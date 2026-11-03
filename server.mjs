@@ -15,6 +15,7 @@ import { loadRuntimeConfig, companionIdFor } from './src/runtime-config.mjs';
 import { CompanionRunner } from './src/runner.mjs';
 import { Conversations } from './src/conversations.mjs';
 import { WebBudget } from './src/web-budget.mjs';
+import { Connectors } from './src/connectors.mjs';
 import { Profiles, ensureWorkspace, instructions } from './src/companion.mjs';
 import { createCompanionHttp } from './src/companion-http.mjs';
 import { SchedulerStore, SchedulerService } from './src/scheduler.mjs';
@@ -100,7 +101,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let agentsConfigured = false;
   let companionHttp;
   let schedulerHttp, schedulerService, schedulerStore, discord = null;
-  let files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null;
+  let files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, connectors = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
   const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
@@ -152,7 +153,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         if (input && typeof input === 'object' && !Array.isArray(input) && input.action === 'board') {
           // attach_to_board: one workspace file to a Board thread through the owner's own Board bridge.
           if (Object.keys(input).some(key => !['action', 'path', 'threadId'].includes(key)) || typeof input.threadId !== 'string'
-              || !/^[A-Za-z0-9_-]{1,64}$/.test(input.threadId) || !boardCompanion?.configuredFor(turn.companionId)) return fail(400, 'BOARD_UNCONFIGURED', 'No Board connection.');
+              || !/^[A-Za-z0-9_-]{1,64}$/.test(input.threadId) || !connectors?.boardOn(turn.companionId)) return fail(400, 'BOARD_UNCONFIGURED', 'No Board connection.');
           try {
             const file = files.readWorkspaceFile(turn.companionId, input.path, BOARD_ATTACHMENT_BYTES);
             const attachment = await boardCompanion.attach(turn.companionId, { threadId: input.threadId, filename: file.name,
@@ -303,8 +304,8 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         fileTurns.set(token, { companionId, ...context });
         const servers=[{ name: 'files', command: process.execPath, args: [join(ROOT, 'src', 'file-mcp.mjs')],
           env: { COMPANION_FILE_URL: `http://127.0.0.1:${server.address().port}/internal/files`, COMPANION_FILE_TOKEN: token,
-            ...(boardCompanion?.configuredFor(companionId) ? { COMPANION_FILE_BOARD: '1' } : {}) },
-          allowedTools: boardCompanion?.configuredFor(companionId) ? ['send_file', 'attach_to_board'] : ['send_file'] }];
+            ...(connectors?.boardOn(companionId) ? { COMPANION_FILE_BOARD: '1' } : {}) },
+          allowedTools: connectors?.boardOn(companionId) ? ['send_file', 'attach_to_board'] : ['send_file'] }];
         let contactToken;
         if(available.length) {
           contactToken=randomBytes(32).toString('hex'); contactTurns.set(contactToken,{companionId,...context,contacts:available});
@@ -326,7 +327,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           files: workspace.owner.provider === 'claude' || fresh, recent, weather: current ? { place, current } : null }) +
           '\n\nUse your scheduler tools for reminders the owner asks for. Check list_schedules for the current time and owner timezone, then resolve an explicit ISO timestamp. Never claim a reminder was saved without a successful tool result. Do not create unsolicited reminders or enable periodic checks for the owner.';
       };
-      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget: new WebBudget({ store }), wakePolicy: {
+      connectors = new Connectors({ store, discord: () => discord, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
+      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget: new WebBudget({ store }),
+        toolFilterFor: companionId => connectors.toolFilter(companionId), wakePolicy: {
         beforeStart: (companionId, id) => (schedulerStore.isReleaseOccurrence(companionId, id) || Boolean(runner?.ownerFor(companionId))) && schedulerStore.startInTransaction(companionId, id),
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id),
         recordReleaseCheck: (companionId, id, check, text) => schedulerStore.recordReleaseCheck(companionId, id, check, text),
@@ -356,7 +359,8 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       schedulerHttp = createSchedulerHttp({ access, scheduler: schedulerService });
       // Board companion duties (docs/BOARD-COMPANION.md): Needs-you wakes, profile sync and attachments.
       boardCompanion = new BoardCompanion({ store, owners, profiles, scheduler: schedulerService,
-        companionIdFor: owner => companionIdFor(store, owner), log: message => console.error(message), ...boardOptions });
+        companionIdFor: owner => companionIdFor(store, owner), active: companionId => connectors.enabled(companionId, 'board'),
+        log: message => console.error(message), ...boardOptions });
       // Android push (docs/PUSH.md): on when the FCM service-account key exists. Devices register through /api/companion.
       pushDevices = new PushDevices({ store });
       const pushKey = pushOptions.keyFile ?? process.env.COMPANION_PUSH_KEY
@@ -369,7 +373,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         log: message => console.error(message) });
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality, contacts, weather,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
-        discord, push: pushDevices,
+        discord, push: pushDevices, connectors,
         assertMemoryIdle: companionId => conversations.assertMemoryIdle(companionId),
         onForget: companionId => conversations.resetSessions(companionId),
         // Claude reads the look every turn; Codex keeps its first instructions, so it starts afresh.

@@ -63,14 +63,15 @@ export function mentionPrompt(threadId, messageIds) {
 
 export class BoardCompanion {
   #db; #owners; #profiles; #scheduler; #companionIdFor; #clientFor; #timer = null; #running = false; #clients = new Map();
-  #log; #synced = new Map();
+  #log; #synced = new Map(); #active;
   // The app's Board session id is stable per owner so the Board keeps its inbox position across restarts.
-  constructor({ store, owners, profiles, scheduler, companionIdFor,
+  // active(companionId): false while the owner switched the Board connector off (#43).
+  constructor({ store, owners, profiles, scheduler, companionIdFor, active = () => true,
     clientFor = (board, owner) => new BoardClient({ board,
       sessionId: 'companion-app-' + createHash('sha256').update(String(owner?.label ?? '')).digest('hex').slice(0, 16) }),
     log = () => {} }) {
     this.#db = store.db; this.#owners = owners.filter(owner => owner.board); this.#profiles = profiles;
-    this.#scheduler = scheduler; this.#companionIdFor = companionIdFor; this.#clientFor = clientFor; this.#log = log;
+    this.#scheduler = scheduler; this.#companionIdFor = companionIdFor; this.#active = active; this.#clientFor = clientFor; this.#log = log;
     this.#db.exec(`CREATE TABLE IF NOT EXISTS board_needs_you_seen (
       companion_id TEXT NOT NULL, request_id TEXT NOT NULL, seen_at INTEGER NOT NULL,
       PRIMARY KEY (companion_id, request_id));
@@ -102,7 +103,7 @@ export class BoardCompanion {
     try {
       for (const owner of this.#owners) {
         const companionId = this.#companionFor(owner);
-        if (!companionId) continue;
+        if (!companionId || !this.#active(companionId)) continue;
         try {
           await this.syncProfile(companionId, owner);
           const boardOwner = await this.#checkMentions(companionId, owner);

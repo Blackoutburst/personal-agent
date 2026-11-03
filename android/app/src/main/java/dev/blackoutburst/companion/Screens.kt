@@ -121,7 +121,7 @@ fun tonesFor(choice: ThemeChoice): Tones = when (choice) {
 
 private enum class Tab(val label: String) { Chat("Chat"), Watches("Watches"), Me("Me") }
 /** Sections of the Me tab; memories come first. */
-private enum class MeSection(val label: String) { Memories("Memories"), Companion("Companion"), Settings("Settings") }
+private enum class MeSection(val label: String) { Memories("Memories"), Companion("Companion"), Connectors("Connectors"), Settings("Settings") }
 
 @Composable
 fun CompanionApp(model: CompanionModel, tones: Tones, openBrowser: (android.net.Uri) -> Unit) {
@@ -367,7 +367,7 @@ internal fun Bubble(model: CompanionModel, message: Message, scope: Long) {
 private fun MeScreen(model: CompanionModel, state: UiState, memoryExport: MemoryExportControl, done: () -> Unit) {
     var section by rememberSaveable { mutableStateOf(MeSection.Memories) }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             for (item in MeSection.entries) {
                 val selected = item == section
                 Text(item.label, Modifier.clip(RoundedCornerShape(50)).background(if (selected) Card else Color.Transparent)
@@ -380,9 +380,53 @@ private fun MeScreen(model: CompanionModel, state: UiState, memoryExport: Memory
             when (section) {
                 MeSection.Memories -> MemoryPanel(model, state, memoryExport)
                 MeSection.Companion -> LookScreen(model, state, first = false, done = done)
+                MeSection.Connectors -> ConnectorsScreen(model, state)
                 MeSection.Settings -> SettingsScreen(model, state)
             }
         }
+    }
+}
+
+private val CONNECTOR_STATES = mapOf("connected" to "Connected", "pending" to "Waiting for pairing", "error" to "Needs attention",
+    "not_connected" to "Not connected", "paused" to "Switched off", "unavailable" to "Not available")
+
+/** Me › Connectors (#43): every link with its state; the Board is switched off and on here, Discord keeps its own setup below. */
+@Composable
+private fun ConnectorsScreen(model: CompanionModel, state: UiState) {
+    LaunchedEffect(state.scope) { model.loadConnectors() }
+    var disconnecting by remember(state.scope) { mutableStateOf<Connector?>(null) }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
+        Text("Connectors", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
+        Text("What ${state.name} is linked to. Switching one off never deletes anything on the other side.", color = Soft, fontSize = 15.sp)
+        state.connectorsError?.let { Text(it, color = Danger, modifier = Modifier.padding(top = 6.dp)) }
+        for (item in state.connectors ?: emptyList()) {
+            Column(Modifier.fillMaxWidth().padding(top = 12.dp).clip(RoundedCornerShape(18.dp)).background(Card).padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(item.name, Modifier.weight(1f), fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Ink)
+                    Box(Modifier.size(9.dp).clip(CircleShape).background(when (item.state) {
+                        "connected" -> Color(0xFF3FB950); "pending" -> Color(0xFFD29922); "error" -> Danger; else -> Soft }))
+                    Text("  " + (CONNECTOR_STATES[item.state] ?: item.state), fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                        color = if (item.state == "connected") Ink else Soft)
+                }
+                Text(item.purpose, color = Ink, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp))
+                item.detail?.let { Text(it, color = Soft, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp)) }
+                if (item.id != "discord" && item.actions.isNotEmpty()) {
+                    val connect = "connect" in item.actions
+                    ActionButton(enabled = !state.connectorsBusy, onClick = { if (connect) model.setConnector(item.id, true) else disconnecting = item },
+                        modifier = Modifier.padding(top = 8.dp)) { Text(if (connect) "Connect" else "Disconnect") }
+                }
+            }
+        }
+        Spacer(Modifier.height(28.dp))
+        DiscordSection(model, state, state.name)
+        Spacer(Modifier.height(24.dp))
+    }
+    disconnecting?.let { item ->
+        AlertDialog(onDismissRequest = { disconnecting = null },
+            title = { Text("Disconnect ${item.name}?") },
+            text = { Text("${state.name} stops using it until you connect it again. Nothing is deleted there.") },
+            confirmButton = { ActionButton(onClick = { disconnecting = null; model.setConnector(item.id, false) }) { Text("Disconnect", color = Danger) } },
+            dismissButton = { ActionButton(onClick = { disconnecting = null }) { Text("Keep it") } })
     }
 }
 
@@ -477,8 +521,6 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
             PersonalityPanel(model, state)
             Spacer(Modifier.height(32.dp))
             ContactPanel(model, state)
-            Spacer(Modifier.height(32.dp))
-            DiscordSection(model, state, profile?.name ?: shownName)
         }
     }
 }

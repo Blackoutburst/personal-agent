@@ -114,7 +114,7 @@ test('uncertain/late-context sends never restore text or mint another logical wr
 });
 
 test('current Discord read failure ends loading with explicit retry, and stale private replies cannot repopulate after denial', async () => {
-  const f = fixture({ hash: '#look' }); f.queue('discord', Promise.reject(new Error('PRIVATE-NETWORK'))); await flush();
+  const f = fixture({ hash: '#me/connectors' }); f.queue('discord', Promise.reject(new Error('PRIVATE-NETWORK'))); await flush();
   assert.match(f.$('discord-body').textContent, /could not be loaded/); assert.ok(!f.$('discord-body').textContent.includes('PRIVATE-NETWORK'));
   await f.button('Retry Discord settings').emit('click'); await flush(); assert.match(f.$('discord-body').textContent, /Connect/);
   const delayed = deferred(); f.queue('discord', delayed.promise); const loading = f.button('Reload Discord settings').emit('click'); f.deny(); delayed.resolve(f.response({ discord: { linked: true, bot: { name: 'PRIVATE-BOT' }, pairing: { code: 'PRIVATE-CODE' } } })); await loading;
@@ -136,11 +136,11 @@ test('an uncertain initial create remains exact pending work, never erased by au
 });
 
 test('old Discord read denial cannot wipe a newer settings mutation; current Look auth failure clears instead of blaming a name', async () => {
-  const f = fixture({ hash: '#look' }); await flush(); const old = deferred(); f.queue('discord', old.promise); const oldLoad = f.button('Reload Discord settings').emit('click');
+  const f = fixture({ hash: '#me/connectors' }); await flush(); const old = deferred(); f.queue('discord', old.promise); const oldLoad = f.button('Reload Discord settings').emit('click');
   const newer = deferred(); f.queue('discordLink', newer.promise); const input = f.$('discord-token'); input.value = 'SYNTHETIC TOKEN'; const mutation = input.parent.emit('submit');
   old.resolve(f.response({ error: { code: 'AUTHENTICATION_REQUIRED' } }, 401)); await oldLoad; assert.equal(f.button('Connecting…').disabled, true); assert.notEqual(f.$('app').dataset.view, 'gate');
   newer.resolve(f.response({ discord: { linked: true, bot: { name: 'Synthetic bot' }, user: { name: 'Synthetic owner' }, state: 'online' } })); await mutation;
-  assert.match(f.$('discord-body').textContent, /Synthetic bot/); f.queue('setProfile', f.response({ error: { code: 'AUTHENTICATION_REQUIRED' } }, 401)); await f.$('look-form').emit('submit');
+  assert.match(f.$('discord-body').textContent, /Synthetic bot/); f.sandbox.location.hash = '#me/companion'; await flush(); f.queue('setProfile', f.response({ error: { code: 'AUTHENTICATION_REQUIRED' } }, 401)); await f.$('look-form').emit('submit');
   assert.equal(f.$('app').dataset.view, 'gate'); assert.equal(f.$('discord-body').textContent, ''); assert.equal(f.$('look-error').textContent, '');
 });
 
@@ -161,8 +161,10 @@ test('text+ready-file and files-only BUSY rejection retain the uploaded file wit
 });
 
 test('detached appearance and Discord form handlers cannot modify or send for a newer owner shell', async () => {
-  const f = fixture({ hash: '#look' }); await flush(); const oldCharacter = f.$('pick-character').children[0], oldForm = f.$('discord-token').parent;
+  const f = fixture({ hash: '#look' }); await flush(); const oldCharacter = f.$('pick-character').children[0];
+  f.sandbox.location.hash = '#me/connectors'; await flush(); const oldForm = f.$('discord-token').parent;
   f.$('discord-token').value = 'SYNTHETIC OLD TOKEN'; f.deny(); f.profile.character = 'claude'; await vm.runInContext('start()', f.context); await flush();
+  f.sandbox.location.hash = '#me/companion'; await flush();
   const count = f.requests.length; await oldCharacter.emit('click'); await oldForm.emit('submit');
   assert.equal(vm.runInContext('draftLook.character', f.context), 'claude'); assert.equal(f.requests.length, count); assert.equal(oldForm.children[0].value, '');
 });

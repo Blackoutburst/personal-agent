@@ -88,6 +88,9 @@ data class UiState(
     val discord: DiscordStatus? = null,
     val discordBusy: Boolean = false,
     val discordError: String? = null,
+    val connectors: List<Connector>? = null,
+    val connectorsBusy: Boolean = false,
+    val connectorsError: String? = null,
     /** Watches tab and schedule settings (api/schedules). */
     val schedules: Schedules? = null,
     val schedulesLoading: Boolean = false,
@@ -321,6 +324,31 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ---- Connectors (#43) ----
+    fun loadConnectors() {
+        val version = scope
+        viewModelScope.launch {
+            try { val result = api.connectors(); if (current(version)) _state.update { it.copy(connectors = result, connectorsError = null) } }
+            catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) signedOut() else _state.update { it.copy(connectorsError = "Connectors could not be loaded.") }
+            }
+        }
+    }
+
+    fun setConnector(id: String, enabled: Boolean) {
+        if (_state.value.connectorsBusy) return
+        val version = scope
+        _state.update { it.copy(connectorsBusy = true, connectorsError = null) }
+        viewModelScope.launch {
+            try { val result = api.setConnector(id, enabled); if (current(version)) _state.update { it.copy(connectors = result) } }
+            catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) signedOut() else _state.update { it.copy(connectorsError = "That change could not be saved. Reload and try again.") }
+            } finally { if (current(version)) _state.update { it.copy(connectorsBusy = false) } }
+        }
+    }
+
     // ---- Watches, reminders and schedule settings (api/schedules) ----
     fun loadSchedules() {
         val version = scope
@@ -399,6 +427,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 val status = block()
                 if (!current(version)) return@launch
                 _state.update { it.copy(discord = status, discordBusy = false) }
+                loadConnectors()
             } catch (error: ApiException) {
                 if (!current(version)) return@launch
                 if (error.signedOut) { signedOut(); return@launch }

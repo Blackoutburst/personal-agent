@@ -270,8 +270,9 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .upcoming { display: grid; gap: 18px; margin-top: 14px; }
 .upcoming h2, .me-section h2 { font-size: 18px; margin: 0 0 6px; }
 .reminders-block, .release-watches { padding: 14px 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); min-width: 0; }
-.me-tabs { display: flex; gap: 6px; margin: 6px 0 14px; flex-wrap: wrap; }
-.me-tabs a { text-decoration: none; color: var(--soft); font-weight: 600; font-size: 14px; padding: 7px 14px; border-radius: 999px; border: 1px solid var(--line); }
+.me-tabs { display: flex; gap: 6px; margin: 6px -4px 14px; padding: 2px 4px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.me-tabs::-webkit-scrollbar { display: none; }
+.me-tabs a { flex-shrink: 0; text-decoration: none; color: var(--soft); font-weight: 600; font-size: 14px; padding: 7px 14px; border-radius: 999px; border: 1px solid var(--line); }
 .me-tabs a[aria-current="page"] { background: var(--card); color: var(--ink); border-color: transparent; box-shadow: 0 2px 10px rgba(120,80,90,.08); }
 .me-tabs a:hover { color: var(--ink); }
 .me-page .me-section h1 { font-size: 24px; }
@@ -379,3 +380,19 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .past-chats-list small { display: block; color: var(--soft); margin-top: 2px; }
 .archived-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 6px 16px; padding: 10px 14px; border: 1px dashed var(--line); border-radius: 14px; color: var(--soft); }
 .archived-banner[hidden] { display: none; }
+
+/* Connectors (#43) */
+.connector-list { list-style: none; margin: 8px 0 18px; padding: 0; display: grid; gap: 12px; }
+.connector { padding: 14px 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); }
+.connector-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.connector-head strong { font-size: 17px; }
+.connector-purpose { margin: 6px 0 0; }
+.connector-detail { margin: 4px 0 0; color: var(--soft); font-size: 14px; overflow-wrap: anywhere; }
+.connector .actions { margin-top: 10px; }
+.connector .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; color: var(--soft); white-space: nowrap; }
+.connector .status::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: var(--soft); }
+.connector .status[data-state="connected"] { color: var(--ink); }
+.connector .status[data-state="connected"]::before { background: #3fb950; }
+.connector .status[data-state="pending"]::before { background: #d29922; }
+.connector .status[data-state="error"]::before { background: var(--danger); }
+@media (max-width: 480px) { .me-tabs { gap: 4px; } .me-tabs a { padding: 6px 10px; font-size: 13px; } }

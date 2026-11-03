@@ -89,9 +89,10 @@ function linkify(container, text) {
 // The Me tab has sub-pages like the Android app: #me (memories), #me/companion and #me/settings.
 let meSection = 'memories';
 const lookShown = () => view === 'look' || (view === 'me' && meSection === 'companion');
+const connectorsShown = () => view === 'me' && meSection === 'connectors';
 function show(next) {
   view = next;
-  if (!lookShown()) { clearTimeout(discordTimer); discordTimer = null; }
+  if (!connectorsShown()) { clearTimeout(discordTimer); discordTimer = null; }
   $('app').dataset.view = next;
   for (const name of ['loading', 'gate', 'chat', 'watches']) $(`view-${name}`).hidden = name !== next;
   $('view-me').hidden = next !== 'me' && next !== 'look';
@@ -99,6 +100,7 @@ function show(next) {
   $('view-look').hidden = !lookShown();
   $('view-memories').hidden = !(next === 'me' && meSection === 'memories');
   $('view-settings').hidden = !(next === 'me' && meSection === 'settings');
+  $('view-connectors').hidden = !connectorsShown();
   for (const link of document.querySelectorAll('#me-tabs a')) {
     if (next === 'me' && link.dataset.section === meSection) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   }
@@ -108,6 +110,7 @@ function show(next) {
   }
   if (next === 'chat') openChat();
   if (next === 'me' && meSection === 'memories') loadMemories();
+  if (connectorsShown()) { $('discord-pick').hidden = false; void loadConnectors(); void loadDiscord(); }
   if (lookShown()) startLook();
   if (next === 'watches' || (next === 'me' && meSection === 'settings')) void remindersUI.show();
   if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); }
@@ -125,7 +128,7 @@ function route() {
   if (!profile) return show('look');
   const hash = location.hash.replace('#', '');
   // #memories and #look are older links into what is now the Me tab.
-  const me = { me: 'memories', memories: 'memories', 'me/companion': 'companion', look: 'companion', 'me/settings': 'settings' }[hash];
+  const me = { me: 'memories', memories: 'memories', 'me/companion': 'companion', look: 'companion', 'me/connectors': 'connectors', 'me/settings': 'settings' }[hash];
   if (me) meSection = me;
   show(hash === 'watches' ? 'watches' : me ? 'me' : 'chat');
 }
@@ -374,6 +377,7 @@ function resetShell(denied) {
   $('stage-name').textContent = ''; $('stage-mood').textContent = '';
   for (const id of ['pick-character', 'pick-color', 'pick-outfit']) $(id).replaceChildren();
   for (const id of ['discord-pick', 'android-pick']) $(id).hidden = true;
+  connectors = null; connectorsBusy = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
   kept.hidden = true; keptText.textContent = ''; reconnect.hidden = true;
   memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); remindersUI.clear(); client.clear(); clearUploads(); clearFullImage();
 }
@@ -497,8 +501,7 @@ function startLook() {
   }));
   $('theme-pick').hidden = first;
   renderThemePick();
-  $('discord-pick').hidden = first;
-  if (!first) { loadDiscord(); loadAndroid(); }
+  if (!first) loadAndroid();
 }
 
 // The Android app card shows only when a release is published on the server.
@@ -700,6 +703,58 @@ $('look-form').addEventListener('submit', async event => {
 });
 $('name').addEventListener('input', () => { if (draftLook) draftLook.name = $('name').value; $('look-error').hidden = true; });
 
+// ---------- Connectors (#43): every link the companion has, with its state and a switch ----------
+
+let connectors = null, connectorsBusy = false, connectorsRequest = 0, connectorsError = '';
+const CONNECTOR_STATES = { connected: 'Connected', pending: 'Waiting for pairing', error: 'Needs attention', not_connected: 'Not connected', paused: 'Switched off', unavailable: 'Not available' };
+async function loadConnectors() {
+  if (connectorsBusy || sessionDenied) return;
+  const owner = ownerEpoch, token = ++connectorsRequest;
+  try { const result = await api({ action: 'connectors' }); if (owner !== ownerEpoch || token !== connectorsRequest) return; connectors = result.connectors; connectorsError = ''; }
+  catch (error) {
+    if (owner !== ownerEpoch || token !== connectorsRequest) return;
+    if (error.status === 401 || error.status === 403) { fileAccessDenied(); return; }
+    connectorsError = 'Connectors could not be loaded. Try again in a moment.';
+  }
+  renderConnectors();
+}
+async function setConnector(id, enabled) {
+  if (connectorsBusy || sessionDenied) return;
+  const owner = ownerEpoch, token = ++connectorsRequest; connectorsBusy = true; connectorsError = ''; renderConnectors();
+  try { const result = await api({ action: 'setConnector', id, enabled }); if (owner !== ownerEpoch || token !== connectorsRequest) return; connectors = result.connectors; $('announce').textContent = enabled ? 'Connected.' : 'Switched off.'; }
+  catch (error) {
+    if (owner !== ownerEpoch || token !== connectorsRequest) return;
+    if (error.status === 401 || error.status === 403) { fileAccessDenied(); return; }
+    connectorsError = 'That change could not be saved. Reload and try again.';
+  } finally { if (owner === ownerEpoch && token === connectorsRequest) { connectorsBusy = false; renderConnectors(); } }
+}
+function renderConnectors() {
+  const list = $('connector-list'), owner = ownerEpoch;
+  $('connectors-note').textContent = connectorsError;
+  list.replaceChildren(...(connectors ?? []).map(item => {
+    const badge = el('span', { className: 'status', textContent: CONNECTOR_STATES[item.state] ?? item.state }); badge.dataset.state = item.state;
+    const card = el('li', { className: 'connector' }, el('div', { className: 'connector-head' }, el('strong', { textContent: item.name }), badge),
+      el('p', { className: 'connector-purpose', textContent: item.purpose }));
+    if (item.detail) card.append(el('p', { className: 'connector-detail', textContent: item.detail }));
+    if (item.id === 'discord') {
+      // Discord's own link, pairing and unlink controls live just below the list.
+      const go = el('button', { type: 'button', className: 'button', textContent: item.state === 'not_connected' ? 'Connect' : 'Manage' });
+      go.addEventListener('click', () => $('discord-pick').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+      card.append(el('div', { className: 'actions' }, go));
+    } else if (item.actions.length) {
+      const on = item.actions.includes('connect');
+      const button = el('button', { type: 'button', className: on ? 'button primary' : 'button', disabled: connectorsBusy, textContent: on ? 'Connect' : 'Disconnect' });
+      button.addEventListener('click', () => {
+        if (owner !== ownerEpoch) return;
+        if (!on && !confirm(`Disconnect ${item.name}? ${companionName()} stops using it until you connect it again.`)) return;
+        return setConnector(item.id, on);
+      });
+      card.append(el('div', { className: 'actions' }, button));
+    }
+    return card;
+  }));
+}
+
 // ---------- Discord (docs/DISCORD.md): the owner's own bot, for chatting in Discord DMs ----------
 
 let discord = null, discordBusy = false, discordLoading = false, discordError = '', discordTimer = null, discordRequest = 0;
@@ -717,7 +772,7 @@ async function loadDiscord() {
     discord = null; discordError = 'Discord settings could not be loaded. Retry when the connection is available.';
   } finally { if (owner === ownerEpoch && token === discordRequest) { discordLoading = false; renderDiscord(); } }
   // While waiting for the pairing message, check again every few seconds.
-  if (owner === ownerEpoch && token === discordRequest && lookShown() && discord?.linked && !discord.user && document.visibilityState !== 'hidden' && navigator.onLine !== false) discordTimer = setTimeout(() => { if (owner === ownerEpoch && token === discordRequest) void loadDiscord(); }, 4000);
+  if (owner === ownerEpoch && token === discordRequest && connectorsShown() && discord?.linked && !discord.user && document.visibilityState !== 'hidden' && navigator.onLine !== false) discordTimer = setTimeout(() => { if (owner === ownerEpoch && token === discordRequest) void loadDiscord(); }, 4000);
 }
 async function discordAction(body) {
   if (discordBusy || sessionDenied) return;
@@ -728,8 +783,8 @@ async function discordAction(body) {
     if (owner !== ownerEpoch || token !== discordRequest) return;
     if (error.status === 401 || error.status === 403) { fileAccessDenied(); return; }
     discordError = DISCORD_ERRORS[error.message] ?? 'Discord change could not be confirmed. Reload its settings before trying again.';
-  } finally { if (owner === ownerEpoch && token === discordRequest) { discordBusy = false; renderDiscord(); } }
-  if (owner === ownerEpoch && token === discordRequest && lookShown() && discord?.linked && !discord.user && document.visibilityState !== 'hidden' && navigator.onLine !== false) discordTimer = setTimeout(() => { if (owner === ownerEpoch && token === discordRequest) void loadDiscord(); }, 4000);
+  } finally { if (owner === ownerEpoch && token === discordRequest) { discordBusy = false; renderDiscord(); void loadConnectors(); } }
+  if (owner === ownerEpoch && token === discordRequest && connectorsShown() && discord?.linked && !discord.user && document.visibilityState !== 'hidden' && navigator.onLine !== false) discordTimer = setTimeout(() => { if (owner === ownerEpoch && token === discordRequest) void loadDiscord(); }, 4000);
 }
 function el(tag, props = {}, ...children) { const node = Object.assign(document.createElement(tag), props); node.append(...children); return node; }
 function renderDiscord() {

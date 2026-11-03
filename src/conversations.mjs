@@ -140,7 +140,12 @@ function titleFrom(text) {
 }
 
 export class Conversations {
-  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget;
+  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor;
+  // Both filters must keep a tool (connector switches, #43, on top of the wake or web-allowance filter).
+  #filter(companionId, own) {
+    const extra = this.#toolFilterFor(companionId);
+    return !extra ? own : !own ? extra : name => own(name) && extra(name);
+  }
   #queues = new Map(); #active = new Map(); #closing = false; #files; #fileToolsForTurn;
   #sessionEpoch = new Map(); #onNativeSettled;
 
@@ -151,11 +156,11 @@ export class Conversations {
   // Omitted tools inherit owner policy; [] is an explicit turn-level narrowing.
   constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools,
     session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 }, wakePolicy = {}, onSettled = () => {}, files = null,
-    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null }) {
+    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
     this.#session = session; this.#allowedTools = allowedTools; this.#onSettled = onSettled;
     this.#files = files; this.#fileToolsForTurn = fileToolsForTurn;
-    this.#onNativeSettled = onNativeSettled; this.#webBudget = webBudget;
+    this.#onNativeSettled = onNativeSettled; this.#webBudget = webBudget; this.#toolFilterFor = toolFilterFor;
     this.#wakePolicy = { beforeStart: () => true, canDeliver: () => true, ...wakePolicy };
     if (['beforeStart', 'canDeliver'].some(key => typeof this.#wakePolicy[key] !== 'function')) throw invalid();
     if (['recordReleaseCheck', 'releaseDelivered'].some(key => this.#wakePolicy[key] !== undefined
@@ -672,7 +677,7 @@ export class Conversations {
           + 'For this background turn only, return exactly one JSON object, without markdown or other text: {"action":"message","text":"your message"} '
           + 'or {"action":"silent"}. Your native feeling tag may precede the JSON. Message text must be nonempty and at most 4000 characters. Respond naturally again on normal user turns.\n\n' + wake.prompt,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }),
-        allowedTools: this.#allowedTools, toolFilter: wakeToolFilter(wake.kind), signal: controller.signal,
+        allowedTools: this.#allowedTools, toolFilter: this.#filter(companionId, wakeToolFilter(wake.kind)), signal: controller.signal,
         onEvent: event => {
           if (event.type === 'session' && currentSession()) this.#db.prepare(`UPDATE conv_threads SET provider_session=? WHERE id=? AND EXISTS(
             SELECT 1 FROM conv_wakes WHERE companion_id=? AND id=? AND state='running' AND attempt_token=?)`)
@@ -852,7 +857,7 @@ export class Conversations {
       const webSpent = this.#webBudget ? !this.#webBudget.available(companionId) : false;
       const turnInput = {
         prompt: user.text + filePrompt + (requestId.startsWith('discord-') ? DISCORD_NOTE : '') + (webSpent ? WEB_SPENT_NOTE : ''),
-        ...(webSpent ? { toolFilter: withoutWeb } : {}), images: incoming.filter(file => file.mime.startsWith('image/')).map(file => file.path), appServers: fileTools.servers,
+        ...((filter => filter ? { toolFilter: filter } : {})(this.#filter(companionId, webSpent ? withoutWeb : null))), images: incoming.filter(file => file.mime.startsWith('image/')).map(file => file.path), appServers: fileTools.servers,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }), allowedTools: this.#allowedTools, signal: controller.signal,
         onEvent: event => {
           if (event.type === 'session' && live() && currentSession()) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(event.id, threadId);

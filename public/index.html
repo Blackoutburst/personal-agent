@@ -86,6 +86,7 @@
       <nav id="me-tabs" class="me-tabs" aria-label="Me sections">
         <a href="#me" data-section="memories">Memories</a>
         <a href="#me/companion" data-section="companion">Companion</a>
+        <a href="#me/connectors" data-section="connectors">Connectors</a>
         <a href="#me/settings" data-section="settings">Settings</a>
       </nav>
       <section id="view-memories" class="me-section" hidden>
@@ -141,6 +142,12 @@
           <div class="actions"><a id="android-download" class="button primary" href="companion.apk" download>Download for Android</a></div>
           <p class="hint">Open the downloaded file on your phone to install it. Android may ask you to allow installs from your browser first.</p>
         </div>
+      </section>
+      <section id="view-connectors" class="me-section connectors" aria-labelledby="connectors-title" hidden>
+        <h1 id="connectors-title">Connectors</h1>
+        <p class="intro">What your companion is linked to. Switching one off never deletes anything on the other side.</p>
+        <p id="connectors-note" class="intro" role="status"></p>
+        <ul id="connector-list" class="connector-list"></ul>
         <div id="discord-pick" class="connection" hidden>
           <h2>Discord</h2>
           <div id="discord-body" aria-live="polite"></div>

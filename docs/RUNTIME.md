@@ -215,3 +215,11 @@ app-tool requests is accepted as metadata, and the Codex server override uses
 real-provider validation from this change. Fake-provider tests prove validation,
 configured tool forwarding and owner scoping; Claude · Server still performs
 the real Claude/Codex CLI and paired-bridge checks during review.
+
+## Connectors (#43)
+
+Me › Connectors lists every link the companion has (`src/connectors.mjs`, actions `connectors` and `setConnector` on
+`/api/companion`). Discord keeps its own link, pairing and unlink flow. The Agent Board link is set up by the server
+admin in `owners.json`; the owner can switch it off and on (table `connector_settings`). Off removes the Board MCP
+tools and `attach_to_board` from every turn and stops Board polling and wakes for that owner; nothing on the Board is
+changed. New connectors add an entry to `Connectors.list()` and, if they bring tools, a rule to `toolFilter()`.

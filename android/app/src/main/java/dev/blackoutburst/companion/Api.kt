@@ -58,6 +58,10 @@ import kotlinx.serialization.json.put
     val pairing: DiscordPairing? = null, val user: DiscordUser? = null,
 )
 @Serializable data class DiscordReply(val discord: DiscordStatus)
+/** Me › Connectors (#43): every link the companion has. state: connected, pending, error, not_connected, paused, unavailable. */
+@Serializable data class Connector(val id: String, val name: String, val purpose: String, val state: String, val detail: String? = null,
+    val actions: List<String> = emptyList())
+@Serializable data class ConnectorList(val connectors: List<Connector>)
 /** Reminders, release and topic watches and the schedule settings (src/scheduler.mjs, api/schedules). */
 @Serializable data class Reminder(val id: String, val text: String, val dueAt: String, val state: String, val canCancel: Boolean = false)
 @Serializable data class Routine(val enabled: Boolean, val localTime: String, val weekday: Int? = null)
@@ -157,6 +161,9 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
         if (!writableMemory(file) || !memoryItemId(id) || !memoryRevision(revision)) throw ApiException("INVALID_REQUEST")
     }
 
+    suspend fun connectors(): List<Connector> = call<ConnectorList>("api/companion", buildJsonObject { put("action", "connectors") }).connectors
+    suspend fun setConnector(id: String, enabled: Boolean): List<Connector> =
+        call<ConnectorList>("api/companion", buildJsonObject { put("action", "setConnector"); put("id", id); put("enabled", enabled) }).connectors
     suspend fun discord(): DiscordStatus = call<DiscordReply>("api/companion", buildJsonObject { put("action", "discord") }).discord
     suspend fun discordLink(token: String): DiscordStatus =
         call<DiscordReply>("api/companion", buildJsonObject { put("action", "discordLink"); put("token", token) }).discord
