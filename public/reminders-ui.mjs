@@ -35,19 +35,19 @@ function watchList(value) {
   });
 }
 
-// The ongoing chat's Upcoming controls. Identity remains in the authenticated API.
-export function createRemindersUI({ document, fetchImpl = fetch, requestId = () => globalThis.crypto.randomUUID() }) {
+// The Watches tab (reminders, release and topic watches) and the schedule settings in the Me tab. Identity remains in the authenticated API.
+export function createRemindersUI({ document, fetchImpl = fetch, requestId = () => globalThis.crypto.randomUUID(), visible = () => false }) {
   const $ = id => document.getElementById(id);
   let schedules = null, generation = 0, ownerEpoch = 0, busy = false, message = null, dirty = false, editVersion = 0;
   let watches = null, watchProblem = false, watchDraft = null, watchPending = null, watchNotice = '', watchConfirmation = null, watchNeedsReview = false;
   const expanded = new Set(), node = (tag, props = {}) => Object.assign(document.createElement(tag), props);
   const watchPanel = node('section', { id: 'release-watches', className: 'release-watches', hidden: true });
-  watchPanel.setAttribute('aria-label', 'Release watches');
-  const watchHeading = node('h3', { textContent: 'Release watches' }), watchTip = node('p', { className: 'watch-tip',
-    textContent: 'Ask your companion in chat to watch for a release. It confirms the condition, checks right away and then every six hours. Checks use its web tools and may be mistaken or unavailable.' });
+  watchPanel.setAttribute('aria-label', 'Watches');
+  const watchHeading = node('h2', { textContent: 'Watches' }), watchTip = node('p', { className: 'watch-tip',
+    textContent: 'Ask your companion in chat to watch for a release (checked every six hours until it is out) or to follow a topic (a short digest with sources whenever there is something new). Checks use its web tools and may be mistaken or unavailable.' });
   const watchStatus = node('p', { className: 'watch-notice' }), watchRows = node('ul', { className: 'watch-list' }), watchEditor = node('div'), watchActions = node('div', { className: 'watch-actions' });
   watchStatus.setAttribute('role', 'status'); watchPanel.append(watchHeading, watchTip, watchStatus, watchRows, watchEditor, watchActions);
-  $('upcoming').insertBefore(watchPanel, $('schedule-settings'));
+  ($('watches-home') ?? $('upcoming')).append(watchPanel);
   const routines = [
     { key: 'dailyDigest', row: 'schedule-daily', fields: { enabled: 'schedule-daily-enabled', localTime: 'schedule-daily-time' } },
     { key: 'weeklyCheckin', row: 'schedule-weekly', fields: { enabled: 'schedule-weekly-enabled', localTime: 'schedule-weekly-time', weekday: 'schedule-weekly-day' } }
@@ -126,45 +126,74 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
   function usable(watch, owner) { return owner === ownerEpoch && !busy && !watchPending && !watchDraft && !watchNeedsReview && currentWatch(watch.id)?.version === watch.version; }
   function openEditor(watch, owner) {
     if (!usable(watch, owner) || watchDraft || !['active', 'paused'].includes(watch.state)) return;
-    const form = node('form', { className: 'watch-editor' }), label = node('label', { textContent: 'Watch condition' });
-    const input = node('textarea', { value: watch.condition, maxLength: 1000, rows: 3 }); input.setAttribute('aria-label', 'Release watch condition');
+    const topic = watch.kind === 'topic_watch';
+    const form = node('form', { className: 'watch-editor' }), label = node('label', { textContent: topic ? 'Topic' : 'Watch condition' });
+    const input = node('textarea', { value: watch.condition, maxLength: 1000, rows: 3 }); input.setAttribute('aria-label', topic ? 'Topic watch topic' : 'Release watch condition');
     label.append(input);
-    const draft = { id: watch.id, version: watch.version, text: watch.condition, owner, blocked: false, form, input };
-    const save = watchButton('Save condition', () => {}, false), close = watchButton('Close condition editor', () => {
+    const draft = { id: watch.id, version: watch.version, original: watch, text: watch.condition, hours: topic ? String(watch.intervalHours) : null, owner, blocked: false, form, input };
+    const save = watchButton(topic ? 'Save watch' : 'Save condition', () => {}, false), close = watchButton('Close condition editor', () => {
       if (owner !== ownerEpoch || busy) return;
       watchDraft = null;
       if (watchPending?.body.input.id === watch.id) { watchPending = null; watchNeedsReview = true; watchNotice = 'The change may already have applied. Reload to review the current watch.'; }
       renderWatches();
     }, false);
     save.type = 'submit'; input.addEventListener('input', () => { if (watchDraft === draft && owner === ownerEpoch) draft.text = input.value; });
+    const fields = [label];
+    if (topic) {
+      const hoursLabel = node('label', { className: 'watch-hours', textContent: 'Check every (hours, 6 to 168)' });
+      const hours = node('input', { type: 'number', min: 6, max: 168, step: 1, value: draft.hours });
+      hours.setAttribute('aria-label', 'Hours between checks');
+      hours.addEventListener('input', () => { if (watchDraft === draft && owner === ownerEpoch) draft.hours = hours.value; });
+      hoursLabel.append(hours); fields.push(hoursLabel); draft.hoursInput = hours;
+    }
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (watchDraft !== draft || owner !== ownerEpoch || draft.blocked || busy || watchPending) return;
       const condition = draft.text.trim();
       if (!noteText(condition, 1000, 4000)) { watchNotice = 'Use a nonempty condition of at most 1000 characters.'; renderWatches(); return; }
-      return mutateWatch({ requestId: requestId(), id: draft.id, expectedVersion: draft.version, operation: 'edit', condition }, owner);
+      const change = { requestId: null, id: draft.id, expectedVersion: draft.version, operation: 'edit' };
+      if (!topic || condition !== draft.original.condition) change.condition = condition;
+      if (topic) {
+        const hours = Number(String(draft.hours).trim());
+        if (!Number.isInteger(hours) || hours < 6 || hours > 168) { watchNotice = 'Check every 6 to 168 hours.'; renderWatches(); return; }
+        if (hours !== draft.original.intervalHours) change.intervalHours = hours;
+        if (!Object.hasOwn(change, 'condition') && !Object.hasOwn(change, 'intervalHours')) { watchNotice = 'Nothing to save yet.'; renderWatches(); return; }
+      }
+      change.requestId = requestId(); return mutateWatch(change, owner);
     });
-    draft.save = save; draft.close = close; form.append(label, save, close); watchDraft = draft; watchConfirmation = null; watchNotice = ''; watchEditor.replaceChildren(form); renderWatches();
+    draft.save = save; draft.close = close; form.append(...fields, save, close); watchDraft = draft; watchConfirmation = null; watchNotice = ''; watchEditor.replaceChildren(form); renderWatches();
+  }
+  function sourceLinks(urls) {
+    return urls.map(url => node('a', { href: url, textContent: url, target: '_blank', rel: 'noopener noreferrer', referrerPolicy: 'no-referrer' }));
   }
   function renderWatches() {
     watchPanel.hidden = watches === null && !watchProblem;
-    watchStatus.textContent = busy && watchPending ? 'Saving release watch…' : watchProblem ? 'Release watches could not be read. Reopen Upcoming to try again.' : watchNotice;
+    watchStatus.textContent = busy && watchPending ? 'Saving watch…' : watchProblem ? 'Watches could not be read. Reload to try again.' : watchNotice;
     watchRows.replaceChildren(); watchActions.replaceChildren();
     if (!watches) { watchEditor.replaceChildren(); return; }
     const renderedOwner = ownerEpoch;
-    if (!watches.length) watchRows.append(node('li', { textContent: 'No release watches yet.' }));
+    if (!watches.length) watchRows.append(node('li', { textContent: 'No watches yet.' }));
     for (const watch of watches) {
-      const row = node('li', { className: 'watch-row' }), title = node('strong', { textContent: watch.kind === 'topic_watch' ? `${watch.condition} · topic, every ${watch.intervalHours} h` : watch.condition });
+      const topic = watch.kind === 'topic_watch';
+      const row = node('li', { className: 'watch-row' }), title = node('strong', { textContent: watch.condition });
       const state = watch.deliveryPending ? (watch.lastResult === 'found' ? 'Found · waiting for delivery after quiet hours' : 'Check unavailable · notice waiting for delivery after quiet hours')
         : ({ active: 'Active', paused: 'Paused', complete: 'Complete', cancelled: 'Cancelled' })[watch.state];
-      row.append(title, node('small', { textContent: state + (watch.state === 'active' && !watch.deliveryPending ? ` · Next check: ${watchTime(watch.nextCheckAt)}` : '') }));
+      const result = ({ found: topic ? 'Something new' : 'Found', not_yet: topic ? 'Nothing new' : 'Not yet', stale: 'Couldn’t check' })[watch.lastResult];
+      row.append(node('span', { className: 'watch-kind', textContent: topic ? `Topic · every ${watch.intervalHours} h` : 'Release' }), title,
+        node('small', { textContent: state + (watch.state === 'active' && !watch.deliveryPending ? ` · Next check: ${watchTime(watch.nextCheckAt)}` : '') }),
+        node('small', { textContent: watch.lastCheckAt ? `Last checked ${watchTime(watch.lastCheckAt)}${result ? ' · ' + result : ''}` : 'Not checked yet' }));
+      if (watch.evidence !== null || watch.urls.length) {
+        const latest = node('div', { className: 'watch-result' });
+        if (watch.evidence !== null) latest.append(node('p', { className: 'watch-evidence', textContent: watch.evidence }));
+        latest.append(...sourceLinks(watch.urls)); row.append(latest);
+      }
       const controls = node('div', { className: 'watch-actions' });
       controls.append(watchButton(expanded.has(watch.id) ? 'Hide watch details' : 'Inspect watch', () => {
         if (renderedOwner !== ownerEpoch) return;
         if (expanded.has(watch.id)) expanded.delete(watch.id); else expanded.add(watch.id); renderWatches();
       }, false));
       if (['active', 'paused'].includes(watch.state)) {
-        controls.append(watchButton('Edit condition', () => openEditor(watch, renderedOwner), busy || Boolean(watchPending) || Boolean(watchDraft) || watchNeedsReview),
+        controls.append(watchButton(topic ? 'Edit watch' : 'Edit condition', () => openEditor(watch, renderedOwner), busy || Boolean(watchPending) || Boolean(watchDraft) || watchNeedsReview),
           watchButton(watch.state === 'paused' ? 'Resume watch' : 'Pause watch', () => {
             if (usable(watch, renderedOwner)) return mutateWatch({ requestId: requestId(), id: watch.id, expectedVersion: watch.version, operation: watch.state === 'paused' ? 'resume' : 'pause' }, renderedOwner);
           }, busy || Boolean(watchPending) || Boolean(watchDraft) || watchNeedsReview), watchButton('Cancel watch', () => {
@@ -176,10 +205,16 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
       if (expanded.has(watch.id)) {
         const details = node('div', { className: 'watch-details' });
         details.append(node('p', { textContent: `Last check: ${watch.lastCheckAt ? watchTime(watch.lastCheckAt) : 'Not checked yet'}` }),
-          node('p', { textContent: `Last result: ${({ found: 'Found', not_yet: 'Not yet', stale: 'Couldn’t check' })[watch.lastResult] ?? 'No result yet'}` }));
+          node('p', { textContent: `Last result: ${result ?? 'No result yet'}` }));
         if (watch.consecutiveStale) details.append(node('p', { textContent: `Consecutive checks unavailable: ${watch.consecutiveStale}` }));
-        if (watch.evidence !== null) details.append(node('p', { className: 'watch-evidence', textContent: watch.evidence }));
-        for (const url of watch.urls) { const link = node('a', { href: url, textContent: url, target: '_blank', rel: 'noopener noreferrer', referrerPolicy: 'no-referrer' }); details.append(link); }
+        if (topic) {
+          details.append(node('p', { textContent: watch.digests.length ? 'Recent digests:' : 'No digests yet.' }));
+          for (const digest of watch.digests) {
+            const item = node('div', { className: 'watch-digest' });
+            item.append(node('small', { textContent: watchTime(digest.at) }), node('p', { textContent: digest.evidence }), ...sourceLinks(digest.urls));
+            details.append(item);
+          }
+        }
         row.append(details);
       }
       if (watchConfirmation?.watch.id === watch.id) {
@@ -200,7 +235,7 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
       draft.input.disabled = busy || Boolean(watchPending); draft.save.disabled = busy || Boolean(watchPending) || draft.blocked; draft.close.disabled = busy;
       if (watchEditor.children[0] !== draft.form) watchEditor.replaceChildren(draft.form);
     } else watchEditor.replaceChildren();
-    watchActions.append(watchButton('Reload release watches', () => { if (renderedOwner === ownerEpoch) return refresh(true); }, busy));
+    watchActions.append(watchButton('Reload watches', () => { if (renderedOwner === ownerEpoch) return refresh(true); }, busy));
     if (watchPending && !busy) {
       const pending = watchPending;
       watchActions.append(watchButton('Retry same watch change', () => { if (pending === watchPending && pending.owner === ownerEpoch) return mutateWatch(null, pending.owner, pending); }, false),
@@ -221,16 +256,17 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
       const returned = watchList(next.releaseWatches), selected = returned.find(watch => watch.id === pending.body.input.id);
       const { operation, condition } = pending.body.input;
       if (!selected || selected.version <= pending.body.input.expectedVersion ||
-          (operation === 'edit' ? selected.condition !== condition : selected.state !== ({ pause: 'paused', resume: 'active', cancel: 'cancelled' })[operation])) throw new Error('INVALID_WATCH_RESPONSE');
+          (operation === 'edit' ? (condition !== undefined && selected.condition !== condition)
+            || (pending.body.input.intervalHours !== undefined && selected.intervalHours !== pending.body.input.intervalHours) : selected.state !== ({ pause: 'paused', resume: 'active', cancel: 'cancelled' })[operation])) throw new Error('INVALID_WATCH_RESPONSE');
       accept(next); watchPending = null; watchDraft = null;
-      watchNotice = 'Release watch saved.'; $('announce').textContent = watchNotice;
+      watchNotice = 'Watch saved.'; $('announce').textContent = watchNotice;
     } catch (error) {
       if (owner !== ownerEpoch || current !== generation) return;
       if (error.status === 409 || error.status === 404) {
         watchPending = null; watchNeedsReview = true; if (watchDraft) watchDraft.blocked = true;
         watchNotice = watchDraft ? 'This watch changed. Your draft is kept. Reload release watches, then close the editor and review the current watch before trying again.' : 'This watch changed. Reload release watches and review its current state before trying again.';
         try { const next = await request({ action: 'list' }, owner); if (owner === ownerEpoch && current === generation) accept(next); }
-        catch { if (owner === ownerEpoch && current === generation) watchNotice = 'This watch changed, but current watches could not be loaded. Close and reopen Upcoming to review them.'; }
+        catch { if (owner === ownerEpoch && current === generation) watchNotice = 'This watch changed, but current watches could not be loaded. Reload to review them.'; }
       } else watchNotice = 'The watch change could not be confirmed. Retry only the same change, or reload to review its current state.';
     } finally { if (owner === ownerEpoch && current === generation) { busy = false; render(); } }
   }
@@ -280,7 +316,7 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
       if (reviewWatches) { watchNeedsReview = false; watchNotice = watchDraft?.blocked ? 'Your draft is kept. Close the editor and review the current watch before starting a new edit.' : ''; }
       render();
     } catch {
-      if (current === generation) $('schedule-note').textContent = 'I can’t load your reminders right now. Close and reopen Upcoming to try again.';
+      if (current === generation) $('schedule-note').textContent = 'I can’t load your reminders right now. Leave this tab and come back to try again.';
     }
   }
   async function change(body) {
@@ -303,7 +339,7 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
         $('announce').textContent = body.action === 'cancel' ? 'Reminder cancelled.' : 'Reminder preferences saved.';
       }
     } catch {
-      if (current === generation) message = 'I couldn’t confirm that change. Reopen Upcoming to check its current state.';
+      if (current === generation) message = 'I couldn’t confirm that change. Leave this tab and come back to check its current state.';
     } finally {
       // A cleared or superseded request cannot unlock a newer owner's mutation.
       if (current === generation) { busy = false; render(); }
@@ -333,5 +369,7 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
     }
     return change({ action: 'configure', input });
   });
-  return Object.freeze({ clear, refresh, refreshIfOpen: () => $('upcoming').open && !busy ? refresh() : Promise.resolve() });
+  const isOpen = () => visible() || $('upcoming').open;
+  return Object.freeze({ clear, refresh, show: () => { message = null; return refresh(); },
+    refreshIfOpen: () => isOpen() && !busy ? refresh() : Promise.resolve() });
 }

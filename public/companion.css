@@ -266,9 +266,19 @@ legend { font-weight: 700; margin-bottom: 10px; }
 @media (max-width: 760px) { .mini-avatar { width: 50px; height: 50px; } .who { gap: 8px; } }
 
 /* Reminder disclosure (Chat) */
-.upcoming { margin: 4px 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); flex-shrink: 0; }
-.upcoming[open] { max-height: 42vh; overflow: auto; }
-.upcoming summary { cursor: pointer; font-weight: 700; }
+/* Watches tab and the Me tab (memories, look, settings) */
+.upcoming { display: grid; gap: 18px; margin-top: 14px; }
+.upcoming h2, .me-section h2 { font-size: 18px; margin: 0 0 6px; }
+.reminders-block, .release-watches { padding: 14px 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); min-width: 0; }
+.me-section + .me-section { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--line); }
+.me-page .me-section h1 { font-size: 24px; }
+.watch-kind { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; color: var(--soft); margin-bottom: 3px; }
+.watch-result { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: var(--glass); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.watch-result p { margin: 0 0 4px; white-space: pre-wrap; }
+.watch-result a, .watch-digest a { display: block; color: inherit; font-size: 12px; overflow-wrap: anywhere; margin: 3px 0; }
+.watch-digest { border-left: 3px solid var(--line); padding-left: 10px; margin: 8px 0; }
+.watch-hours { flex: 1 1 100%; font-size: 12px; }
+.watch-hours input { display: block; margin-top: 6px; width: 7em; font: inherit; color: var(--ink); background: var(--glass); border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px; }
 .schedule-note, .schedule-settings small { color: var(--soft); font-size: 12px; }
 .schedule-list { list-style: none; margin: 0; padding: 0; }
 .schedule-list li { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--line); }
@@ -284,8 +294,6 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .schedule-routine .checkin-option { flex: 1 1 150px; }
 .routine-field { display: grid; gap: 4px; font-size: 12px; min-width: 0; }
 .schedule-routine :disabled { opacity: .6; }
-.release-watches { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; min-width: 0; }
-.release-watches h3 { font-size: 14px; margin: 0 0 6px; }
 .watch-tip, .watch-notice, .watch-row small, .watch-details { font-size: 12px; color: var(--soft); line-height: 1.5; }
 .watch-notice:empty { display: none; }
 .watch-list { list-style: none; margin: 0; padding: 0; }

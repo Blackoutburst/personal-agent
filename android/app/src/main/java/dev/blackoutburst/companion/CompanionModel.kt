@@ -88,10 +88,20 @@ data class UiState(
     val discord: DiscordStatus? = null,
     val discordBusy: Boolean = false,
     val discordError: String? = null,
+    /** Watches tab and schedule settings (api/schedules). */
+    val schedules: Schedules? = null,
+    val schedulesLoading: Boolean = false,
+    val schedulesBusy: Boolean = false,
+    val schedulesError: String? = null,
+    val schedulesNotice: String? = null,
+    /** A watch change whose result never came back: retried only on request, with the same request id. */
+    val watchRetry: WatchChange? = null,
 ) {
     val name get() = profile?.name ?: "Your companion"
     val replying get() = turn?.state == "streaming" || waitingFor != null
 }
+
+data class WatchChange(val requestId: String, val watch: Watch, val operation: String, val condition: String? = null, val intervalHours: Int? = null)
 
 class CompanionModel(application: Application) : AndroidViewModel(application) {
     private val store = SessionStore(application)
@@ -310,6 +320,65 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             } finally { if (current(version)) _state.update { it.copy(weatherBusy = false) } }
         }
     }
+
+    // ---- Watches, reminders and schedule settings (api/schedules) ----
+    fun loadSchedules() {
+        val version = scope
+        if (_state.value.schedulesBusy) return
+        _state.update { it.copy(schedulesLoading = true) }
+        viewModelScope.launch {
+            try {
+                val result = api.schedules()
+                if (current(version)) _state.update { it.copy(schedules = result, schedulesError = null) }
+            } catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) signedOut() else _state.update { it.copy(schedulesError = "Your watches and reminders could not be loaded.") }
+            } finally { if (current(version)) _state.update { it.copy(schedulesLoading = false) } }
+        }
+    }
+
+    private fun mutateSchedules(done: String, call: suspend () -> Schedules, failed: (ApiException) -> Unit = {}) {
+        if (_state.value.schedulesBusy) return
+        val version = scope
+        _state.update { it.copy(schedulesBusy = true, schedulesError = null, schedulesNotice = null) }
+        viewModelScope.launch {
+            var reload = false
+            try {
+                val result = call()
+                if (current(version)) _state.update { it.copy(schedules = result, schedulesNotice = done) }
+            } catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                failed(error)
+                reload = error.status == 409 || error.status == 404
+                _state.update { it.copy(schedulesError = when {
+                    reload -> "This changed somewhere else. Here is the current state; check it before trying again."
+                    error.code == "NETWORK" -> "Connection lost. The change may or may not have been saved."
+                    else -> "That change could not be saved."
+                }) }
+            } finally { if (current(version)) _state.update { it.copy(schedulesBusy = false) } }
+            if (reload && current(version)) loadSchedules()
+        }
+    }
+
+    fun cancelReminder(reminder: Reminder) = mutateSchedules("Reminder cancelled.", { api.cancelReminder(reminder.id) })
+
+    fun changeWatch(watch: Watch, operation: String, condition: String? = null, intervalHours: Int? = null) =
+        sendWatchChange(WatchChange(java.util.UUID.randomUUID().toString(), watch, operation, condition, intervalHours))
+
+    fun retryWatchChange() { _state.value.watchRetry?.let(::sendWatchChange) }
+    fun dropWatchChange() { _state.update { it.copy(watchRetry = null) }; loadSchedules() }
+
+    private fun sendWatchChange(change: WatchChange) {
+        _state.update { it.copy(watchRetry = null) }
+        mutateSchedules(when (change.operation) { "pause" -> "Watch paused."; "resume" -> "Watch resumed."; "cancel" -> "Watch cancelled."; else -> "Watch saved." },
+            { api.updateWatch(change.requestId, change.watch, change.operation, change.condition, change.intervalHours) },
+            { error -> if (error.code == "NETWORK" || error.status >= 500) _state.update { it.copy(watchRetry = change) } })
+    }
+
+    /** Saves only the given schedule settings (quiet hours, check-ins, daily digest, weekly check-in). */
+    fun configureSchedules(input: kotlinx.serialization.json.JsonObject) =
+        mutateSchedules("Settings saved.", { api.configureSchedules(input) })
 
     // ---- Discord (docs/DISCORD.md) ----
 

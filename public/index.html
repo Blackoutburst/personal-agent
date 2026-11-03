@@ -18,8 +18,8 @@
       </button>
       <nav id="nav" class="nav" aria-label="Pages" hidden>
         <a href="#chat" data-view="chat">Chat</a>
-        <a href="#memories" data-view="memories">Memories</a>
-        <a href="#look" data-view="look">Look</a>
+        <a href="#watches" data-view="watches">Watches</a>
+        <a href="#me" data-view="me">Me</a>
       </nav>
     </header>
 
@@ -47,32 +47,6 @@
             <div id="typing" class="bubble companion typing" hidden aria-label="Typing"><span></span><span></span><span></span></div>
           </div>
           <p id="note" class="note" role="status" hidden></p>
-          <details id="upcoming" class="upcoming">
-            <summary>Upcoming <span id="upcoming-count"></span></summary>
-            <p id="schedule-note" class="schedule-note" role="status"></p>
-            <ul id="schedule-list" class="schedule-list"></ul>
-            <form id="schedule-settings" class="schedule-settings" hidden>
-              <div id="schedule-daily" class="schedule-routine" hidden>
-                <label class="checkin-option"><input id="schedule-daily-enabled" type="checkbox"> Daily digest</label>
-                <label class="routine-field">At <input id="schedule-daily-time" type="time" required disabled></label>
-              </div>
-              <div id="schedule-weekly" class="schedule-routine" hidden>
-                <label class="checkin-option"><input id="schedule-weekly-enabled" type="checkbox"> Weekly check-in</label>
-                <label class="routine-field">On <select id="schedule-weekly-day" disabled>
-                  <option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option>
-                  <option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="7">Sunday</option>
-                </select></label>
-                <label class="routine-field">At <input id="schedule-weekly-time" type="time" required disabled></label>
-              </div>
-              <label class="checkin-option"><input id="schedule-checkins" type="checkbox"> Occasional check-ins</label>
-              <div class="quiet-times">
-                <label>Quiet from <input id="schedule-quiet-start" type="time" required></label>
-                <label>until <input id="schedule-quiet-end" type="time" required></label>
-                <button id="schedule-save" class="button" type="submit" disabled>Save</button>
-              </div>
-              <small id="schedule-zone"></small>
-            </form>
-          </details>
           <div class="conversation-actions">
             <button id="retry-send" class="text-button" type="button" hidden>Retry pending request</button>
             <button id="past-chats" class="text-button" type="button" disabled>Past chats</button>
@@ -95,7 +69,21 @@
         </div>
       </section>
 
-      <section id="view-memories" class="view page" hidden>
+      <section id="view-watches" class="view page watches-page" hidden>
+        <h1>Watches &amp; reminders</h1>
+        <p class="intro">Everything your companion keeps an eye on for you. Ask in chat to add a reminder, a release watch or a recurring topic watch.</p>
+        <div id="upcoming" class="upcoming">
+          <div id="watches-home"></div>
+          <section class="reminders-block" aria-labelledby="reminders-title">
+            <h2 id="reminders-title">Reminders <span id="upcoming-count"></span></h2>
+            <p id="schedule-note" class="schedule-note" role="status"></p>
+            <ul id="schedule-list" class="schedule-list"></ul>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-me" class="view page me-page" hidden>
+      <section id="view-memories" class="me-section" hidden>
         <h1 id="memories-title">What I remember</h1>
         <p id="memories-intro" class="intro"></p>
         <div id="memory-actions" class="memory-actions"></div>
@@ -103,7 +91,7 @@
         <div id="memory-groups" class="memory-groups"></div>
       </section>
 
-      <section id="view-look" class="view page look" hidden>
+      <section id="view-look" class="me-section look" hidden>
         <h1 id="look-title">Meet your companion</h1>
         <p id="look-intro" class="intro">Choose how they look and give them a name. You can change it any time.</p>
         <div class="look-layout">
@@ -142,14 +130,6 @@
           <p id="contacts-note" role="status"></p>
           <ul id="contacts-list" class="contacts-list"></ul>
         </section>
-        <div id="theme-pick" class="theme-pick" hidden>
-          <h2 id="theme-title">App theme</h2>
-          <div class="segmented" role="radiogroup" aria-labelledby="theme-title">
-            <button type="button" role="radio" data-theme-choice="system">System</button>
-            <button type="button" role="radio" data-theme-choice="light">Light</button>
-            <button type="button" role="radio" data-theme-choice="dark">Dark</button>
-          </div>
-        </div>
         <div id="android-pick" class="connection" hidden>
           <h2>Android app</h2>
           <p>Talk to your companion from your phone. Everything stays in sync with this page.</p>
@@ -160,6 +140,40 @@
           <h2>Discord</h2>
           <div id="discord-body" aria-live="polite"></div>
         </div>
+      </section>
+      <section id="view-settings" class="me-section settings" aria-labelledby="settings-title" hidden>
+        <h1 id="settings-title">Settings</h1>
+        <p class="intro">Quiet hours, routines and how the app looks. Reminders and watches wait until quiet hours end.</p>
+        <form id="schedule-settings" class="schedule-settings" hidden>
+          <div id="schedule-daily" class="schedule-routine" hidden>
+            <label class="checkin-option"><input id="schedule-daily-enabled" type="checkbox"> Daily digest</label>
+            <label class="routine-field">At <input id="schedule-daily-time" type="time" required disabled></label>
+          </div>
+          <div id="schedule-weekly" class="schedule-routine" hidden>
+            <label class="checkin-option"><input id="schedule-weekly-enabled" type="checkbox"> Weekly check-in</label>
+            <label class="routine-field">On <select id="schedule-weekly-day" disabled>
+              <option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option>
+              <option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="7">Sunday</option>
+            </select></label>
+            <label class="routine-field">At <input id="schedule-weekly-time" type="time" required disabled></label>
+          </div>
+          <label class="checkin-option"><input id="schedule-checkins" type="checkbox"> Occasional check-ins</label>
+          <div class="quiet-times">
+            <label>Quiet from <input id="schedule-quiet-start" type="time" required></label>
+            <label>until <input id="schedule-quiet-end" type="time" required></label>
+            <button id="schedule-save" class="button" type="submit" disabled>Save</button>
+          </div>
+          <small id="schedule-zone"></small>
+        </form>
+        <div id="theme-pick" class="theme-pick" hidden>
+          <h2 id="theme-title">App theme</h2>
+          <div class="segmented" role="radiogroup" aria-labelledby="theme-title">
+            <button type="button" role="radio" data-theme-choice="system">System</button>
+            <button type="button" role="radio" data-theme-choice="light">Light</button>
+            <button type="button" role="radio" data-theme-choice="dark">Dark</button>
+          </div>
+        </div>
+      </section>
       </section>
     </main>
     <p id="announce" class="sr-only" role="status" aria-live="polite"></p>

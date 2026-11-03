@@ -38,7 +38,7 @@ function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: prof
   for (const match of html.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"/g)) { const node = new Element(match[1]); node.id = match[2]; nodes.set(node.id, node); }
   const body = new Element('body'); for (const node of nodes.values()) body.append(node);
   const actions = new Element(), chat = new Element(); actions.className = 'conversation-actions'; body.append(actions, chat);
-  const nav = ['chat', 'memories', 'look'].map(view => Object.assign(new Element('a'), { dataset: { view } }));
+  const nav = ['chat', 'watches', 'me'].map(view => Object.assign(new Element('a'), { dataset: { view } }));
   const theme = ['system', 'light', 'dark'].map(themeChoice => Object.assign(new Element('button'), { dataset: { themeChoice } }));
   const document = { body, title: '', visibilityState: 'visible', documentElement: new Element('html'), get activeElement() { return active; },
     getElementById: id => nodes.get(id) ?? all.find(node => node.id === id), createElement: tag => new Element(tag), createTextNode: text => Object.assign(new Element('#text'), { text }),
@@ -57,7 +57,7 @@ function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: prof
         connection: outcome.error === 'ACCESS_DENIED' ? 'denied' : outcome.status === 'uncertain' ? 'reconnecting' : 'ready', error: outcome.error ?? null }); return { requestId: pending.requestId, text, ...outcome }; },
     retry() { writes.push('retry'); return Promise.resolve(); }, cancel() { writes.push('cancel'); return Promise.resolve(); }, deleteThread() { writes.push('delete'); return Promise.resolve(); }
   };
-  const feature = opts => { if (opts?.onDenied) denials.push(opts.onDenied); return { clear() {}, load() {}, refreshIfOpen: async () => {} }; };
+  const feature = opts => { if (opts?.onDenied) denials.push(opts.onDenied); return { clear() {}, load() {}, show: async () => {}, refreshIfOpen: async () => {} }; };
   const response = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
   const profile = { name: 'Pip', character: 'pip', color: 'peach', outfit: 'auto' };
   const sandbox = { console, structuredClone, URL, AbortController, TextEncoder, TextDecoder, Intl, Date, Promise, Set, Map, Object, JSON, String, Number,

@@ -119,7 +119,9 @@ fun tonesFor(choice: ThemeChoice): Tones = when (choice) {
     ThemeChoice.Dark -> DarkTones
 }
 
-private enum class Tab(val label: String) { Chat("Chat"), Memories("Memories"), Look("Look") }
+private enum class Tab(val label: String) { Chat("Chat"), Watches("Watches"), Me("Me") }
+/** Sections of the Me tab; memories come first. */
+private enum class MeSection(val label: String) { Memories("Memories"), Companion("Companion"), Settings("Settings") }
 
 @Composable
 fun CompanionApp(model: CompanionModel, tones: Tones, openBrowser: (android.net.Uri) -> Unit) {
@@ -175,8 +177,8 @@ private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExpo
         Box(Modifier.weight(1f)) {
             when (tab) {
                 Tab.Chat -> ChatScreen(model, state)
-                Tab.Memories -> MemoriesScreen(model, state, memoryExport)
-                Tab.Look -> LookScreen(model, state, first = false) { tab = Tab.Chat }
+                Tab.Watches -> WatchesScreen(model, state)
+                Tab.Me -> MeScreen(model, state, memoryExport) { tab = Tab.Chat }
             }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -359,8 +361,46 @@ internal fun Bubble(model: CompanionModel, message: Message, scope: Long) {
 
 // ---- Memories ----
 
+// ---- Me: memories first, then the companion's look and connections, then app settings ----
+
 @Composable
-private fun MemoriesScreen(model: CompanionModel, state: UiState, memoryExport: MemoryExportControl) = MemoryPanel(model, state, memoryExport)
+private fun MeScreen(model: CompanionModel, state: UiState, memoryExport: MemoryExportControl, done: () -> Unit) {
+    var section by rememberSaveable { mutableStateOf(MeSection.Memories) }
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (item in MeSection.entries) {
+                val selected = item == section
+                Text(item.label, Modifier.clip(RoundedCornerShape(50)).background(if (selected) Card else Color.Transparent)
+                    .border(1.dp, if (selected) Color.Transparent else Line, RoundedCornerShape(50))
+                    .clickable(role = Role.Tab) { section = item }.padding(horizontal = 16.dp, vertical = 8.dp),
+                    color = if (selected) Ink else Soft, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 15.sp)
+            }
+        }
+        Box(Modifier.weight(1f)) {
+            when (section) {
+                MeSection.Memories -> MemoryPanel(model, state, memoryExport)
+                MeSection.Companion -> LookScreen(model, state, first = false, done = done)
+                MeSection.Settings -> SettingsScreen(model, state)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(model: CompanionModel, state: UiState) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
+        Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
+        if (Push.configured) {
+            Spacer(Modifier.height(16.dp))
+            NotificationsSection(model, state.name)
+        }
+        Spacer(Modifier.height(28.dp))
+        ScheduleSettingsSection(model, state)
+        Spacer(Modifier.height(28.dp))
+        ThemePicker(model)
+        Spacer(Modifier.height(24.dp))
+    }
+}
 
 // ---- Look ----
 
@@ -437,12 +477,6 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
             PersonalityPanel(model, state)
             Spacer(Modifier.height(32.dp))
             ContactPanel(model, state)
-            Spacer(Modifier.height(32.dp))
-            ThemePicker(model)
-            if (Push.configured) {
-                Spacer(Modifier.height(32.dp))
-                NotificationsSection(model, profile?.name ?: shownName)
-            }
             Spacer(Modifier.height(32.dp))
             DiscordSection(model, state, profile?.name ?: shownName)
         }

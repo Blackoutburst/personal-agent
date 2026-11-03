@@ -381,11 +381,11 @@ test('condition draft retains its original CAS and DOM through polling; conflict
   const before = f.requests.length; await byClass(f, 'watch-editor')[0].emit('submit'); assert.equal(f.requests.length, before); assert.equal(watchWrites(f).length, 1);
   assert.ok(!byClass(f, 'release-watches')[0].textContent.includes('PRIVATE-DIAGNOSTIC'));
   await watchButton(f, 'Close condition editor').emit('click'); assert.equal(watchButton(f, 'Edit condition').disabled, true);
-  const review = watchButton(f, 'Reload release watches').emit('click'); f.requests.at(-1).reply(watches([watch({ version: 3, condition: 'Current official condition' })])); await review;
+  const review = watchButton(f, 'Reload watches').emit('click'); f.requests.at(-1).reply(watches([watch({ version: 3, condition: 'Current official condition' })])); await review;
   await watchButton(f, 'Edit condition').emit('click'); assert.equal(watchInput(f).value, 'Current official condition');
   await draft(f, 'A newly reviewed condition'); const reviewed = byClass(f, 'watch-editor')[0].emit('submit'); assert.equal(watchWrites(f).at(-1).body.input.expectedVersion, 3);
   f.requests.at(-1).reply(watches([watch({ version: 4, condition: 'A newly reviewed condition' })])); await reviewed;
-  assert.equal(watchInput(f), undefined); assert.match(byClass(f, 'release-watches')[0].textContent, /Release watch saved/);
+  assert.equal(watchInput(f), undefined); assert.match(byClass(f, 'release-watches')[0].textContent, /Watch saved/);
 });
 
 test('uncertain edit retains exact frozen retry body/key across polling and draft tampering; only explicit matched ACK clears it', async () => {
@@ -404,7 +404,7 @@ test('uncertain edit retains exact frozen retry body/key across polling and draf
 test('wrong or stale canonical mutation ACK never becomes a saved claim or a new logical request', async () => {
   for (const returned of [watch({ version: 0, state: 'paused' }), watch({ version: 1, state: 'paused' }), watch({ version: 2, state: 'active' })]) {
     const f = fixture(); await open(f, watches()); const pause = watchButton(f, 'Pause watch').emit('click'); f.requests.at(-1).reply(watches([returned])); await pause;
-    assert.notEqual(f.$('announce').textContent, 'Release watch saved.'); assert.equal(watchWrites(f).length, 1);
+    assert.notEqual(f.$('announce').textContent, 'Watch saved.'); assert.equal(watchWrites(f).length, 1);
     assert.ok(find(f, node => node.textContent === 'Retry same watch change').length); assert.match(byClass(f, 'release-watches')[0].textContent, /could not be confirmed/);
   }
 });
@@ -415,7 +415,7 @@ test('a non-edit conflict retires its retry key and cannot re-enable writes unti
   assert.equal(watchButton(f, 'Pause watch').disabled, true); assert.equal(find(f, node => node.textContent === 'Retry same watch change').length, 0);
   const count = f.requests.length; await watchButton(f, 'Pause watch').emit('click'); assert.equal(f.requests.length, count);
   const poll = f.ui.refreshIfOpen(); f.requests.at(-1).reply(watches([watch({ version: 3 })])); await poll; assert.equal(watchButton(f, 'Pause watch').disabled, true);
-  const review = watchButton(f, 'Reload release watches').emit('click'); f.requests.at(-1).reply(watches([watch({ version: 3 })])); await review;
+  const review = watchButton(f, 'Reload watches').emit('click'); f.requests.at(-1).reply(watches([watch({ version: 3 })])); await review;
   const fresh = watchButton(f, 'Pause watch').emit('click'); assert.equal(watchWrites(f).length, 2); assert.equal(watchWrites(f)[1].body.input.expectedVersion, 3);
   assert.notEqual(watchWrites(f)[1].body.input.requestId, watchWrites(f)[0].body.input.requestId);
   f.requests.at(-1).reply(watches([watch({ version: 4, state: 'paused' })])); await fresh;
@@ -493,4 +493,29 @@ test('malformed/unsafe bounded watch DTOs never create active controls or fetch 
     assert.equal(find(f, node => node.textContent === 'Edit condition').length, 0); assert.equal(find(f, node => node.tagName === 'a').length, 0);
     assert.equal(f.requests.length, 1); assert.equal(f.$('schedule-settings').hidden, false); assert.equal(f.$('schedule-checkins').checked, false);
   }
+});
+
+test('topic watches show their interval, latest result with sources and digest history, and edit only what changed', async () => {
+  const f = fixture(), source = 'https://news.example/nvda-q3', older = 'https://news.example/nvda-guidance';
+  const topic = (extra = {}) => watch({ kind: 'topic_watch', condition: 'NVIDIA stock news', intervalHours: 24, lastCheckAt: '2026-11-03T08:00:00.000Z',
+    lastResult: 'found', evidence: 'Q3 earnings beat estimates.', urls: [source],
+    digests: [{ at: '2026-11-03T08:00:00.000Z', evidence: 'Q3 earnings beat estimates.', urls: [source] }, { at: '2026-11-02T08:00:00.000Z', evidence: 'Guidance raised.', urls: [older] }], ...extra });
+  await open(f, watches([topic()]));
+  const row = byClass(f, 'watch-row')[0];
+  assert.match(row.textContent, /Topic · every 24 h/); assert.match(row.textContent, /Something new/);
+  assert.equal(byClass(f, 'watch-result')[0].textContent.includes('Q3 earnings beat estimates.'), true, 'The latest result is visible without expanding');
+  assert.deepEqual(find(f, node => node.tagName === 'a').map(link => link.href), [source]);
+  await watchButton(f, 'Inspect watch').emit('click');
+  assert.match(byClass(f, 'watch-details')[0].textContent, /Recent digests:.*Guidance raised\./s);
+  assert.deepEqual(find(f, node => node.tagName === 'a').map(link => link.href), [source, source, older]);
+
+  await watchButton(f, 'Edit watch').emit('click');
+  const hours = find(f, node => node.tagName === 'input' && node.type === 'number')[0]; assert.equal(hours.value, '24');
+  await byClass(f, 'watch-editor')[0].emit('submit'); assert.equal(watchWrites(f).length, 0, 'An unchanged watch is not sent');
+  assert.match(byClass(f, 'release-watches')[0].textContent, /Nothing to save yet/);
+  hours.value = '200'; await hours.emit('input'); await byClass(f, 'watch-editor')[0].emit('submit'); assert.equal(watchWrites(f).length, 0);
+  hours.value = '12'; await hours.emit('input'); const save = byClass(f, 'watch-editor')[0].emit('submit');
+  assert.deepEqual(watchWrites(f)[0].body.input, { requestId: 'watch-change-1', id: WATCH, expectedVersion: 1, operation: 'edit', intervalHours: 12 });
+  f.requests.at(-1).reply(watches([topic({ version: 2, intervalHours: 12 })])); await save;
+  assert.equal(f.$('announce').textContent, 'Watch saved.'); assert.match(byClass(f, 'watch-row')[0].textContent, /Topic · every 12 h/);
 });

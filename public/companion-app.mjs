@@ -10,7 +10,7 @@ import { createWeatherUI } from './weather-ui.mjs';
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
 const fileTransport = createFileTransport();
-const remindersUI = createRemindersUI({ document });
+const remindersUI = createRemindersUI({ document, visible: () => view === 'watches' || view === 'me' });
 const memoryUI = createMemoryUI({ document, api, onDenied: fileAccessDenied });
 const personalityUI = createPersonalityUI({ document, api, onDenied: fileAccessDenied });
 const contactUI = createContactUI({ document, api, onDenied: fileAccessDenied });
@@ -85,18 +85,24 @@ function linkify(container, text) {
 
 // ---------- Views ----------
 
+// Views: chat, watches, me (memories, the companion's look and settings), plus first-run setup ('look' alone).
+const lookShown = () => view === 'me' || view === 'look';
 function show(next) {
-  if (next !== 'look') { clearTimeout(discordTimer); discordTimer = null; }
   view = next;
+  if (!lookShown()) { clearTimeout(discordTimer); discordTimer = null; }
   $('app').dataset.view = next;
-  for (const name of ['loading', 'gate', 'chat', 'memories', 'look']) $(`view-${name}`).hidden = name !== next;
+  for (const name of ['loading', 'gate', 'chat', 'watches']) $(`view-${name}`).hidden = name !== next;
+  $('view-me').hidden = !lookShown();
+  $('view-look').hidden = !lookShown();
+  $('view-memories').hidden = $('view-settings').hidden = next !== 'me';
   $('nav').hidden = !profile || next === 'gate' || next === 'loading';
   for (const link of document.querySelectorAll('#nav a')) {
     if (link.dataset.view === next) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   }
   if (next === 'chat') openChat();
-  if (next === 'memories') loadMemories();
-  if (next === 'look') startLook();
+  if (next === 'me') loadMemories();
+  if (lookShown()) startLook();
+  if (next === 'watches' || next === 'me') void remindersUI.show();
   renderAll();
 }
 
@@ -110,7 +116,8 @@ function gate(title, text, { signIn = false, retry = false } = {}) {
 function route() {
   if (!profile) return show('look');
   const hash = location.hash.replace('#', '');
-  show(['memories', 'look'].includes(hash) ? hash : 'chat');
+  // #memories and #look are older links into what is now the Me tab.
+  show(hash === 'watches' ? 'watches' : ['me', 'memories', 'look'].includes(hash) ? 'me' : 'chat');
 }
 
 async function start() {
@@ -133,7 +140,7 @@ async function start() {
 
 function lastAssistantFor(requestId) { return [...state.messages].reverse().find(m => m.role === 'assistant' && m.requestId === requestId); }
 function mood() {
-  if (view === 'look') return 'happy';
+  if (lookShown()) return 'happy';
   const turn = state.turn;
   if (turn?.state === 'streaming' || state.pending) return turn && lastAssistantFor(turn.requestId)?.text ? 'talking' : 'thinking';
   if (Date.now() < happyUntil) return 'happy';
@@ -543,7 +550,7 @@ function renderLook() {
 // ---------- Rendering ----------
 
 function renderAll() {
-  const look = view === 'look' && draftLook ? draftLook : profile;
+  const look = lookShown() && draftLook ? draftLook : profile;
   const current = mood();
   $('top-name').textContent = companionName();
   $('top-mood').textContent = view === 'chat' ? MOOD_TEXT[current] : '';
@@ -555,7 +562,7 @@ function renderAll() {
     $('stage-mood').textContent = MOOD_TEXT[current];
     renderChat();
   }
-  if (view === 'look') renderLook();
+  if (lookShown()) renderLook();
 }
 
 // ---------- Events ----------
@@ -700,7 +707,7 @@ async function loadDiscord() {
     discord = null; discordError = 'Discord settings could not be loaded. Retry when the connection is available.';
   } finally { if (owner === ownerEpoch && token === discordRequest) { discordLoading = false; renderDiscord(); } }
   // While waiting for the pairing message, check again every few seconds.
-  if (owner === ownerEpoch && token === discordRequest && view === 'look' && discord?.linked && !discord.user && document.visibilityState !== 'hidden' && navigator.onLine !== false) discordTimer = setTimeout(() => { if (owner === ownerEpoch && token === discordRequest) void loadDiscord(); }, 4000);
+  if (owner === ownerEpoch && token === discordRequest && lookShown() && discord?.linked && !discord.user && document.visibilityState !== 'hidden' && navigator.onLine !== false) discordTimer = setTimeout(() => { if (owner === ownerEpoch && token === discordRequest) void loadDiscord(); }, 4000);
 }
 async function discordAction(body) {
   if (discordBusy || sessionDenied) return;
@@ -712,7 +719,7 @@ async function discordAction(body) {
     if (error.status === 401 || error.status === 403) { fileAccessDenied(); return; }
     discordError = DISCORD_ERRORS[error.message] ?? 'Discord change could not be confirmed. Reload its settings before trying again.';
   } finally { if (owner === ownerEpoch && token === discordRequest) { discordBusy = false; renderDiscord(); } }
-  if (owner === ownerEpoch && token === discordRequest && view === 'look' && discord?.linked && !discord.user && document.visibilityState !== 'hidden' && navigator.onLine !== false) discordTimer = setTimeout(() => { if (owner === ownerEpoch && token === discordRequest) void loadDiscord(); }, 4000);
+  if (owner === ownerEpoch && token === discordRequest && lookShown() && discord?.linked && !discord.user && document.visibilityState !== 'hidden' && navigator.onLine !== false) discordTimer = setTimeout(() => { if (owner === ownerEpoch && token === discordRequest) void loadDiscord(); }, 4000);
 }
 function el(tag, props = {}, ...children) { const node = Object.assign(document.createElement(tag), props); node.append(...children); return node; }
 function renderDiscord() {

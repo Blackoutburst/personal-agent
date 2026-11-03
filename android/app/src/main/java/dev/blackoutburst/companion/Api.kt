@@ -58,6 +58,26 @@ import kotlinx.serialization.json.put
     val pairing: DiscordPairing? = null, val user: DiscordUser? = null,
 )
 @Serializable data class DiscordReply(val discord: DiscordStatus)
+/** Reminders, release and topic watches and the schedule settings (src/scheduler.mjs, api/schedules). */
+@Serializable data class Reminder(val id: String, val text: String, val dueAt: String, val state: String, val canCancel: Boolean = false)
+@Serializable data class Routine(val enabled: Boolean, val localTime: String, val weekday: Int? = null)
+@Serializable data class ScheduleSettings(val heartbeatEnabled: Boolean, val quietStart: String, val quietEnd: String,
+    val dailyDigest: Routine? = null, val weeklyCheckin: Routine? = null)
+@Serializable data class Digest(val at: String, val evidence: String, val urls: List<String> = emptyList())
+@Serializable data class Watch(
+    val id: String, val version: Long, val kind: String, val condition: String, val state: String,
+    val nextCheckAt: String? = null, val lastCheckAt: String? = null, val lastResult: String? = null,
+    val urls: List<String> = emptyList(), val evidence: String? = null, val consecutiveStale: Int = 0,
+    val deliveryPending: Boolean = false, val intervalHours: Int? = null, val digests: List<Digest> = emptyList(),
+) { val topic get() = kind == "topic_watch" }
+@Serializable data class Schedules(val timezone: String, val settings: ScheduleSettings, val items: List<Reminder> = emptyList(),
+    val releaseWatches: List<Watch> = emptyList())
+
+/** Only plain http(s) links without credentials are ever shown as tappable sources. */
+fun safeLink(url: String): Boolean = url.length <= 2048 && runCatching {
+    val parsed = java.net.URI(url)
+    (parsed.scheme == "https" || parsed.scheme == "http") && parsed.host != null && parsed.rawUserInfo == null
+}.getOrDefault(false)
 
 /** code: the server's error code (e.g. AUTHENTICATION_REQUIRED), or NETWORK when nothing came back. */
 class ApiException(val code: String, val status: Int = 0) : IOException(code) {
@@ -142,6 +162,27 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
         call<DiscordReply>("api/companion", buildJsonObject { put("action", "discordLink"); put("token", token) }).discord
     suspend fun discordUnlink(): DiscordStatus = call<DiscordReply>("api/companion", buildJsonObject { put("action", "discordUnlink") }).discord
     /** Android push (docs/PUSH.md): this install's FCM token, bound by the server to the signed-in owner. */
+    suspend fun schedules(): Schedules = scheduleCall(buildJsonObject { put("action", "list") })
+    suspend fun cancelReminder(id: String): Schedules =
+        scheduleCall(buildJsonObject { put("action", "cancel"); put("input", buildJsonObject { put("id", id) }) })
+    /** operation: pause, resume, cancel or edit (with condition and/or intervalHours). Reuse requestId on an exact retry. */
+    suspend fun updateWatch(requestId: String, watch: Watch, operation: String, condition: String? = null, intervalHours: Int? = null): Schedules =
+        scheduleCall(buildJsonObject { put("action", "updateWatch"); put("input", buildJsonObject {
+            put("requestId", requestId); put("id", watch.id); put("expectedVersion", watch.version); put("operation", operation)
+            condition?.let { put("condition", it) }; intervalHours?.let { put("intervalHours", it) }
+        }) })
+    suspend fun configureSchedules(input: JsonObject): Schedules =
+        scheduleCall(buildJsonObject { put("action", "configure"); put("input", input) })
+    private suspend fun scheduleCall(body: JsonObject): Schedules {
+        val raw = post(companion + "api/schedules", body)
+        return verified {
+            val value = decode<Schedules>(raw)
+            if (value.releaseWatches.size > 20 || value.items.size > 500) throw ApiException("INVALID_RESPONSE")
+            value.copy(releaseWatches = value.releaseWatches.map { watch ->
+                watch.copy(urls = watch.urls.filter(::safeLink), digests = watch.digests.map { it.copy(urls = it.urls.filter(::safeLink)) })
+            })
+        }
+    }
     suspend fun pushRegister(token: String) { post(companion + "api/companion", buildJsonObject { put("action", "pushRegister"); put("token", token) }) }
     suspend fun pushUnregister(token: String) { post(companion + "api/companion", buildJsonObject { put("action", "pushUnregister"); put("token", token) }) }
 
