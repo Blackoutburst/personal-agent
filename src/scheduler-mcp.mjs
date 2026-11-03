@@ -44,7 +44,20 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { id: string(36, 'Event ID'), expectedVersion: { type: 'integer', minimum: 1 }, event: EVENT },
       required: ['id', 'expectedVersion', 'event'], additionalProperties: false } },
   { name: 'delete_event', description: 'Delete an event after this owner asks. A yearly event is deleted for every year.',
-    inputSchema: schema({ id: string(36, 'Event ID') }) }
+    inputSchema: schema({ id: string(36, 'Event ID') }) },
+  { name: 'github_list_repos', description: 'List the repositories this owner\'s GitHub token can see (only when GitHub is connected).', inputSchema: schema({}) },
+  { name: 'github_repo', description: 'Read one repository: description, visibility, default branch and the last few commits.',
+    inputSchema: schema({ repo: string(141, 'owner/name') }) },
+  { name: 'github_pulls', description: 'List pull requests of a repository (state open, closed or all), optionally filtered by text in the title or branch, e.g. a ticket number.',
+    inputSchema: { type: 'object', properties: { repo: string(141, 'owner/name'), state: { type: 'string', enum: ['open', 'closed', 'all'] },
+      query: string(100, 'Optional text to match in title or branch') }, required: ['repo'], additionalProperties: false } },
+  { name: 'github_pull', description: 'Read one pull request: state, whether it is merged, branch and a summary of check results.',
+    inputSchema: schema({ repo: string(141, 'owner/name'), number: { type: 'integer', minimum: 1 } }) },
+  { name: 'github_create_repo', description: 'Create a repository under this owner\'s GitHub account. Only after the owner confirmed the exact name, description, extras and visibility in this chat. private must be true unless the owner explicitly asked for a public repository. Reuse requestId for exact retries. Never from a background wake.',
+    inputSchema: { type: 'object', properties: { requestId: string(80, 'Stable logical request key'), name: string(100, 'Repository name'),
+      description: string(350, 'Optional description'), private: { type: 'boolean', description: 'true unless the owner explicitly asked for public' },
+      autoInit: { type: 'boolean', description: 'Add a README' }, gitignoreTemplate: string(60, 'Optional .gitignore template, e.g. Node'),
+      licenseTemplate: string(60, 'Optional license key, e.g. mit') }, required: ['requestId', 'name', 'private'], additionalProperties: false } }
 ];
 function configuration(endpoint, token) {
   let url;
@@ -85,6 +98,8 @@ function toolInput(name, args) {
     && Number.isSafeInteger(args.expectedVersion) && args.expectedVersion > 0 && object(args.event)) {
     return { action: 'updateEvent', input: { id: args.id, expectedVersion: args.expectedVersion, event: { ...args.event } } };
   }
+  const github = { github_list_repos: 'listRepos', github_repo: 'repo', github_pulls: 'pulls', github_pull: 'pull', github_create_repo: 'createRepo' }[name];
+  if (github && object(args) && !Object.hasOwn(args, 'op')) return { action: 'github', input: { op: github, ...args } };
   if (name === 'delete_event' && exact(args, ['id']) && typeof args.id === 'string' && UUID.test(args.id)) return { action: 'deleteEvent', input: { id: args.id } };
   if (name === 'cancel_schedule' && exact(args, ['id']) && typeof args.id === 'string' && UUID.test(args.id)) {
     return { action: 'cancel', input: { id: args.id } };

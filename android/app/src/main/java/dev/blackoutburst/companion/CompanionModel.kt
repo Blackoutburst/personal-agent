@@ -342,6 +342,23 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** GitHub (#45). link: the pasted token, or null to disconnect. onDone runs after a successful change. */
+    fun github(token: String?, onDone: () -> Unit = {}) {
+        if (_state.value.connectorsBusy) return
+        val version = scope
+        _state.update { it.copy(connectorsBusy = true, connectorsError = null) }
+        viewModelScope.launch {
+            try {
+                val result = if (token != null) api.githubLink(token) else api.githubUnlink()
+                if (current(version)) { _state.update { it.copy(connectors = result) }; onDone() }
+            } catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) signedOut() else _state.update { it.copy(connectorsError = if (error.code == "INVALID_TOKEN")
+                    "GitHub didn’t accept that token. Check it starts with github_pat_ and hasn’t expired." else "GitHub could not be reached. Try again in a moment.") }
+            } finally { if (current(version)) _state.update { it.copy(connectorsBusy = false) } }
+        }
+    }
+
     fun setConnector(id: String, enabled: Boolean) {
         if (_state.value.connectorsBusy) return
         val version = scope

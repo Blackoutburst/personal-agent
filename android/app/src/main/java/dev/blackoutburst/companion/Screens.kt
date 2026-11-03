@@ -388,7 +388,7 @@ private fun MeScreen(model: CompanionModel, state: UiState, memoryExport: Memory
 }
 
 private val CONNECTOR_STATES = mapOf("connected" to "Connected", "pending" to "Waiting for pairing", "error" to "Needs attention",
-    "not_connected" to "Not connected", "paused" to "Switched off", "unavailable" to "Not available")
+    "not_connected" to "Not connected", "paused" to "Switched off", "unavailable" to "Not available", "expiring" to "Expires soon")
 
 /** Me › Connectors (#43): every link with its state; the Board is switched off and on here, Discord keeps its own setup below. */
 @Composable
@@ -404,13 +404,14 @@ private fun ConnectorsScreen(model: CompanionModel, state: UiState) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(item.name, Modifier.weight(1f), fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Ink)
                     Box(Modifier.size(9.dp).clip(CircleShape).background(when (item.state) {
-                        "connected" -> Color(0xFF3FB950); "pending" -> Color(0xFFD29922); "error" -> Danger; else -> Soft }))
+                        "connected" -> Color(0xFF3FB950); "pending", "expiring" -> Color(0xFFD29922); "error" -> Danger; else -> Soft }))
                     Text("  " + (CONNECTOR_STATES[item.state] ?: item.state), fontSize = 13.sp, fontWeight = FontWeight.Bold,
                         color = if (item.state == "connected") Ink else Soft)
                 }
                 Text(item.purpose, color = Ink, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp))
                 item.detail?.let { Text(it, color = Soft, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp)) }
-                if (item.id != "discord" && item.actions.isNotEmpty()) {
+                if (item.id == "github") GitHubControls(model, state, item) { disconnecting = item }
+                else if (item.id != "discord" && item.actions.isNotEmpty()) {
                     val connect = "connect" in item.actions
                     ActionButton(enabled = !state.connectorsBusy, onClick = { if (connect) model.setConnector(item.id, true) else disconnecting = item },
                         modifier = Modifier.padding(top = 8.dp)) { Text(if (connect) "Connect" else "Disconnect") }
@@ -425,8 +426,36 @@ private fun ConnectorsScreen(model: CompanionModel, state: UiState) {
         AlertDialog(onDismissRequest = { disconnecting = null },
             title = { Text("Disconnect ${item.name}?") },
             text = { Text("${state.name} stops using it until you connect it again. Nothing is deleted there.") },
-            confirmButton = { ActionButton(onClick = { disconnecting = null; model.setConnector(item.id, false) }) { Text("Disconnect", color = Danger) } },
+            confirmButton = { ActionButton(onClick = { disconnecting = null; if (item.id == "github") model.github(null) else model.setConnector(item.id, false) }) { Text("Disconnect", color = Danger) } },
             dismissButton = { ActionButton(onClick = { disconnecting = null }) { Text("Keep it") } })
+    }
+}
+
+/** GitHub (#45): the owner pastes their own fine-grained token; it is stored encrypted on the server and never shown again. */
+@Composable
+private fun GitHubControls(model: CompanionModel, state: UiState, item: Connector, disconnect: () -> Unit) {
+    val uri = LocalUriHandler.current
+    var replacing by remember(state.scope) { mutableStateOf(false) }
+    var token by remember(state.scope) { mutableStateOf("") }
+    if (item.state == "not_connected" || replacing) {
+        Spacer(Modifier.height(6.dp))
+        Text("1. Create a fine-grained token on GitHub (pick an expiry and the repositories to share).", color = Soft, fontSize = 14.sp)
+        ActionButton({ uri.openUri("https://github.com/settings/personal-access-tokens/new") }) { Text("Open GitHub token settings", color = Color(0xFFD9764A)) }
+        Text("2. Permissions: Administration (read and write) to create repos; Contents, Metadata and Pull requests (read). Add Checks (read) for CI results.", color = Soft, fontSize = 14.sp)
+        Text("3. Paste it here. It is stored encrypted, only for you, and never shown again.", color = Soft, fontSize = 14.sp)
+        OutlinedTextField(token, { token = it.trim() }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("github_pat_…") }, singleLine = true,
+            visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(18.dp),
+            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
+            colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Card, unfocusedContainerColor = Card))
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ActionButton(enabled = !state.connectorsBusy && token.isNotBlank(), onClick = {
+                model.github(token) { replacing = false }; token = ""
+            }) { Text(if (state.connectorsBusy) "Checking…" else "Connect") }
+            if (replacing) ActionButton(onClick = { replacing = false; token = "" }) { Text("Cancel") }
+        }
+    } else Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ActionButton(enabled = !state.connectorsBusy, onClick = { replacing = true }) { Text("Paste a new token") }
+        ActionButton(enabled = !state.connectorsBusy, onClick = disconnect) { Text("Disconnect") }
     }
 }
 

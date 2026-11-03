@@ -380,7 +380,7 @@ function resetShell(denied) {
   $('stage-name').textContent = ''; $('stage-mood').textContent = '';
   for (const id of ['pick-character', 'pick-color', 'pick-outfit']) $(id).replaceChildren();
   for (const id of ['discord-pick', 'android-pick']) $(id).hidden = true;
-  connectors = null; connectorsBusy = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
+  connectors = null; connectorsBusy = false; githubForm = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
   kept.hidden = true; keptText.textContent = ''; reconnect.hidden = true;
   memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); remindersUI.clear(); calendarUI.clear(); client.clear(); clearUploads(); clearFullImage();
 }
@@ -709,7 +709,9 @@ $('name').addEventListener('input', () => { if (draftLook) draftLook.name = $('n
 // ---------- Connectors (#43): every link the companion has, with its state and a switch ----------
 
 let connectors = null, connectorsBusy = false, connectorsRequest = 0, connectorsError = '';
-const CONNECTOR_STATES = { connected: 'Connected', pending: 'Waiting for pairing', error: 'Needs attention', not_connected: 'Not connected', paused: 'Switched off', unavailable: 'Not available' };
+const CONNECTOR_STATES = { connected: 'Connected', pending: 'Waiting for pairing', error: 'Needs attention', not_connected: 'Not connected', paused: 'Switched off', unavailable: 'Not available', expiring: 'Expires soon' };
+const GITHUB_ERRORS = { INVALID_TOKEN: 'GitHub didn’t accept that token. Check it starts with github_pat_ and hasn’t expired.' };
+let githubForm = false;
 async function loadConnectors() {
   if (connectorsBusy || sessionDenied) return;
   const owner = ownerEpoch, token = ++connectorsRequest;
@@ -744,6 +746,8 @@ function renderConnectors() {
       const go = el('button', { type: 'button', className: 'button', textContent: item.state === 'not_connected' ? 'Connect' : 'Manage' });
       go.addEventListener('click', () => $('discord-pick').scrollIntoView({ behavior: 'smooth', block: 'start' }));
       card.append(el('div', { className: 'actions' }, go));
+    } else if (item.id === 'github') {
+      card.append(githubControls(item, owner));
     } else if (item.actions.length) {
       const on = item.actions.includes('connect');
       const button = el('button', { type: 'button', className: on ? 'button primary' : 'button', disabled: connectorsBusy, textContent: on ? 'Connect' : 'Disconnect' });
@@ -756,6 +760,45 @@ function renderConnectors() {
     }
     return card;
   }));
+}
+
+// GitHub (#45): each owner pastes their own fine-grained token. It stays on the server and is never shown again.
+function githubControls(item, owner) {
+  const box = el('div', { className: 'github-link' });
+  if (item.state === 'not_connected' || githubForm) {
+    const link = el('a', { href: 'https://github.com/settings/personal-access-tokens/new', target: '_blank', rel: 'noopener', textContent: 'Create a fine-grained token' });
+    box.append(el('ol', {},
+      el('li', {}, link, ' on GitHub (pick an expiry date and the repositories to share).'),
+      el('li', {}, 'Permissions: Administration (read and write) to create repos, Contents, Metadata and Pull requests (read). Add Checks (read) to see CI results.'),
+      el('li', {}, 'Paste it here. It is stored encrypted, only for you, and never shown again.')));
+    const input = el('input', { type: 'text', className: 'secret', autocomplete: 'off', spellcheck: false, placeholder: 'github_pat_…', required: true });
+    input.setAttribute('aria-label', 'GitHub fine-grained token');
+    for (const flag of ['data-1p-ignore', 'data-lpignore', 'data-bwignore', 'data-form-type']) input.setAttribute(flag, flag === 'data-form-type' ? 'other' : 'true');
+    const form = el('form', { className: 'actions' }, input, el('button', { className: 'button primary', type: 'submit', disabled: connectorsBusy, textContent: connectorsBusy ? 'Checking…' : 'Connect' }));
+    if (githubForm) { const cancel = el('button', { type: 'button', className: 'button', textContent: 'Cancel' }); cancel.addEventListener('click', () => { githubForm = false; renderConnectors(); }); form.append(cancel); }
+    form.addEventListener('submit', event => { event.preventDefault(); if (owner === ownerEpoch && input.value.trim()) void githubAction({ action: 'githubLink', token: input.value.trim() }, 'GitHub connected.'); });
+    box.append(form);
+  } else {
+    const replace = el('button', { type: 'button', className: 'button' + (item.state === 'connected' ? '' : ' primary'), disabled: connectorsBusy, textContent: 'Paste a new token' });
+    replace.addEventListener('click', () => { githubForm = true; renderConnectors(); });
+    const remove = el('button', { type: 'button', className: 'button', disabled: connectorsBusy, textContent: 'Disconnect' });
+    remove.addEventListener('click', () => {
+      if (owner !== ownerEpoch || !confirm(`Disconnect GitHub? ${companionName()} forgets the token. Nothing on GitHub changes; you can also revoke the token there.`)) return;
+      void githubAction({ action: 'githubUnlink' }, 'GitHub disconnected.');
+    });
+    box.append(el('div', { className: 'actions' }, replace, remove));
+  }
+  return box;
+}
+async function githubAction(body, done) {
+  if (connectorsBusy || sessionDenied) return;
+  const owner = ownerEpoch, token = ++connectorsRequest; connectorsBusy = true; connectorsError = ''; renderConnectors();
+  try { const result = await api(body); if (owner !== ownerEpoch || token !== connectorsRequest) return; connectors = result.connectors; githubForm = false; $('announce').textContent = done; }
+  catch (error) {
+    if (owner !== ownerEpoch || token !== connectorsRequest) return;
+    if (error.status === 401 || error.status === 403) { fileAccessDenied(); return; }
+    connectorsError = GITHUB_ERRORS[error.message] ?? 'GitHub could not be reached. Try again in a moment.';
+  } finally { if (owner === ownerEpoch && token === connectorsRequest) { connectorsBusy = false; renderConnectors(); } }
 }
 
 // ---------- Discord (docs/DISCORD.md): the owner's own bot, for chatting in Discord DMs ----------

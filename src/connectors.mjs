@@ -10,10 +10,10 @@ export class ConnectorError extends Error {
 }
 
 export class Connectors {
-  #db; #now; #discord; #boardConfigured;
+  #db; #now; #discord; #boardConfigured; #github;
   // discord: () => the DiscordBridge or null (created after the conversations it serves).
-  constructor({ store, now = Date.now, discord = () => null, boardConfigured = () => false }) {
-    this.#db = store.db; this.#now = now; this.#discord = discord; this.#boardConfigured = boardConfigured;
+  constructor({ store, now = Date.now, discord = () => null, boardConfigured = () => false, github = () => null }) {
+    this.#db = store.db; this.#now = now; this.#discord = discord; this.#boardConfigured = boardConfigured; this.#github = github;
     this.#db.exec(`CREATE TABLE IF NOT EXISTS connector_settings(companion_id TEXT NOT NULL, connector TEXT NOT NULL,
       enabled INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(companion_id, connector))`);
   }
@@ -40,6 +40,17 @@ export class Connectors {
       state: !configured ? 'unavailable' : on ? 'connected' : 'paused',
       detail: !configured ? 'Not set up for you on this server yet. The server admin links it.' : on ? 'board.blackoutburst.com' : 'Switched off: the Board is untouched, I just stop using it.',
       actions: !configured ? [] : on ? ['disconnect'] : ['connect'] });
+    // GitHub (#45): the owner pastes their own token; linking and unlinking use githubLink / githubUnlink.
+    const github = this.#github()?.status(companionId);
+    if (github) {
+      const when = github.expiresAt ? new Date(github.expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : null;
+      items.push({ id: 'github', name: 'GitHub', purpose: 'Read your repos and pull requests, and create new repos when you ask (private by default). Never deletes or pushes.',
+        state: !github.linked ? 'not_connected' : github.problem ? 'error' : github.expiring ? 'expiring' : 'connected',
+        detail: !github.linked ? null : github.problem === 'EXPIRED' ? `The token for @${github.login} expired on ${when}. Paste a new one.`
+          : github.problem ? `GitHub no longer accepts the token for @${github.login}. Paste a new one.`
+          : `@${github.login} · ${github.repos} repositor${github.repos === 1 ? 'y' : 'ies'} visible` + (when ? ` · token expires ${when}` : ' · token never expires'),
+        actions: github.linked ? ['replace', 'disconnect'] : ['connect'] });
+    }
     return { connectors: items };
   }
 
@@ -55,7 +66,9 @@ export class Connectors {
 
   // A turn's tool filter: drops the tools of switched-off connectors.
   toolFilter(companionId) {
-    if (this.boardOn(companionId)) return null;
-    return name => !name.startsWith('mcp__board__') && name !== 'mcp__files__attach_to_board';
+    const bridge = this.#github(), board = this.boardOn(companionId), github = bridge ? bridge.linked(companionId) : true;
+    if (board && github) return null;
+    return name => (board || (!name.startsWith('mcp__board__') && name !== 'mcp__files__attach_to_board'))
+      && (github || !name.startsWith('mcp__scheduler__github_'));
   }
 }

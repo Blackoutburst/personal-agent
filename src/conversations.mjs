@@ -19,7 +19,7 @@ const BOARD_PREFIX = 'mcp__board__';
 // the companion to answer on the Board, so those keep every Board tool the owner configured.
 // Background wakes never browse: native web tools are for owner chat turns (#42) and the app's own watch checks.
 const wakeToolFilter = kind => name => !WEB_TOOLS.includes(name) && !['mcp__scheduler__create_release_watch', 'mcp__scheduler__create_topic_watch', 'mcp__scheduler__update_release_watch',
-  'mcp__scheduler__create_event', 'mcp__scheduler__update_event', 'mcp__scheduler__delete_event'].includes(name)
+  'mcp__scheduler__create_event', 'mcp__scheduler__update_event', 'mcp__scheduler__delete_event', 'mcp__scheduler__github_create_repo'].includes(name)
   && (!name.startsWith(BOARD_PREFIX) || kind === 'board' || READ_ONLY_BOARD_TOOLS.includes(name.slice(BOARD_PREFIX.length)));
 // Turns that arrive through the owner's Discord DM (requestId "discord-<message id>", src/discord.mjs).
 const DISCORD_NOTE = '\n\n(Channel note from the app, not from the owner: this message came from your owner\'s Discord DM with you, '
@@ -227,7 +227,7 @@ export class Conversations {
     if (Reflect.ownKeys(descriptors).length !== fields.length || fields.some(key => !descriptors[key]?.enumerable
         || !Object.hasOwn(descriptors[key], 'value'))) throw invalid();
     const value = Object.fromEntries(fields.map(key => [key, descriptors[key].value]));
-    if (typeof value.id !== 'string' || !UUID.test(value.id) || !['reminder', 'heartbeat', 'watch', 'board', 'release_watch', 'calendar'].includes(value.kind)
+    if (typeof value.id !== 'string' || !UUID.test(value.id) || !['reminder', 'heartbeat', 'watch', 'board', 'release_watch', 'calendar', 'connector'].includes(value.kind)
         || !wellFormed(value.prompt, 4000, 16000)) throw invalid();
     const digest = createHash('sha256').update(JSON.stringify(value)).digest('hex');
     const wake = this.#tx(() => {

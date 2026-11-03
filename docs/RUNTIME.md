@@ -242,3 +242,22 @@ Reminders: every scheduler tick runs `Calendar.enqueueDue`, which queues an even
 (all day: until the day ends). Delivery follows the usual wake path: quiet hours, spacing, daily cap, push and the
 Discord DM. Each occurrence is reminded once; editing or deleting an event cancels a reminder still waiting.
 Calendar wakes cannot create, edit or delete events.
+
+## GitHub connector (#45)
+
+Each owner connects their own GitHub account in Me › Connectors by pasting a fine-grained personal access token
+(`github_pat_…`; classic tokens are refused). Nothing is configured per server and owners never share a token. The
+token is checked with `GET /user`, then stored in `connector_github` encrypted with AES-256-GCM, bound to that owner's
+companion id. The key lives outside the database in `~/.config/personal-agent/connector-secrets.key` (override with
+`COMPANION_SECRETS_KEY`; mode 600; the app creates it on the first link when it can write there, but the systemd unit
+mounts home read-only, so on the server it was created once by hand: `umask 077; openssl rand -hex 32 > …`), so database backups hold no usable token. Losing the
+key only means owners paste their tokens again. The token is never returned to a client, the model, chat or the Board.
+
+Connectors shows the account, how many repos the token sees and the expiry; it turns to "Expires soon" seven days before,
+and one `connector` wake tells the owner then. An expired or rejected token shows as needing attention.
+
+The companion's scheduler MCP gains `github_list_repos`, `github_repo`, `github_pulls`, `github_pull` and
+`github_create_repo` (owner-confirmed, `private` must be given and defaults to true in the instructions; exact retries
+replay from `connector_github_requests`). The tools are filtered out of turns while that owner has no token, and
+`github_create_repo` never runs in a background wake. `src/github.mjs` can only send GET requests and
+`POST /user/repos`: deleting, archiving, transferring, changing visibility and pushing are impossible from the app.

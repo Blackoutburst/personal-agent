@@ -176,6 +176,10 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
     suspend fun connectors(): List<Connector> = call<ConnectorList>("api/companion", buildJsonObject { put("action", "connectors") }).connectors
     suspend fun setConnector(id: String, enabled: Boolean): List<Connector> =
         call<ConnectorList>("api/companion", buildJsonObject { put("action", "setConnector"); put("id", id); put("enabled", enabled) }).connectors
+    /** GitHub (#45): this owner's own fine-grained token. The reply is the Connectors list; the token never comes back. */
+    suspend fun githubLink(token: String): List<Connector> =
+        call<ConnectorList>("api/companion", buildJsonObject { put("action", "githubLink"); put("token", token) }).connectors
+    suspend fun githubUnlink(): List<Connector> = call<ConnectorList>("api/companion", buildJsonObject { put("action", "githubUnlink") }).connectors
     suspend fun discord(): DiscordStatus = call<DiscordReply>("api/companion", buildJsonObject { put("action", "discord") }).discord
     suspend fun discordLink(token: String): DiscordStatus =
         call<DiscordReply>("api/companion", buildJsonObject { put("action", "discordLink"); put("token", token) }).discord

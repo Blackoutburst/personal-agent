@@ -297,7 +297,7 @@ export class SchedulerStore {
   }
   enqueueEvent(companionId, input) {
     const value = shape(input, ['requestId', 'kind', 'prompt']);
-    requireSchedule(typeof value.requestId === 'string' && REQUEST.test(value.requestId) && ['watch', 'board', 'calendar'].includes(value.kind));
+    requireSchedule(typeof value.requestId === 'string' && REQUEST.test(value.requestId) && ['watch', 'board', 'calendar', 'connector'].includes(value.kind));
     const prompt = text(value.prompt), fingerprint = digest({ kind: value.kind, prompt });
     return this.#tx(() => {
       this.#owner(companionId);

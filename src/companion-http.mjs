@@ -6,6 +6,7 @@ import { ConversationError } from './conversations.mjs';
 import { outfitFor } from './wardrobe.mjs';
 import { DiscordError } from './discord.mjs';
 import { ConnectorError } from './connectors.mjs';
+import { GitHubError } from './github.mjs';
 import { createHash } from 'node:crypto';
 import { PersonalityError, PERSONALITY_LIMITS } from './personality.mjs';
 import { ContactError } from './contacts.mjs';
@@ -19,7 +20,7 @@ const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
 // onForget(companionId): durable session reset BEFORE any memory bytes are replaced.
 // onLook(companionId): called when the name or look changed, so the agent's next session knows.
 // discord: the DiscordBridge (docs/DISCORD.md), or null when connections are unavailable.
-export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null, contacts = null, weather = null, push = null, connectors = null }) {
+export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null, contacts = null, weather = null, push = null, connectors = null, github = null }) {
   const weatherNow = companionId => weather?.current(companionId) ?? null;
   return async function companion(request) {
     const parsed = await access.read(request, PERSONALITY_LIMITS.requestBytes);
@@ -147,6 +148,17 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
           if (!only(['action', 'id', 'enabled']) || !connectors) break;
           return { status: 200, body: connectors.set(companionId, payload.id, payload.enabled) };
         }
+        // GitHub (#45): this owner's own token. The reply is the Connectors list; the token never comes back.
+        case 'githubLink': {
+          if (!only(['action', 'token']) || !github || !connectors) break;
+          await github.link(companionId, payload.token);
+          return { status: 200, body: connectors.list(companionId) };
+        }
+        case 'githubUnlink': {
+          if (!only(['action']) || !github || !connectors) break;
+          github.unlink(companionId);
+          return { status: 200, body: connectors.list(companionId) };
+        }
         case 'discordUnlink': {
           if (!only(['action']) || !discord) break;
           return { status: 200, body: { discord: discord.unlink(companionId) } };
@@ -167,6 +179,8 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
         return fail(error.status, error.code, message);
       }
       if (error instanceof ConnectorError) return fail(error.status, error.code, error.code === 'CONNECTOR_UNAVAILABLE' ? 'This connector is not set up for you.' : 'Invalid request.');
+      if (error instanceof GitHubError) return fail(error.code === 'INVALID_TOKEN' ? 400 : error.status, error.code,
+        error.code === 'INVALID_TOKEN' ? 'GitHub did not accept that token.' : 'GitHub could not be reached. Try again later.');
       if (error instanceof DiscordError) return fail(error.status, error.code, 'Discord could not be linked.');
       return fail(503, 'UNAVAILABLE', 'Your companion is unavailable right now.');
     }

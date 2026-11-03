@@ -395,6 +395,12 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .connector .status[data-state="connected"]::before { background: #3fb950; }
 .connector .status[data-state="pending"]::before { background: #d29922; }
 .connector .status[data-state="error"]::before { background: var(--danger); }
+.connector .status[data-state="expiring"]::before { background: #d29922; }
+.github-link ol { margin: 8px 0; padding-left: 20px; color: var(--soft); font-size: 13px; line-height: 1.55; }
+.github-link form { display: flex; flex-wrap: wrap; gap: 8px; }
+.github-link input { flex: 1 1 220px; min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; font: inherit; background: var(--bg); color: var(--ink); }
+.github-link input.secret { -webkit-text-security: disc; text-security: disc; }
+.github-link input:focus { outline: 2px solid var(--ink); outline-offset: 2px; }
 @media (max-width: 480px) { .me-tabs { gap: 4px; } .me-tabs a { padding: 6px 10px; font-size: 13px; } }
 
 /* Calendar (#44), top of the Watches tab */
@@ -438,3 +444,4 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .cal-check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
 .cal-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 480px) { .cal-modes { margin-left: 0; } .cal-range { min-width: 0; flex: 1 1 auto; } .cal-time { flex-basis: 5.6em; } }
+.github-link .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
