@@ -472,6 +472,28 @@ test('every wake kind keeps inherited native/app tools but only the exact config
     'The guard never adds unconfigured members of the read-only default');
 });
 
+test('only a board wake retains its own configured human-request resolver', async t => {
+  const resolver = 'mcp__board__resolve_human_request';
+  const f = fixture(t, { beforeCreate(f) {
+    f.owners[0].board.allowedTools.push('resolve_human_request');
+  } });
+  for (const kind of ['reminder', 'heartbeat', 'watch', 'board']) {
+    f.conv.enqueueProactive(f.a, wake({ kind })); await f.conv.idle();
+    const call = f.calls.at(-1);
+    assert.equal(call.companionId, f.a);
+    assert.equal(call.allowedTools.includes(resolver), kind === 'board');
+    assert.ok(!call.allowedTools.includes('mcp__board__post_message'));
+    assert.ok(!call.allowedTools.includes('mcp__board__create_ticket'));
+  }
+  f.conv.enqueueProactive(f.b, wake({ kind: 'board' })); await f.conv.idle();
+  assert.equal(f.calls.at(-1).companionId, f.b);
+  assert.ok(!f.calls.at(-1).allowedTools.includes(resolver), 'B cannot borrow A\'s configured resolver');
+  const threadId = await createThread(f);
+  await f.conv.handle(f.a, { action: 'submit', threadId, requestId: 'owner-resolver', text: 'Handle my request' });
+  await f.conv.idle();
+  assert.ok(f.calls.at(-1).allowedTools.includes(resolver), 'The configured normal-owner tool remains available');
+});
+
 test('wake filtering preserves explicit subsets and empty selections while invalid requests still refuse', async t => {
   const f = fixture(t), subset = ['Read', 'mcp__board__get_ticket', 'mcp__board__post_message',
     'mcp__scheduler__list_schedules', 'mcp__board_docs__post_message'];
