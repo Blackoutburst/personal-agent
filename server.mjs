@@ -32,6 +32,7 @@ import { Contacts, ContactError } from './src/contacts.mjs';
 import { Weather } from './src/weather.mjs';
 import { BoardCompanion } from './src/board-companion.mjs';
 import { PushDevices, FcmSender, PushNotifier } from './src/push.mjs';
+import { WebPushSubscriptions, WebPushSender, WebPushNotifier, loadVapidKeys } from './src/web-push.mjs';
 
 const BOARD_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CONTENT_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
@@ -55,10 +56,15 @@ const STATIC = new Map([
   ['/memory-ui.mjs', ['memory-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/personality-ui.mjs', ['personality-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/contact-ui.mjs', ['contact-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/web-push-ui.mjs', ['web-push-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/weather-ui.mjs', ['weather-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-character.mjs', ['companion-character.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-theme.js', ['companion-theme.js', 'text/javascript; charset=utf-8']],
   ['/conversation-client.mjs', ['conversation-client.mjs', 'text/javascript; charset=utf-8']],
+  // Installed web app (docs/PUSH.md): manifest, service worker and icons.
+  ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json; charset=utf-8']],
+  ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8']],
+  ...['icon-192', 'icon-512', 'icon-maskable-512', 'apple-touch-icon'].map(name => [`/icons/${name}.png`, [`icons/${name}.png`, 'image/png']]),
   // Old address of the chat page: it now redirects to the companion.
   ['/conversation.html', ['conversation.html', 'text/html; charset=utf-8']],
   // Illustrated characters.
@@ -107,7 +113,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let agentsConfigured = false;
   let companionHttp;
   let schedulerHttp, schedulerService, schedulerStore, calendar = null, github = null, x = null, discord = null;
-  let files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, connectors = null;
+  let files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
   const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
@@ -352,7 +358,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id),
         recordReleaseCheck: (companionId, id, check, text) => schedulerStore.recordReleaseCheck(companionId, id, check, text),
         releaseDelivered: (companionId, id) => schedulerStore.releaseDelivered(companionId, id) },
-        onSettled: event => { discord?.settled(event); pushNotifier?.settled(event); },
+        onSettled: event => { discord?.settled(event); pushNotifier?.settled(event); webPushNotifier?.settled(event); },
         onNativeSettled: companionId => {
           try { if (workspaceFor(companionId)) personality.observe(companionId); }
           catch { console.error('Personality history observation unavailable.'); }
@@ -393,12 +399,19 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       if (pushOptions.sender || existsSync(pushKey)) pushNotifier = new PushNotifier({ devices: pushDevices,
         sender: pushOptions.sender ?? new FcmSender({ keyFile: pushKey }), nameFor: companionId => profiles.get(companionId)?.name,
         log: message => console.error(message) });
+      // Web Push for the installed web app, mainly iPhones (docs/PUSH.md). The VAPID key file is created when first needed.
+      const vapidFile = pushOptions.vapidFile ?? process.env.COMPANION_WEB_PUSH_KEY
+        ?? join(process.env.HOME ?? '', '.config/personal-agent/web-push-vapid.json');
+      const webPushSender = pushOptions.webSender ?? new WebPushSender({ keys: () => loadVapidKeys(vapidFile) });
+      webPush = { subscriptions: new WebPushSubscriptions({ store }), publicKey: () => webPushSender.publicKey };
+      webPushNotifier = new WebPushNotifier({ subscriptions: webPush.subscriptions, sender: webPushSender,
+        nameFor: companionId => profiles.get(companionId)?.name, log: message => console.error(message) });
       // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
       discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, files, ...discordOptions,
         log: message => console.error(message) });
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality, contacts, weather,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
-        discord, push: pushDevices, connectors, github, x,
+        discord, push: pushDevices, webPush, connectors, github, x,
         assertMemoryIdle: companionId => conversations.assertMemoryIdle(companionId),
         onForget: companionId => conversations.resetSessions(companionId),
         // Claude reads the look every turn; Codex keeps its first instructions, so it starts afresh.

@@ -21,7 +21,7 @@ const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
 // onForget(companionId): durable session reset BEFORE any memory bytes are replaced.
 // onLook(companionId): called when the name or look changed, so the agent's next session knows.
 // discord: the DiscordBridge (docs/DISCORD.md), or null when connections are unavailable.
-export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null, contacts = null, weather = null, push = null, connectors = null, github = null, x = null }) {
+export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null, contacts = null, weather = null, push = null, webPush = null, connectors = null, github = null, x = null }) {
   const weatherNow = companionId => weather?.current(companionId) ?? null;
   return async function companion(request) {
     const parsed = await access.read(request, PERSONALITY_LIMITS.requestBytes);
@@ -140,6 +140,23 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
         case 'pushUnregister': {
           if (!only(['action', 'token']) || !push) break;
           return { status: 200, body: push.unregister(companionId, payload.token) };
+        }
+        // Web Push (docs/PUSH.md): the installed web app's own subscription for this owner.
+        case 'webPushKey': {
+          if (!only(['action']) || !webPush) break;
+          return { status: 200, body: { publicKey: webPush.publicKey() } };
+        }
+        case 'webPushStatus': {
+          if (!only(['action', 'endpoint']) || !webPush) break;
+          return { status: 200, body: webPush.subscriptions.status(companionId, payload.endpoint) };
+        }
+        case 'webPushSubscribe': {
+          if (!only(['action', 'endpoint', 'p256dh', 'auth', 'preview']) || !webPush) break;
+          return { status: 200, body: webPush.subscriptions.subscribe(companionId, payload) };
+        }
+        case 'webPushUnsubscribe': {
+          if (!only(['action', 'endpoint']) || !webPush) break;
+          return { status: 200, body: webPush.subscriptions.unsubscribe(companionId, payload.endpoint) };
         }
         case 'connectors': {
           if (!only(['action']) || !connectors) break;

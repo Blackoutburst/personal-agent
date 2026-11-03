@@ -7,6 +7,7 @@ import { createMemoryUI } from './memory-ui.mjs';
 import { createPersonalityUI } from './personality-ui.mjs';
 import { createContactUI, renderPeerCard } from './contact-ui.mjs';
 import { createWeatherUI } from './weather-ui.mjs';
+import { createWebPushUI, registerServiceWorker } from './web-push-ui.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
@@ -44,6 +45,9 @@ async function api(body) {
   return data;
 }
 const companionName = () => profile?.name ?? 'Your companion';
+// Installed web app (docs/PUSH.md): offline shell and notifications.
+registerServiceWorker();
+const webPushUI = createWebPushUI({ document, api });
 const providerName = () => ({ claude: 'Claude', codex: 'ChatGPT' })[runtime?.provider] ?? 'AI';
 function applyColors(look) {
   const colors = COLORS[look?.color] ?? COLORS.peach, root = document.documentElement.style;
@@ -117,7 +121,7 @@ function show(next) {
   if (lookShown()) startLook();
   if (next === 'me' && (meSection === 'watches' || meSection === 'settings')) void remindersUI.show();
   if (next === 'calendar') void calendarUI.show();
-  if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); }
+  if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); void webPushUI.show(); }
   renderAll();
 }
 

@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#FFF6EE">
   <title>Your companion</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Companion">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <script src="companion-theme.js"></script>
   <link rel="stylesheet" href="companion.css">
   <script type="module" src="companion-app.mjs"></script>
@@ -183,6 +190,13 @@
           </div>
           <small id="schedule-zone"></small>
         </form>
+        <div id="web-push" class="web-push" hidden>
+          <h2>Notifications</h2>
+          <p id="web-push-text"></p>
+          <label class="checkin-option" hidden><input id="web-push-enabled" type="checkbox"> Notify me on this device</label>
+          <label class="checkin-option" hidden><input id="web-push-preview" type="checkbox" checked> Show the message in the notification</label>
+          <small id="web-push-status" role="status"></small>
+        </div>
         <div id="theme-pick" class="theme-pick" hidden>
           <h2 id="theme-title">App theme</h2>
           <div class="segmented" role="radiogroup" aria-labelledby="theme-title">

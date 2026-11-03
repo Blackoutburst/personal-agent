@@ -1,4 +1,4 @@
-# Android push notifications
+# Push notifications (Android and the installed web app)
 
 When a companion message is delivered (a reply, or a proactive message such as a reminder, check-in or watch
 result), the owner's Android devices get a notification, unless the app is open.
@@ -29,3 +29,30 @@ result), the owner's Android devices get a notification, unless the app is open.
   (or `COMPANION_FIREBASE`) is read by Gradle into BuildConfig. No google-services plugin is used, and nothing is
   committed. Without it the app builds with push hidden.
 - Firebase project: `ai-companion-700bc`, Android app `dev.blackoutburst.companion`.
+
+## Web Push and the iPhone (installed web app)
+
+There is no native iOS app: a free Apple ID only signs an app for 7 days, and anything longer needs the paid
+Apple Developer Program (and review for the App Store). Instead, the web client is an installable web app (PWA). On
+iPhone: open it in Safari, Share → **Add to Home Screen**, and open it from the Home Screen. It is free, permanent,
+needs no review and updates with every deploy. The same works on Android Chrome and desktop browsers.
+
+- **Install**: `public/manifest.webmanifest` (standalone, the cream theme), icons in `public/icons/` (rendered from the
+  Android launcher icon), Apple meta tags in `index.html`, and safe-area padding for the notch and home bar.
+- **Service worker** (`public/sw.js`, scope = the app's path): network first for the app's own files, with the last
+  loaded copy as an offline fallback; `api/` is never cached. It shows push notifications and opens the chat when one
+  is tapped. While the app is open and in front it skips the notification, except on Apple's push service, which may
+  revoke a subscription whose pushes show nothing. Opening the app clears its notifications.
+- **Server** (`src/web-push.mjs`): `POST api/companion` actions `webPushKey` (this server's VAPID public key),
+  `webPushSubscribe {endpoint, p256dh, auth, preview}`, `webPushStatus {endpoint}` and `webPushUnsubscribe {endpoint}`,
+  always for the signed-in owner (`web_push_subscriptions`; re-subscribing from another account moves it; newest 10 per
+  owner). Endpoints must be https URLs of the browsers' push services (Apple, Google, Mozilla, Microsoft), because the
+  server POSTs to them. The same settle events as Android push send `{type, threadId, messageId, title, body}`,
+  encrypted for that browser alone (RFC 8291 aes128gcm, VAPID RFC 8292, Node crypto only), so the push service only
+  relays ciphertext. `body` is a plain-text preview of up to 180 characters, or "New message" when the device turned
+  the preview off. Subscriptions the push service reports gone (404/410) are removed. Logs carry counts only.
+- **Settings** (Me › Settings › Notifications, `public/web-push-ui.mjs`): "Notify me on this device" asks for permission
+  straight from the tap (Safari requires a gesture) and subscribes; "Show the message in the notification" changes the
+  preview. In iPhone Safari outside the Home Screen app it explains how to install instead.
+- **Key**: the VAPID key pair is created on first use at `~/.config/personal-agent/web-push-vapid.json` (chmod 600, or
+  `COMPANION_WEB_PUSH_KEY`). Replacing it invalidates every web subscription: each device turns notifications on again.
