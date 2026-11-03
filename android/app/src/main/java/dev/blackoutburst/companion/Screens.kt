@@ -307,7 +307,9 @@ internal fun Bubble(model: CompanionModel, message: Message, scope: Long) {
                 .background(if (mine) Mine else LocalTones.current.bubble)
                 .border(1.dp, if (mine) Color.Transparent else LocalTones.current.bubbleLine, bubbleShape)
                 .padding(horizontal = 16.dp, vertical = 10.dp)) {
-            if (message.text.isNotEmpty()) MarkdownText(message.text, color = Ink, link = Ink, codeBackground = Ink.copy(alpha = 0.1f),
+            if (message.text.isNotEmpty()) MarkdownText(message.text, color = Ink,
+                link = if (LocalTones.current.dark) Color(0xFFEE8F64) else Color(0xFFB4532A),
+                codeBackground = if (LocalTones.current.dark) Color.Black.copy(alpha = 0.28f) else Ink.copy(alpha = 0.08f),
                 fontSize = 17.sp, lineHeight = 23.sp)
             message.attachments.forEach { file ->
                 if (message.text.isNotEmpty() || file != message.attachments.first()) Spacer(Modifier.height(8.dp))

@@ -50,4 +50,45 @@ class MarkdownTest {
         assertEquals("1.", (blocks[3] as MdBlock.Numbered).number)
         assertEquals("Should I assign them?", text((blocks[4] as MdBlock.Paragraph).spans))
     }
+
+    @Test fun headingsRulesAndStrikethrough() {
+        val blocks = parseMarkdown("# One\n## Two ##\n### Three\n---\n#35 is not a heading\n\n~~gone~~ and ~ alone")
+        assertEquals(listOf(1, 2, 3), blocks.take(3).map { (it as MdBlock.Heading).level })
+        assertEquals("Two", text((blocks[1] as MdBlock.Heading).spans))
+        assertEquals(MdBlock.Rule, blocks[3])
+        assertEquals("#35 is not a heading", text((blocks[4] as MdBlock.Paragraph).spans))
+        val spans = (blocks[5] as MdBlock.Paragraph).spans
+        assertTrue(spans.single { it.text == "gone" }.strike)
+        assertEquals("gone and ~ alone", text(spans))
+    }
+
+    @Test fun quotesNestTheirOwnBlocks() {
+        val blocks = parseMarkdown("> A **quote**\n> - with a bullet\nafter")
+        val quote = blocks[0] as MdBlock.Quote
+        assertEquals("A quote", text((quote.blocks[0] as MdBlock.Paragraph).spans))
+        assertTrue(quote.blocks[1] is MdBlock.Bullet)
+        assertEquals("after", text((blocks[1] as MdBlock.Paragraph).spans))
+    }
+
+    @Test fun fencedCodeIsVerbatim() {
+        val code = "const s = `hi ${'$'}{name}`;\n**not bold** [x](https://a.b)"
+        val blocks = parseMarkdown("Look:\n```js\n$code\n```\nDone")
+        assertEquals(code, (blocks[1] as MdBlock.Code).text)
+        assertEquals("Done", text((blocks[2] as MdBlock.Paragraph).spans))
+        assertEquals("open", (parseMarkdown("~~~\nopen")[0] as MdBlock.Code).text)
+        val spans = inline("Use ``a ` b`` here")
+        assertEquals("a ` b", spans.single { it.code }.text)
+    }
+
+    @Test fun pipeTables() {
+        val blocks = parseMarkdown("| Ticket | State |\n|---|:---:|\n| **#33** | done |\n| #34 \\| x |\n\nAfter")
+        val table = blocks[0] as MdBlock.Table
+        assertEquals(listOf("Ticket", "State"), table.header.map(::text))
+        assertEquals(2, table.rows.size)
+        assertTrue(table.rows[0][0].single().bold)
+        assertEquals("#34 | x", text(table.rows[1][0]))
+        assertEquals("", text(table.rows[1][1]))
+        assertTrue(blocks[1] is MdBlock.Paragraph)
+        assertTrue(parseMarkdown("a | b\nnot a separator")[0] is MdBlock.Paragraph)
+    }
 }

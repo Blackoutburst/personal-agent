@@ -45,7 +45,10 @@ class UiGalleryActivity : ComponentActivity() {
         }
         val reply = "I posted it as **#35**, with your screenshot attached: https://board.blackoutburst.com/?project=f0ad83b792830c7cd190412ee8f48997&ticket=21b96420a756e7d3a8afbe1ee598cf1a\n\n" +
             "Three Android UI tickets are open now, all in *Todo*:\n- **#33** the + button (low priority)\n- **#34** the preview before you send a file\n- **#35** files once they're in a message\n\n" +
-            "1. Try `adb logcat`\n2. Or see [the Board](https://board.blackoutburst.com/)"
+            "1. Try `adb logcat`\n2. Or see [the Board](https://board.blackoutburst.com/)" +
+            "\n\n# Heading 1\n## Heading 2\n### Heading 3\nSome ~~strikethrough~~ text.\n\n> A quote with **bold**\n> and a second line\n\n" +
+            "```js\nconst s = `hi ${'$'}{name}`;\nconsole.log(s) // a long line that should scroll sideways\n```\n\n" +
+            "| Ticket | State |\n|---|---|\n| #33 | done |\n| #36 | review |\n\n---\nAfter the rule."
         val file = Attachment("a1", "Screenshot_20261103_101413_very_long_file_name.jpg.pdf", "application/pdf", 315_631, "0".repeat(64), "user", "/x")
         setContent {
             val scheme = if (tones.dark) darkColorScheme(primary = tones.ink, background = tones.top, surface = tones.card, onSurface = tones.ink, onSurfaceVariant = tones.soft)
