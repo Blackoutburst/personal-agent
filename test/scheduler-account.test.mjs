@@ -210,7 +210,7 @@ test('generated owner MCP bindings run the actual scheduler child and permit onl
   assert.equal(configA.env.COMPANION_SCHEDULER_URL, app.url + '/internal/scheduler');
   const ownerA = await mcpChild(f, configA), ownerB = await mcpChild(f, configB);
   const tools = await ownerA.request('tools/list', {});
-  assert.deepEqual(tools.result.tools.map(tool => tool.name), ['create_schedule', 'list_schedules', 'cancel_schedule']);
+  assert.deepEqual(tools.result.tools.map(tool => tool.name), ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'update_release_watch']);
   const input = { requestId: 'from-real-mcp-child', text: 'Created through the owned scheduler tool', dueAt: iso(f.clock + 10 * MINUTE) };
   const created = toolValue(await ownerA.call('create_schedule', input));
   assert.equal(created.items.length, 1); const id = created.items[0].id;
@@ -230,6 +230,35 @@ test('generated owner MCP bindings run the actual scheduler child and permit onl
   assert.equal(cancelled.items[0].state, 'cancelled');
   assert.equal((await schedules(app, { action: 'list' })).body.items[0].state, 'cancelled');
   ownerA.child.stdin.end(); ownerB.child.stdin.end();
+});
+
+test('owner-bound release management uses the real MCP child, web CAS and native web-only stale checks', async t => {
+  const f = fixture(t), app = await f.open(); await ready(f, app);
+  const thread = await chat(app, { action: 'createThread', requestId: 'release-tools-thread', title: 'Release watches' });
+  await chat(app, { action: 'submit', requestId: 'release-tools-hello', threadId: thread.body.thread.id, text: 'hello' });
+  await app.conversations.idle();
+  const child = await mcpChild(f, descriptor(f.calls('blackout')[0]));
+  const input = { requestId: 'real-child-watch', condition: 'Synthetic official stable release exists' };
+  const created = toolValue(await child.call('create_release_watch', input));
+  assert.equal(created.releaseWatches.length, 1); const id = created.releaseWatches[0].id;
+  await settle(app);
+  const listed = (await schedules(app, { action: 'list' })).body.releaseWatches[0];
+  assert.equal(listed.id, id); assert.equal(listed.lastResult, 'stale', 'The fake provider has no valid release result');
+  assert.equal(listed.consecutiveStale, 1);
+  assert.equal(toolValue(await child.call('create_release_watch', input)).releaseWatches[0].id, id);
+  assert.deepEqual((await schedules(app, { action: 'list' }, B)).body.releaseWatches, []);
+  assert.equal((await schedules(app, { action: 'createWatch', input })).status, 400, 'Creation remains a chat tool');
+  assert.equal((await schedules(app, { action: 'list' }, null)).status, 401);
+  const pause = { requestId: 'web-pause-watch', id, expectedVersion: listed.version, operation: 'pause' };
+  assert.equal((await schedules(app, { action: 'updateWatch', input: pause }, B)).status, 404);
+  const paused = await schedules(app, { action: 'updateWatch', input: pause });
+  assert.equal(paused.status, 200); assert.equal(paused.body.releaseWatches[0].state, 'paused');
+  assert.equal((await schedules(app, { action: 'updateWatch', input: pause })).status, 200, 'Exact acknowledgement retry');
+  assert.equal((await schedules(app, { action: 'updateWatch', input: { ...pause, requestId: 'stale-cas' } })).status, 409);
+  const calls = f.calls('blackout').filter(call => call.args.includes('WebSearch,WebFetch'));
+  assert.equal(calls.length, 1); assert.ok(!calls[0].args.some(value => value.startsWith('mcp__')));
+  assert.equal(f.calls('screamer').length, 0);
+  child.child.stdin.end();
 });
 
 test('closing during a synthetic wake stops its process and reopening never replays the handed-off occurrence', async t => {

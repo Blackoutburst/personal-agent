@@ -7,13 +7,14 @@ import { mcpServersFor } from '../tool-policy.mjs';
 
 export const name = 'codex';
 
-export function command({ binary = 'codex', home, resume, model, systemPrompt, images = [], toolPolicy = { tools: [], board: null } }) {
+export function command({ binary = 'codex', home, resume, model, systemPrompt, images = [], toolPolicy = { tools: [], board: null }, readOnly = false }) {
   if (toolPolicy.tools.length === 1) throw new Error('Codex web search and fetch must be configured together');
   const args = ['exec'];
   if (resume) args.push('resume', resume);
   // `exec resume` has no --sandbox flag; the config override works for both forms.
-  // The companion keeps its own files (soul, memory, diary) in its workspace: writes are allowed there only.
-  args.push('--json', '--skip-git-repo-check', '-c', 'sandbox_mode="workspace-write"');
+  // Ordinary turns keep the companion's workspace writes; release web checks use
+  // read-only sandboxing. Intrinsic tools and inherited CLI config remain provider-owned.
+  args.push('--json', '--skip-git-repo-check', '-c', `sandbox_mode=${JSON.stringify(readOnly ? 'read-only' : 'workspace-write')}`);
   args.push('-c', `web_search=${JSON.stringify(toolPolicy.tools.length ? 'live' : 'disabled')}`);
   for (const server of toolPolicy.mcpServers ?? mcpServersFor(toolPolicy)) {
     const prefix = `mcp_servers.${server.name}`;

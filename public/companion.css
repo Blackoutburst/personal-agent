@@ -280,6 +280,23 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .schedule-routine .checkin-option { flex: 1 1 150px; }
 .routine-field { display: grid; gap: 4px; font-size: 12px; min-width: 0; }
 .schedule-routine :disabled { opacity: .6; }
+.release-watches { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; min-width: 0; }
+.release-watches h3 { font-size: 14px; margin: 0 0 6px; }
+.watch-tip, .watch-notice, .watch-row small, .watch-details { font-size: 12px; color: var(--soft); line-height: 1.5; }
+.watch-notice:empty { display: none; }
+.watch-list { list-style: none; margin: 0; padding: 0; }
+.watch-row { padding: 10px 0; border-bottom: 1px solid var(--line); min-width: 0; overflow-wrap: anywhere; }
+.watch-row strong, .watch-row small, .watch-details a { display: block; }
+.watch-actions, .watch-confirmation { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; min-width: 0; }
+.watch-actions button, .watch-confirmation button, .watch-editor button { border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink); font: inherit; font-size: 12px; padding: 7px 10px; cursor: pointer; }
+.release-watches button:disabled, .watch-editor textarea:disabled { opacity: .55; cursor: default; }
+.release-watches button:focus-visible, .watch-editor textarea:focus-visible, .watch-details a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.watch-details p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 7px 0; }
+.watch-details a { overflow-wrap: anywhere; color: inherit; margin: 5px 0; }
+.watch-confirmation p { flex: 1 1 100%; margin: 0; font-size: 12px; }
+.watch-editor { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; min-width: 0; }
+.watch-editor label { display: block; flex: 1 1 100%; min-width: 0; font-size: 12px; }
+.watch-editor textarea { display: block; box-sizing: border-box; width: 100%; min-width: 0; margin-top: 6px; padding: 9px; resize: vertical; font: inherit; color: var(--ink); background: var(--glass); border: 1px solid var(--line); border-radius: 10px; }
 /* App theme picker (Look) */
 .theme-pick { margin-top: 28px; }
 .theme-pick h2 { font-size: 18px; margin: 0 0 10px; }

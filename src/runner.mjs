@@ -97,23 +97,30 @@ export class CompanionRunner {
     return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, images, appServers, onEvent, signal });
   }
 
+  // Application-owned release wakes alone may use native web tools regardless of
+  // ordinary owner tool omission. They never forward Board or app MCP transports.
+  releaseCheck(companionId, { prompt, systemPrompt = null, onEvent = () => {}, signal } = {}) {
+    return this.#enqueue(this.ownerFor(companionId), { prompt, systemPrompt, onEvent, signal }, true);
+  }
+
   // Server-side admin tooling only (manage.mjs smoke test): select the owner by config label.
   turnForLabel(label, options = {}) {
     return this.#enqueue(this.owners.find(owner => owner.label === label) ?? null, options);
   }
 
-  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal } = {}) {
+  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal } = {}, releaseCheck = false) {
     if (!owner) return Promise.reject(new RunnerError('NO_RUNTIME'));
     let toolPolicy;
     try {
-      const configured = this.mcpServersFor(owner);
+      const configured = releaseCheck ? [] : this.mcpServersFor(owner);
       if (configured && typeof configured.then === 'function') {
         Promise.resolve(configured).catch(() => {});
         throw new TypeError('mcpServersFor must return synchronously');
       }
       if (!Array.isArray(configured) || !Array.isArray(appServers) || !Array.isArray(images) || images.length > 8
           || images.some(path => typeof path !== 'string' || !path || path.length > 4096 || /[\x00-\x1f]/.test(path))) throw new TypeError('Invalid turn input');
-      toolPolicy = narrowToolPolicy({ tools: owner.tools, board: owner.board }, allowedTools, [...configured, ...appServers], toolFilter);
+      toolPolicy = releaseCheck ? narrowToolPolicy({ tools: WEB_TOOLS, board: null })
+        : narrowToolPolicy({ tools: owner.tools, board: owner.board }, allowedTools, [...configured, ...appServers], toolFilter);
       if (owner.provider === 'codex' && toolPolicy.tools.length
           && (toolPolicy.tools.length !== WEB_TOOLS.length || !WEB_TOOLS.every(tool => toolPolicy.tools.includes(tool)))) {
         throw new TypeError('Codex web tools must be selected together');
@@ -122,16 +129,16 @@ export class CompanionRunner {
       return Promise.reject(new RunnerError('TOOL_POLICY_REFUSED'));
     }
     const previous = this.queues.get(owner.label) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(() => this.#turn(owner, { prompt, resume, systemPrompt, toolPolicy, images: [...images], onEvent, signal }));
+    const current = previous.catch(() => {}).then(() => this.#turn(owner, { prompt, resume, systemPrompt, toolPolicy, images: [...images], onEvent, signal, releaseCheck }));
     this.queues.set(owner.label, current);
     current.finally(() => { if (this.queues.get(owner.label) === current) this.queues.delete(owner.label); }).catch(() => {});
     return current;
   }
 
-  async #turn(owner, { prompt, resume, systemPrompt, toolPolicy, images, onEvent, signal }) {
+  async #turn(owner, { prompt, resume, systemPrompt, toolPolicy, images, onEvent, signal, releaseCheck }) {
     if (signal?.aborted) throw new RunnerError('CANCELLED');
     const adapter = ADAPTERS[owner.provider], { home, workspace } = this.paths(owner);
-    const spec = adapter.command({ binary: this.binaries[owner.provider], home, resume, model: owner.model, systemPrompt, toolPolicy, images });
+    const spec = adapter.command({ binary: this.binaries[owner.provider], home, resume, model: owner.model, systemPrompt, toolPolicy, images, readOnly: releaseCheck });
     const child = this.#run(spec, workspace);
     child.stdin.on('error', () => {});
     child.stdin.end((spec.promptPrefix ?? '') + prompt);

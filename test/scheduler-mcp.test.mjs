@@ -73,19 +73,41 @@ test('tool traffic requires initialization and the initialized notification; pin
   assert.equal(result.forwards.length, 0); assert.ok(!result.raw.includes(PRIVATE));
 });
 
-test('the tool catalogue contains exactly create, list and cancel with closed finite schemas', async () => {
+test('the tool catalogue keeps reminders and distinct release-watch tools in closed finite schemas', async () => {
   const result = await exchange([...handshake(), request('tools', 'tools/list', {})]);
   const tools = resultFor(result, 'tools').result.tools;
-  assert.deepEqual(tools.map(tool => tool.name).sort(), ['cancel_schedule', 'create_schedule', 'list_schedules']);
-  const expected = { create_schedule: ['requestId', 'text', 'dueAt'], list_schedules: [], cancel_schedule: ['id'] };
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ['cancel_schedule', 'create_release_watch', 'create_schedule', 'list_schedules', 'update_release_watch']);
+  const expected = { create_schedule: ['requestId', 'text', 'dueAt'], list_schedules: [], cancel_schedule: ['id'],
+    create_release_watch: ['requestId', 'condition'], update_release_watch: ['requestId', 'id', 'expectedVersion', 'operation', 'condition'] };
   for (const tool of tools) {
     assert.equal(tool.inputSchema.type, 'object'); assert.equal(tool.inputSchema.additionalProperties, false);
     assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), [...expected[tool.name]].sort());
-    assert.deepEqual([...tool.inputSchema.required].sort(), [...expected[tool.name]].sort());
-    for (const property of Object.values(tool.inputSchema.properties)) assert.equal(property.type, 'string');
+    assert.deepEqual([...tool.inputSchema.required].sort(), [...expected[tool.name]].filter(key => tool.name !== 'update_release_watch' || key !== 'condition').sort());
+    for (const [name, property] of Object.entries(tool.inputSchema.properties)) assert.equal(property.type, name === 'expectedVersion' ? 'integer' : 'string');
   }
   const invalid = await exchange([...handshake(), request('cursor', 'tools/list', { cursor: 'arbitrary' })]);
   assert.equal(resultFor(invalid, 'cursor').error.code, -32602); assert.equal(invalid.forwards.length, 0);
+});
+
+test('release tools forward exact stable keys and CAS fields, refusing malformed or owner-selected requests', async () => {
+  const id = randomUUID(), create = { requestId: 'release-1', condition: 'Qwen4 is officially released' };
+  const edit = { requestId: 'edit-1', id, expectedVersion: 4, operation: 'edit', condition: 'Qwen4 stable release' };
+  const pause = { requestId: 'pause-1', id, expectedVersion: 5, operation: 'pause' };
+  const result = await exchange([...handshake(), call('create', 'create_release_watch', create),
+    call('retry', 'create_release_watch', create), call('edit', 'update_release_watch', edit), call('pause', 'update_release_watch', pause)]);
+  assert.deepEqual(result.forwards.map(value => JSON.parse(value.spec.body)), [
+    { action: 'createWatch', input: create }, { action: 'createWatch', input: create },
+    { action: 'updateWatch', input: edit }, { action: 'updateWatch', input: pause }]);
+  assert.equal(result.forwards[0].spec.body, result.forwards[1].spec.body);
+  const invalid = await exchange([...handshake(),
+    call('owner', 'create_release_watch', { ...create, ownerId: PRIVATE }),
+    call('lf', 'create_release_watch', { ...create, requestId: 'key\n' }),
+    call('blank', 'create_release_watch', { ...create, condition: ' ' }),
+    call('missing', 'update_release_watch', { ...pause, operation: 'edit' }),
+    call('extra', 'update_release_watch', { ...pause, condition: 'Not an edit' }),
+    call('version', 'update_release_watch', { ...pause, expectedVersion: 0 })]);
+  assert.equal(invalid.forwards.length, 0);
+  for (const response of invalid.messages.filter(value => value.id !== 'initialize')) assert.equal(response.error.code, -32602);
 });
 
 test('create retries preserve the exact idempotency payload and all actions use only the owner-bound broker', async () => {
@@ -293,7 +315,7 @@ test('tool calls accept the _meta field real clients attach (Claude Code sends a
     request('listed', 'tools/list', { _meta: { progressToken: 1 } }),
     request('called', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: meta }),
     request('bad-meta', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: 'nope' })]);
-  assert.equal(resultFor(result, 'listed').result.tools.length, 3);
+  assert.equal(resultFor(result, 'listed').result.tools.length, 5);
   assert.equal(resultFor(result, 'called').result.isError, false);
   assert.equal(resultFor(result, 'bad-meta').error.code, -32602);
   assert.equal(result.forwards.length, 1);

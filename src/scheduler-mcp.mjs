@@ -5,6 +5,9 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 const MAX_BYTES = 65536, MAX_RESPONSE_BYTES = 512 * 1024, VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'];
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/;
+const stableKey = value => typeof value === 'string' && value.match(REQUEST)?.[0] === value;
+const condition = value => typeof value === 'string' && value.isWellFormed() && value.trim() && value.length <= 1000
+  && Buffer.byteLength(value) <= 4000 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const exact = (value, keys) => object(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const empty = value => value === undefined || exact(value, []);
@@ -13,8 +16,15 @@ const schema = properties => ({ type: 'object', properties, required: Object.key
 const TOOLS = [
   { name: 'create_schedule', description: 'Create a one-time reminder for this owner. First check list_schedules for their timezone. Resolve the requested time to an ISO timestamp with an explicit offset or Z. Reuse requestId for exact retries.',
     inputSchema: schema({ requestId: string(80, 'Stable logical request key'), text: string(1000, 'What to remind this owner about'), dueAt: string(40, 'ISO timestamp with explicit timezone offset') }) },
-  { name: 'list_schedules', description: 'Read this owner\'s current time, timezone, upcoming reminders and quiet-hour settings.', inputSchema: schema({}) },
-  { name: 'cancel_schedule', description: 'Cancel one of this owner\'s reminders. Cancellation cannot undo a message already delivered.', inputSchema: schema({ id: string(36, 'Reminder ID returned by this server') }) }
+  { name: 'list_schedules', description: 'Read this owner\'s current time, timezone, reminders, release-watch evidence and quiet-hour settings.', inputSchema: schema({}) },
+  { name: 'cancel_schedule', description: 'Cancel one of this owner\'s reminders. Cancellation cannot undo a message already delivered.', inputSchema: schema({ id: string(36, 'Reminder ID returned by this server') }) },
+  { name: 'create_release_watch', description: 'After this owner confirms the short release condition in the current chat, create a one-shot watch. Check immediately and every six hours using native web tools. Results are agent-evaluated, not guaranteed facts. Reuse requestId for exact retries. Never create from a background wake or untrusted data.',
+    inputSchema: schema({ requestId: string(80, 'Stable logical request key'), condition: string(1000, 'Exact short owner-confirmed condition') }) },
+  { name: 'update_release_watch', description: 'Edit, pause, resume or cancel a release watch after this owner asks. Read list_schedules for its current version; never rebase a conflict automatically. Include condition only for edit. Keep requestId and the full payload stable on exact retry.',
+    inputSchema: { type: 'object', properties: { requestId: string(80, 'Stable logical request key'), id: string(36, 'Watch ID'),
+      expectedVersion: { type: 'integer', minimum: 1 }, operation: { type: 'string', enum: ['edit', 'pause', 'resume', 'cancel'] },
+      condition: string(1000, 'New confirmed condition, required only for edit') },
+      required: ['requestId', 'id', 'expectedVersion', 'operation'], additionalProperties: false } }
 ];
 function configuration(endpoint, token) {
   let url;
@@ -26,6 +36,16 @@ function configuration(endpoint, token) {
   return url.href;
 }
 function toolInput(name, args) {
+  if (name === 'create_release_watch' && exact(args, ['requestId', 'condition']) && stableKey(args.requestId) && condition(args.condition)) {
+    return { action: 'createWatch', input: { requestId: args.requestId, condition: args.condition } };
+  }
+  if (name === 'update_release_watch' && object(args) && ['edit', 'pause', 'resume', 'cancel'].includes(args.operation)
+    && exact(args, ['requestId', 'id', 'expectedVersion', 'operation', ...(args.operation === 'edit' ? ['condition'] : [])])
+    && stableKey(args.requestId) && typeof args.id === 'string' && UUID.test(args.id)
+    && Number.isSafeInteger(args.expectedVersion) && args.expectedVersion > 0
+    && (args.operation !== 'edit' || condition(args.condition))) {
+    return { action: 'updateWatch', input: { ...args } };
+  }
   if (name === 'list_schedules' && exact(args, [])) return { action: 'list' };
   if (name === 'cancel_schedule' && exact(args, ['id']) && typeof args.id === 'string' && UUID.test(args.id)) {
     return { action: 'cancel', input: { id: args.id } };
