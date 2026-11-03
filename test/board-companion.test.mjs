@@ -121,3 +121,23 @@ test('attach_to_board is listed only for Board owners and sends only path and th
   const refused = await mcp(false, [{ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'attach_to_board', arguments: { path: 'a', threadId: 'b' } } }]);
   assert.equal(refused[1].error.code, -32602);
 });
+
+test('the Board client unwraps FastMCP list results and passes objects through', async () => {
+  const { BoardClient } = await import('../src/board-client.mjs');
+  const { EventEmitter } = await import('node:events');
+  const replies = { list_human_requests: { structuredContent: { result: [{ id: 'r1' }] } }, read_inbox: { structuredContent: { session: { owner_id: 'o' } } } };
+  const spawnImpl = () => {
+    const child = new EventEmitter(); child.stdout = new PassThrough(); child.stdin = new PassThrough(); child.kill = () => {};
+    child.stdin.on('data', chunk => { for (const line of chunk.toString().split('\n').filter(Boolean)) {
+      const message = JSON.parse(line); if (message.id === undefined) continue;
+      const result = message.method === 'tools/call' ? replies[message.params.name] ?? { structuredContent: {} } : {};
+      child.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\n');
+    } });
+    return child;
+  };
+  const client = new BoardClient({ board, spawnImpl });
+  try {
+    assert.deepEqual(await client.call('list_human_requests', { view: 'full' }), [{ id: 'r1' }]);
+    assert.deepEqual(await client.call('read_inbox', {}), { session: { owner_id: 'o' } });
+  } finally { client.close(); }
+});

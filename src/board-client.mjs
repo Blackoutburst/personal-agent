@@ -77,7 +77,12 @@ export class BoardClient {
       const text = result.content?.find(item => item.type === 'text')?.text ?? 'The Board refused the request.';
       throw new BoardClientError('BOARD_REFUSED', String(text).slice(0, 300));
     }
-    if (result?.structuredContent && typeof result.structuredContent === 'object') return result.structuredContent;
+    const structured = result?.structuredContent;
+    if (structured && typeof structured === 'object') {
+      // FastMCP wraps non-object results (lists) as {"result": ...}.
+      const keys = Object.keys(structured);
+      return keys.length === 1 && keys[0] === 'result' ? structured.result : structured;
+    }
     const text = result?.content?.find(item => item.type === 'text')?.text;
     try { return text ? JSON.parse(text) : null; } catch { return text ?? null; }
   }
