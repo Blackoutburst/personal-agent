@@ -116,12 +116,6 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   const server = createServer({ maxHeaderSize: 16384, requestTimeout: 120000, headersTimeout: 5000 }, async (req, res) => {
     const send = (status, body, type = 'application/json; charset=utf-8') => {
       if (res.destroyed || res.headersSent) return;
-      // Temporary diagnostics (iPhone sign-in loop): every refusal, by path and code only.
-      if (status === 401 || status === 403) {
-        const agent = String(req.headers['user-agent'] ?? ''), browser = /CriOS/.test(agent) ? 'chrome-ios' : /iPhone|iPad/.test(agent) ? 'ios-other' : 'other';
-        let origin = 'none'; try { origin = req.headers.origin ? new URL(req.headers.origin).origin : 'none'; } catch { origin = 'unparsable'; }
-        console.error(`Companion sign-in refused: HTTP ${status} ${req.method} ${String(req.url).split('?')[0].slice(0, 80)} ${body?.error?.code ?? ''}; browser ${browser}; origin ${origin}`);
-      }
       const encoded = req.method === 'HEAD' ? undefined : (type.startsWith('application/json') ? JSON.stringify(body) : body);
       res.writeHead(status, { ...headers, 'content-type': type });
       res.end(encoded);
