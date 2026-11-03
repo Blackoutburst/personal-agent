@@ -120,10 +120,15 @@ export function createAccountAccess({ store, validateAccount, pilotSubjects, all
     let valid = false;
     try { const parsed = new URL(origins[0]); valid = origins.length === 1 && ['http:', 'https:'].includes(parsed.protocol)
       && parsed.origin === origins[0] && allowed.has(origins[0]); } catch { /* rejected */ }
-    if (!valid || rawValues(request, 'sec-fetch-site').some(value => value.split(',').some(part => part.trim().toLowerCase() === 'cross-site'))) return fail('ORIGIN_REJECTED', true);
+    if (!valid || rawValues(request, 'sec-fetch-site').some(value => value.split(',').some(part => part.trim().toLowerCase() === 'cross-site'))) {
+      let shown = 'none';
+      try { shown = origins.length ? origins.map(value => value === 'null' ? 'null' : new URL(value).origin).join(',') : 'none'; } catch { shown = 'unparsable'; }
+      refusalDiagnostic(request, `origin-rejected (origin ${shown}; ${origins.length} header(s))`);
+      return fail('ORIGIN_REJECTED', true);
+    }
     const types = rawValues(request, 'content-type');
     const accepted = binary ? /^application\/octet-stream$/i : /^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?$/i;
-    if (types.length !== 1 || !accepted.test(types[0])) return fail('UNSUPPORTED_MEDIA_TYPE', true);
+    if (types.length !== 1 || !accepted.test(types[0])) { refusalDiagnostic(request, 'content-type ' + JSON.stringify(types).slice(0, 80)); return fail('UNSUPPORTED_MEDIA_TYPE', true); }
     return null;
   }
   return {
@@ -143,7 +148,10 @@ export function createAccountAccess({ store, validateAccount, pilotSubjects, all
         catch (error) { errors.push(error); }
       }
       // Exactly one account: a stale extra cookie is ignored, but two live sessions for different accounts are refused.
-      if (admitted.size === 1) return { companionId: [...admitted][0] };
+      if (admitted.size === 1) {
+        if (/CriOS/.test(String(request.headers['user-agent'] ?? ''))) console.error('Companion sign-in accepted: browser chrome-ios');
+        return { companionId: [...admitted][0] };
+      }
       if (admitted.size > 1) { refusalDiagnostic(request, 'two-live-accounts'); return { failure: fail('AUTHENTICATION_REQUIRED') }; }
       const codes = errors.map(error => error instanceof CompanionAccessError ? error.code : null);
       const code = ['COMPANION_STATE_INVALID', 'COMPANION_STORE_UNAVAILABLE', 'ACCOUNT_VALIDATION_UNAVAILABLE', 'INVITATION_REQUIRED', 'AUTHENTICATION_REQUIRED']
