@@ -10,7 +10,7 @@ import { createWeatherUI } from './weather-ui.mjs';
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
 const fileTransport = createFileTransport();
-const remindersUI = createRemindersUI({ document, visible: () => view === 'watches' || view === 'me' });
+const remindersUI = createRemindersUI({ document, visible: () => view === 'watches' || (view === 'me' && meSection === 'settings') });
 const memoryUI = createMemoryUI({ document, api, onDenied: fileAccessDenied });
 const personalityUI = createPersonalityUI({ document, api, onDenied: fileAccessDenied });
 const contactUI = createContactUI({ document, api, onDenied: fileAccessDenied });
@@ -86,23 +86,31 @@ function linkify(container, text) {
 // ---------- Views ----------
 
 // Views: chat, watches, me (memories, the companion's look and settings), plus first-run setup ('look' alone).
-const lookShown = () => view === 'me' || view === 'look';
+// The Me tab has sub-pages like the Android app: #me (memories), #me/companion and #me/settings.
+let meSection = 'memories';
+const lookShown = () => view === 'look' || (view === 'me' && meSection === 'companion');
 function show(next) {
   view = next;
   if (!lookShown()) { clearTimeout(discordTimer); discordTimer = null; }
   $('app').dataset.view = next;
   for (const name of ['loading', 'gate', 'chat', 'watches']) $(`view-${name}`).hidden = name !== next;
-  $('view-me').hidden = !lookShown();
+  $('view-me').hidden = next !== 'me' && next !== 'look';
+  $('me-tabs').hidden = next !== 'me';
   $('view-look').hidden = !lookShown();
-  $('view-memories').hidden = $('view-settings').hidden = next !== 'me';
+  $('view-memories').hidden = !(next === 'me' && meSection === 'memories');
+  $('view-settings').hidden = !(next === 'me' && meSection === 'settings');
+  for (const link of document.querySelectorAll('#me-tabs a')) {
+    if (next === 'me' && link.dataset.section === meSection) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
+  }
   $('nav').hidden = !profile || next === 'gate' || next === 'loading';
   for (const link of document.querySelectorAll('#nav a')) {
     if (link.dataset.view === next) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   }
   if (next === 'chat') openChat();
-  if (next === 'me') loadMemories();
+  if (next === 'me' && meSection === 'memories') loadMemories();
   if (lookShown()) startLook();
-  if (next === 'watches' || next === 'me') void remindersUI.show();
+  if (next === 'watches' || (next === 'me' && meSection === 'settings')) void remindersUI.show();
+  if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); }
   renderAll();
 }
 
@@ -117,7 +125,9 @@ function route() {
   if (!profile) return show('look');
   const hash = location.hash.replace('#', '');
   // #memories and #look are older links into what is now the Me tab.
-  show(hash === 'watches' ? 'watches' : ['me', 'memories', 'look'].includes(hash) ? 'me' : 'chat');
+  const me = { me: 'memories', memories: 'memories', 'me/companion': 'companion', look: 'companion', 'me/settings': 'settings' }[hash];
+  if (me) meSection = me;
+  show(hash === 'watches' ? 'watches' : me ? 'me' : 'chat');
 }
 
 async function start() {

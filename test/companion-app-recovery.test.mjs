@@ -43,7 +43,7 @@ function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: prof
   const document = { body, title: '', visibilityState: 'visible', documentElement: new Element('html'), get activeElement() { return active; },
     getElementById: id => nodes.get(id) ?? all.find(node => node.id === id), createElement: tag => new Element(tag), createTextNode: text => Object.assign(new Element('#text'), { text }),
     querySelector(selector) { if (selector === '.conversation-actions') return actions; if (selector === '.chat') return chat; if (selector.startsWith('meta')) return null; const choice = /data-theme-choice="([^"]+)"/.exec(selector); return choice ? theme.find(node => node.dataset.themeChoice === choice[1]) : null; },
-    querySelectorAll: selector => selector === '#nav a' ? nav : selector === 'button[data-theme-choice]' ? theme : [],
+    querySelectorAll: selector => selector === '#nav a' ? nav : selector === '#me-tabs a' ? [] : selector === 'button[data-theme-choice]' ? theme : [],
     addEventListener(name, run) { documentListeners.set(name, run); } };
   const emit = patch => { clientState = { ...clientState, ...patch }; listener?.(structuredClone(clientState)); return structuredClone(clientState); };
   let nextSend = null, readFailures = failures, setupSaved = !firstUse;
@@ -197,4 +197,12 @@ test('first setup succeeds while hash already says chat and opens the conversati
   await f.$('look-form').emit('submit'); await flush();
   assert.equal(f.sandbox.location.hash, '#chat'); assert.equal(f.$('app').dataset.view, 'chat'); assert.deepEqual(f.reads, ['open']);
   assert.equal(f.requests.filter(request => request.action === 'setProfile').length, 1); assert.deepEqual(f.writes, []);
+});
+
+test('the Me tab shows one sub-page at a time: memories, companion or settings; old links still land there', async () => {
+  for (const [hash, shown] of [['#me', 'view-memories'], ['#memories', 'view-memories'], ['#me/companion', 'view-look'], ['#look', 'view-look'], ['#me/settings', 'view-settings']]) {
+    const f = fixture({ hash }); await flush();
+    assert.equal(f.$('app').dataset.view, 'me', hash); assert.equal(f.$('me-tabs').hidden, false);
+    for (const id of ['view-memories', 'view-look', 'view-settings']) assert.equal(f.$(id).hidden, id !== shown, `${hash} ${id}`);
+  }
 });
