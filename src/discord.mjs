@@ -3,6 +3,7 @@
 // The bot token is stored server-side and never returned to any client. Only the one Discord user who
 // sent the pairing code can talk to the companion through the bot; everyone else is ignored.
 import { randomInt } from 'node:crypto';
+import { readFileSync, closeSync } from 'node:fs';
 import { ConversationError } from './conversations.mjs';
 
 const API = 'https://discord.com/api/v10';
@@ -17,6 +18,7 @@ const DISCORD_CHARS = 2000;
 const CDN_HOSTS = new Set(['cdn.discordapp.com', 'media.discordapp.net']);
 const MAX_ATTACHMENTS = 8;
 const DOWNLOAD_MS = 60_000;
+const UPLOAD_BYTES = 10 * 1024 ** 2; // Discord's upload limit for a bot in a DM.
 // Close codes after which reconnecting with the same token can never work.
 const FATAL = { 4004: 'INVALID_TOKEN', 4010: 'INVALID_TOKEN', 4011: 'INVALID_TOKEN', 4012: 'INVALID_TOKEN', 4013: 'INVALID_TOKEN', 4014: 'DISALLOWED_INTENTS' };
 
@@ -177,18 +179,47 @@ export class DiscordBridge {
     return { linked: false };
   }
 
-  // Called by Conversations when a turn ends or a proactive message is delivered.
-  settled({ companionId, requestId, state, text, proactive }) {
+  // Called by Conversations when a turn ends or a proactive message is delivered. Only replies to Discord messages and
+  // proactive messages go to the DM; app conversations stay in the app. Files the companion attached follow the text.
+  settled({ companionId, requestId, state, text, messageId, proactive }) {
     const channel = this.#pending.get(requestId);
     this.#pending.delete(requestId);
     const link = this.#links.get(companionId);
     if (!link || link.problem) return;
+    let target = null, reply = '';
     if (channel) {
       clearInterval(channel.typing);
-      const reply = state === 'complete' ? text : state === 'cancelled' ? (text ? text + '\n\n*(stopped)*' : '*(stopped)*')
+      target = channel.id;
+      reply = state === 'complete' ? text : state === 'cancelled' ? (text ? text + '\n\n*(stopped)*' : '*(stopped)*')
         : (text ? text + '\n\n' : '') + '*Something went wrong with that reply. Try again in a moment.*';
-      if (reply) this.#say(link, channel.id, reply);
-    } else if (proactive && text && link.channel_id) this.#say(link, link.channel_id, text);
+    } else if (proactive && link.channel_id) { target = link.channel_id; reply = text; }
+    if (!target) return;
+    const files = messageId && this.#files ? this.#files.list(messageId).filter(file => file.direction === 'companion') : [];
+    (async () => {
+      if (reply) await this.#say(link, target, reply);
+      for (const file of files) await this.#sendFile(companionId, link, target, file);
+    })().catch(error => this.#log(`Discord delivery failed: ${error.message}`));
+  }
+
+  async #sendFile(companionId, link, channelId, file) {
+    if (file.size > UPLOAD_BYTES) {
+      await this.#say(link, channelId, `*“${file.name}” is too big for Discord. It’s in the app.*`);
+      return;
+    }
+    let bytes;
+    try {
+      const fd = this.#files.open(this.#files.get(companionId, file.id));
+      try { bytes = readFileSync(fd); } finally { closeSync(fd); }
+    } catch (error) { this.#log(`Discord file read failed: ${error.code ?? error.message}`); return; }
+    const form = new FormData();
+    form.append('payload_json', JSON.stringify({ allowed_mentions: { parse: [] }, ...(file.caption ? { content: file.caption.slice(0, DISCORD_CHARS) } : {}),
+      attachments: [{ id: 0, filename: file.name }] }));
+    form.append('files[0]', new Blob([bytes], { type: file.mime || 'application/octet-stream' }), file.name);
+    try { await this.#rest(link.token, 'POST', `/channels/${channelId}/messages`, form); }
+    catch (error) {
+      this.#log(`Discord file send failed: ${error.message}`);
+      await this.#say(link, channelId, `*I couldn’t post “${file.name}” here. It’s in the app.*`);
+    }
   }
 
   #connect(companionId, token) {
@@ -285,7 +316,8 @@ export class DiscordBridge {
   async #rest(token, method, path, body, retried = false) {
     const response = await this.#fetch(API + path, { method, redirect: 'error', signal: AbortSignal.timeout(10_000),
       headers: { Authorization: 'Bot ' + token, 'User-Agent': 'DiscordBot (https://blackoutburst.com, 1.0)',
-        ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+        ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { body: body instanceof FormData ? body : JSON.stringify(body) } : {}) });
     if (response.status === 429 && !retried) {
       const wait = Math.min(10, Number((await response.json().catch(() => ({}))).retry_after) || 1);
       await new Promise(resolve => setTimeout(resolve, wait * 1000));

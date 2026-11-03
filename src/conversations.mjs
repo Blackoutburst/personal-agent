@@ -23,7 +23,7 @@ const wakeToolFilter = kind => name => !['mcp__scheduler__create_release_watch',
 const DISCORD_NOTE = '\n\n(Channel note from the app, not from the owner: this message came from your owner\'s Discord DM with you, '
   + 'and your reply goes back there as Discord messages. It is the same conversation and memory as the app. Discord shows '
   + 'bold, italic, strikethrough, inline and fenced code, quotes, lists, # headings and [text](url) links, but not tables: '
-  + 'use a list instead of a table there. Files you send with your file tool appear in the app, not in Discord.)';
+  + 'use a list instead of a table there. Files you send with your file tool are posted in the DM too.)';
 const ERROR_MESSAGES = {
   INTERRUPTED: 'The server restarted during this reply. Send your message again to retry.',
   BUSY: 'Wait for the current reply to finish or stop it first.'
@@ -278,7 +278,8 @@ export class Conversations {
     const wake = this.#wake(companionId, id);
     if (wake?.state !== 'message' || !wake.message_id) return;
     const message = this.#db.prepare('SELECT text FROM conv_messages WHERE id=?').get(wake.message_id);
-    this.#settled({ companionId, threadId: wake.thread_id, requestId: wake.request_id, state: 'complete', text: message?.text ?? '', proactive: true });
+    this.#settled({ companionId, threadId: wake.thread_id, requestId: wake.request_id, state: 'complete', text: message?.text ?? '',
+      messageId: wake.message_id, proactive: true });
   }
 
   proactiveResult(companionId, id) { return this.#wakeResult(this.#wake(companionId, id)); }
@@ -530,9 +531,10 @@ export class Conversations {
       return true;
     });
     if (!changed) return;
-    const row = this.#db.prepare(`SELECT m.text FROM conv_turns t JOIN conv_messages m ON m.id=t.assistant_message_id
+    const row = this.#db.prepare(`SELECT m.id, m.text FROM conv_turns t JOIN conv_messages m ON m.id=t.assistant_message_id
       WHERE t.thread_id=? AND t.request_id=?`).get(turn.thread_id, turn.request_id);
-    this.#settled({ companionId: turn.companion_id, threadId: turn.thread_id, requestId: turn.request_id, state, text: row?.text ?? '', proactive: false });
+    this.#settled({ companionId: turn.companion_id, threadId: turn.thread_id, requestId: turn.request_id, state, text: row?.text ?? '',
+      ...(row?.id ? { messageId: row.id } : {}), proactive: false });
   }
 
   #endWake(wake, state) {

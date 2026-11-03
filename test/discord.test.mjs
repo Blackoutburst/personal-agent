@@ -31,6 +31,11 @@ function fakeDiscord({ me = BOT } = {}) {
     if (path === '/users/@me') return me ? Response.json(me) : new Response('{}', { status: 401 });
     if (path === '/oauth2/applications/@me') return Response.json({ id: '999999999999999999' });
     if (path.endsWith('/typing')) return new Response(null, { status: 204 });
+    if (path.endsWith('/messages') && spec.body instanceof FormData) {
+      const file = spec.body.get('files[0]');
+      sent.push({ channel: path.split('/')[2], ...JSON.parse(spec.body.get('payload_json')), file: { name: file.name, bytes: Buffer.from(await file.arrayBuffer()) } });
+      return Response.json({ id: '1' });
+    }
     if (path.endsWith('/messages')) { sent.push({ channel: path.split('/')[2], ...JSON.parse(spec.body) }); return Response.json({ id: '1' }); }
     return new Response('{}', { status: 404 });
   };
@@ -58,7 +63,7 @@ function fixture(t, { handler, me, withFiles = false } = {}) {
   const links = new DiscordLinks({ store });
   bridge = new DiscordBridge({ links, conversations, files, fetchImpl: discord.fetchImpl, WebSocketImpl: discord.WebSocketImpl });
   t.after(async () => { bridge.stop(); await conversations.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { store, discord, companionId, conversations, links, bridge };
+  return { store, discord, companionId, conversations, links, bridge, dir };
 }
 
 async function linked(t, options) {
@@ -176,6 +181,37 @@ test('attachments from the DM are fetched into the chat and shown to the compani
   assert.equal(turns.length, 2);
   assert.equal(turns[1].images.length, 0);
   assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM conv_files').get().n, 1);
+});
+
+test('files the companion attaches go to the DM after the text; app-only turns never reach Discord', async t => {
+  const f = await linked(t, { withFiles: true });
+  const thread = f.conversations.ongoingThread(f.companionId), png = f.discord.PNG;
+  const store = new FileStore({ store: f.store, dataDir: f.dir, workspaceFor: () => ({ dir: f.dir }) });
+  const message = () => {
+    const id = randomUUID();
+    f.store.db.prepare('INSERT INTO conv_messages(id,thread_id,role,text,created_at) VALUES(?,?,?,?,?)').run(id, thread, 'assistant', '', Date.now());
+    return id;
+  };
+  const withFile = async (name, bytes, caption) => {
+    const id = message();
+    const file = await store.upload(f.companionId, { threadId: thread, requestId: 'out-' + randomUUID(), name, size: bytes.length,
+      direction: 'companion', ...(caption ? { caption } : {}) }, [bytes]);
+    store.tx(() => store.bindInTransaction(f.companionId, thread, id, [file.id], 'companion'));
+    return id;
+  };
+  const before = f.discord.sent.length;
+  f.bridge.settled({ companionId: f.companionId, requestId: 'app-turn', state: 'complete', text: 'App reply', messageId: await withFile('app.png', png), proactive: false });
+  await sleep(20);
+  assert.equal(f.discord.sent.length, before, 'A turn started in the app is not mirrored to Discord');
+  f.bridge.settled({ companionId: f.companionId, requestId: 'wake-1', state: 'complete', text: 'Here is the chart',
+    messageId: await withFile('chart.png', png, 'Weekly chart'), proactive: true });
+  await sleep(20);
+  const [text, upload] = f.discord.sent.slice(before);
+  assert.equal(text.content, 'Here is the chart');
+  assert.equal(upload.file.name, 'chart.png');
+  assert.ok(upload.file.bytes.equals(png));
+  assert.equal(upload.content, 'Weekly chart');
+  assert.deepEqual(upload.allowed_mentions, { parse: [] });
 });
 
 test('without a file store, attachments get a short refusal and no turn', async t => {

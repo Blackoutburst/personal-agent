@@ -17,7 +17,10 @@ Each owner can link **their own Discord bot** so they can talk to their companio
 - **Files.** Attachments in the owner's DM (at most 8) are downloaded from Discord's CDN (`cdn.discordapp.com` /
   `media.discordapp.net` only, no bot token sent) into the chat file store, the same as app uploads, so the companion
   sees images and can read files. Anything it couldn't fetch is named in a short note and the rest is answered.
-  Files the companion sends with `send_file` show in the app only.
+  Files the companion sends with `send_file` in a reply to a Discord message (or in a proactive message) are posted
+  in the DM after the text, one per message; over 10 MiB they get a short "it's in the app" note instead.
+- **App stays in the app.** Turns started in the web or Android app are never mirrored to Discord. Only replies to
+  Discord messages and proactive messages (reminders, check-ins, watch results) go to the DM.
 - **Channel note.** A Discord turn's prompt (request id `discord-<message id>`) ends with a short note that the message
   came from the owner's Discord DM and that tables don't render there. The stored message is only what the owner wrote.
 - **Reminders.** When a reminder or other proactive message is delivered, `Conversations` calls `onSettled` with `proactive: true`, and the bridge sends the text to the paired DM channel.
