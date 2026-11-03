@@ -102,6 +102,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private var pendingDelete: PendingDelete? = null
     private var createKey: String? = null
     @Volatile private var scope = 0L
+    /** A picker result that arrived while the chat was reloading (see attachFiles). */
+    private var pendingPick: Pair<List<Uri>, Long>? = null
     private val creating = Mutex()
     private val uploadSources = mutableMapOf<String, Uri>()
     private val transfers = mutableMapOf<String, TransferCancellation>()
@@ -620,8 +622,13 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     /** Picker results belong to the chat that launched the picker, not whichever owner is now visible. */
     fun attachFiles(uris: List<Uri>, expectedScope: Long) {
         val state = _state.value
-        if (!current(expectedScope) || state.gate != Gate.Ready || state.chatLoading || state.sending || state.replying || failedSend != null || pendingDelete != null) return
-        if (uris.isEmpty()) return
+        if (uris.isEmpty() || !current(expectedScope) || state.gate != Gate.Ready) return
+        // Coming back from the system picker restarts the app's chat resync, which is still loading when
+        // Android delivers the result: keep the pick and attach it as soon as the chat is loaded (#32).
+        if (state.chatLoading) { pendingPick = uris to expectedScope; return }
+        if (state.sending || state.replying || failedSend != null || pendingDelete != null) {
+            _state.update { it.copy(fileError = "Wait for the current message to finish, then attach the files again.") }; return
+        }
         if (state.uploads.size + uris.size > MAX_FILES) { _state.update { it.copy(fileError = "Choose at most eight files for one message.") }; return }
         val entries = uris.map { uri ->
             val key = Pkce.randomToken(16); uploadSources[key] = uri
@@ -917,7 +924,12 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 state.copy(threadId = snapshot.threadId, messages = snapshot.messages, runtime = snapshot.runtime,
                     turn = snapshot.turn ?: state.turn?.takeIf { it.state != "streaming" }, waitingFor = waiting, offline = false)
             }
-        } finally { if (current(version)) _state.update { it.copy(chatLoading = false) } }
+        } finally {
+            if (current(version)) {
+                _state.update { it.copy(chatLoading = false) }
+                pendingPick?.let { (uris, pickScope) -> pendingPick = null; attachFiles(uris, pickScope) }
+            }
+        }
     }
 
     private suspend fun sync() {
