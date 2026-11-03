@@ -98,7 +98,7 @@ data class PendingUpload(val key: String, val threadId: String, val name: String
     val progress: Long = 0, val total: Long = 0, val file: Attachment? = null,
     val state: String = "preparing", val error: String? = null)
 internal data class PendingSend(val requestId: String, val threadId: String, val text: String, val files: List<Attachment>)
-internal data class PendingDelete(val requestId: String, val threadId: String)
+internal data class PendingArchive(val requestId: String, val threadId: String)
 internal fun matchesSubmission(message: Message, pending: PendingSend): Boolean = message.role == "user" &&
     message.threadId == pending.threadId && message.requestId == pending.requestId && message.text == pending.text &&
     message.attachments.map { it.id }.toSet() == pending.files.map { it.id }.toSet()

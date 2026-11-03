@@ -121,6 +121,8 @@ export function parseRequest(payload) {
       ...(attachments.length ? { attachments } : {}) };
   }
   if (action === 'deleteThread') { only(payload, ['action', 'requestId', 'threadId']); return { action, requestId: request(payload.requestId), threadId: id(payload.threadId) }; }
+  if (action === 'archiveThread') { only(payload, ['action', 'requestId', 'threadId']); return { action, requestId: request(payload.requestId), threadId: id(payload.threadId) }; }
+  if (action === 'archivedThreads') { only(payload, ['action']); return { action }; }
   if (action === 'cancel') {
     only(payload, ['action', 'requestId', 'threadId']);
     return { action, requestId: request(payload.requestId), threadId: id(payload.threadId) };
@@ -158,6 +160,8 @@ export class Conversations {
     const columns = new Set(this.#db.prepare('PRAGMA table_info(conv_threads)').all().map(column => column.name));
     if (!columns.has('session_turns')) this.#db.exec('ALTER TABLE conv_threads ADD COLUMN session_turns INTEGER NOT NULL DEFAULT 0');
     if (!columns.has('session_at')) this.#db.exec('ALTER TABLE conv_threads ADD COLUMN session_at INTEGER NOT NULL DEFAULT 0');
+    // Archived chats are kept read-only; the owner's ongoing chat is never an archived one.
+    if (!columns.has('archived_at')) this.#db.exec('ALTER TABLE conv_threads ADD COLUMN archived_at INTEGER');
     const messageColumns = new Set(this.#db.prepare('PRAGMA table_info(conv_messages)').all().map(column => column.name));
     if (!messageColumns.has('feeling')) this.#db.exec('ALTER TABLE conv_messages ADD COLUMN feeling TEXT');
     if (!messageColumns.has('peer_json')) this.#db.exec('ALTER TABLE conv_messages ADD COLUMN peer_json TEXT');
@@ -244,7 +248,8 @@ export class Conversations {
   peerInTransaction(companionId, threadId, text, peer) {
     if (this.#closing || typeof companionId !== 'string' || !UUID.test(companionId)
         || !wellFormed(text,4000,16000) || !['sent','received'].includes(peer?.direction)) throw invalid();
-    const thread = threadId ? this.#thread(companionId,threadId) : this.#thread(companionId,this.#ongoing(companionId));
+    let thread = threadId ? this.#thread(companionId,threadId) : null;
+    if (!thread || thread.archived_at !== null) thread = this.#thread(companionId,this.#ongoing(companionId));
     const messageId=randomUUID();
     this.#db.prepare("INSERT INTO conv_messages(id,thread_id,role,text,created_at,peer_json) VALUES(?,?,'peer',?,?,?)")
       .run(messageId,thread.id,text,this.#now(),JSON.stringify(peer));
@@ -257,7 +262,7 @@ export class Conversations {
   #ongoing(companionId) {
     const mapping = this.#db.prepare('SELECT thread_id FROM conv_ongoing WHERE companion_id=?').get(companionId);
     if (mapping) return mapping.thread_id;
-    let thread = this.#db.prepare('SELECT id FROM conv_threads WHERE companion_id=? ORDER BY updated_at DESC,id LIMIT 1').get(companionId);
+    let thread = this.#db.prepare('SELECT id FROM conv_threads WHERE companion_id=? AND archived_at IS NULL ORDER BY updated_at DESC,id LIMIT 1').get(companionId);
     if (!thread) {
       thread = { id: randomUUID() };
       this.#db.prepare('INSERT INTO conv_threads(id,companion_id,title,created_at,updated_at) VALUES(?,?,?,?,?)')
@@ -353,6 +358,8 @@ export class Conversations {
     if (op.action === 'events') return this.#events(companionId, op.threadId, op.cursor);
     if (op.action === 'cancel') return this.#cancel(companionId, op.threadId, op.requestId);
     if (op.action === 'deleteThread') return this.#deleteThread(companionId, op);
+    if (op.action === 'archiveThread') return this.#archiveThread(companionId, op);
+    if (op.action === 'archivedThreads') return this.#archivedThreads(companionId);
     return this.#write(companionId, op);
   }
 
@@ -384,7 +391,7 @@ export class Conversations {
   }
 
   #snapshot(companionId, threadId, runtime) {
-    const threads = this.#db.prepare('SELECT id, title FROM conv_threads WHERE companion_id=? ORDER BY updated_at DESC, id LIMIT ?')
+    const threads = this.#db.prepare('SELECT id, title FROM conv_threads WHERE companion_id=? AND archived_at IS NULL ORDER BY updated_at DESC, id LIMIT ?')
       .all(companionId, LIMITS.threads).map(row => ({ id: row.id, title: row.title }));
     const mapped = threadId === undefined ? this.#db.prepare('SELECT thread_id FROM conv_ongoing WHERE companion_id=?').get(companionId) : null;
     const selected = threadId === undefined ? (mapped || threads[0] ? this.#thread(companionId, mapped?.thread_id ?? threads[0].id) : null) : this.#thread(companionId, threadId);
@@ -406,8 +413,12 @@ export class Conversations {
         return { messages: rows.map(row => this.#message(row)), cursor: seq, turn: context };
       }));
     }
+    // An archived chat is opened read-only; it is listed with the threads so clients can match the selection.
+    const archived = selected && selected.archived_at !== null;
+    if (archived) threads.unshift({ id: selected.id, title: selected.title });
     return { version: 1, synthetic: false, threads, threadId: selected?.id ?? null, messages, cursor: String(cursor),
-      runtime: { state: runtime.state, ...(runtime.provider ? { provider: runtime.provider } : {}) }, ...(turn ? { turn } : {}) };
+      runtime: { state: runtime.state, ...(runtime.provider ? { provider: runtime.provider } : {}) }, ...(turn ? { turn } : {}),
+      ...(archived ? { archivedAt: selected.archived_at } : {}) };
   }
 
   #events(companionId, threadId, from) {
@@ -442,13 +453,14 @@ export class Conversations {
       const now = this.#now();
       let body;
       if (op.action === 'createThread') {
-        const count = this.#db.prepare('SELECT COUNT(*) AS n FROM conv_threads WHERE companion_id=?').get(companionId).n;
+        const count = this.#db.prepare('SELECT COUNT(*) AS n FROM conv_threads WHERE companion_id=? AND archived_at IS NULL').get(companionId).n;
         if (count >= LIMITS.threads) throw new ConversationError('CAPACITY', 409);
         const id = randomUUID();
         this.#db.prepare('INSERT INTO conv_threads(id, companion_id, title, created_at, updated_at) VALUES (?,?,?,?,?)').run(id, companionId, op.title, now, now);
         body = { version: 1, synthetic: false, thread: { id, title: op.title } };
       } else {
         const thread = this.#thread(companionId, op.threadId);
+        if (thread.archived_at !== null) throw new ConversationError('ARCHIVED', 409);
         const busy = this.#db.prepare("SELECT 1 FROM conv_turns WHERE thread_id=? AND state IN ('queued','running')").get(thread.id);
         if (busy || this.#db.prepare("SELECT 1 FROM conv_wakes WHERE thread_id=? AND state='running'").get(thread.id)) {
           throw new ConversationError('BUSY', 409);
@@ -497,6 +509,42 @@ export class Conversations {
     // Logical deletion commits before filesystem cleanup. Failed cleanup remains hidden/quota-counted and retryable.
     this.#files?.deleteThread(companionId, op.threadId);
     return body;
+  }
+
+  // "Start a new chat": the current chat is kept read-only in the archive and a fresh ongoing chat begins.
+  // Reminders and other proactive messages still waiting for this chat move to the new one.
+  #archiveThread(companionId, op) {
+    const digest = createHash('sha256').update(JSON.stringify(op)).digest('hex');
+    return this.#tx(() => {
+      const cached = this.#db.prepare('SELECT digest,result FROM conv_requests WHERE companion_id=? AND request_id=?').get(companionId, op.requestId);
+      if (cached) { if (cached.digest !== digest) throw new ConversationError('CONFLICT', 409); return JSON.parse(cached.result); }
+      if (this.#db.prepare('SELECT 1 FROM conv_wakes WHERE companion_id=? AND request_id=?').get(companionId, op.requestId)) throw new ConversationError('CONFLICT', 409);
+      const thread = this.#thread(companionId, op.threadId);
+      if (thread.archived_at !== null) throw new ConversationError('ARCHIVED', 409);
+      if (this.#db.prepare("SELECT 1 FROM conv_turns WHERE thread_id=? AND state IN ('queued','running')").get(thread.id)
+          || this.#db.prepare("SELECT 1 FROM conv_wakes WHERE thread_id=? AND state='running'").get(thread.id)) throw new ConversationError('BUSY', 409);
+      const now = this.#now(), fresh = randomUUID();
+      // The ongoing chat is just "Companion"; in the archive it is named after how it began.
+      const opening = this.#db.prepare("SELECT text FROM conv_messages WHERE thread_id=? AND role IN ('user','assistant') AND text<>'' ORDER BY created_at,rowid LIMIT 1").get(thread.id);
+      const title = [DEFAULT_TITLE, 'Companion'].includes(thread.title) && opening ? titleFrom(opening.text) : thread.title;
+      this.#db.prepare('UPDATE conv_threads SET archived_at=?, title=?, provider_session=NULL, session_turns=0 WHERE id=?').run(now, title, thread.id);
+      this.#db.prepare('INSERT INTO conv_threads(id,companion_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run(fresh, companionId, 'Companion', now, now);
+      this.#db.prepare('DELETE FROM conv_ongoing WHERE companion_id=?').run(companionId);
+      this.#db.prepare('INSERT INTO conv_ongoing VALUES(?,?)').run(companionId, fresh);
+      this.#db.prepare("UPDATE conv_wakes SET thread_id=?, updated_at=? WHERE companion_id=? AND thread_id=? AND state IN ('queued','waiting_delivery')")
+        .run(fresh, now, companionId, thread.id);
+      const result = { version: 1, synthetic: false, archivedThreadId: thread.id, threadId: fresh, requestId: op.requestId };
+      this.#db.prepare('INSERT INTO conv_requests VALUES(?,?,?,?)').run(companionId, op.requestId, digest, JSON.stringify(result));
+      return result;
+    });
+  }
+
+  #archivedThreads(companionId) {
+    const rows = this.#db.prepare(`SELECT t.id, t.title, t.archived_at, t.created_at,
+        (SELECT COUNT(*) FROM conv_messages m WHERE m.thread_id=t.id) AS messages
+      FROM conv_threads t WHERE t.companion_id=? AND t.archived_at IS NOT NULL ORDER BY t.archived_at DESC, t.id LIMIT ?`).all(companionId, LIMITS.threads);
+    return { version: 1, synthetic: false, threads: rows.map(row => ({ id: row.id, title: row.title, startedAt: row.created_at,
+      archivedAt: row.archived_at, messages: row.messages })) };
   }
 
   #cancel(companionId, threadId, requestId) {

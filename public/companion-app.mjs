@@ -286,7 +286,12 @@ function renderChat() {
   $('attach').disabled = !ready || Boolean(state.pending) || streaming || uploads.length >= 8;
   $('file-picker').disabled = $('attach').disabled;
   $('retry-send').hidden = state.pending?.status !== 'uncertain';
-  $('delete-conversation').disabled = !ready || state.synthetic || (state.pending && state.pending.status !== 'accepted');
+  const archived = state.archivedAt !== null;
+  $('new-chat').disabled = !ready || archived || state.synthetic || Boolean(state.pending) || streaming || state.messages.length === 0;
+  $('past-chats').disabled = state.synthetic || sessionDenied;
+  $('archived-banner').hidden = !archived;
+  if (archived) $('archived-text').textContent = `Archived chat · ended ${new Date(state.archivedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })} · read-only`;
+  $('composer').hidden = archived;
   reconnect.hidden = sessionDenied || Boolean(state.pending && !state.opened) || (!readFailures && state.connection === 'ready'); reconnect.disabled = Boolean(readTicket) || navigator.onLine === false;
   kept.hidden = !heldDraft; keptText.textContent = heldDraft?.text ?? ''; restoreDraft.disabled = Boolean(input.value) || Boolean(state.pending);
   input.placeholder = `Write to ${companionName()}…`;
@@ -613,12 +618,37 @@ $('retry-send').addEventListener('click', async () => {
   if (state.connection === 'ready' && state.threadId === null) await client.create('Companion');
   schedulePoll();
 });
-$('delete-conversation').addEventListener('click', async () => {
-  if ($('delete-conversation').disabled || !confirm('Delete this conversation and all its files? This cannot be undone.')) return;
-  clearUploads(); await client.deleteThread();
-  if (state.connection === 'ready' && state.threadId === null) await client.create('Companion');
+// New chat: the current chat is archived (kept, read-only, in Past chats) and a fresh one starts.
+$('new-chat').addEventListener('click', async () => {
+  if ($('new-chat').disabled || !confirm(`Start a new chat with ${companionName()}? This one moves to Past chats, where you can still read it.`)) return;
+  clearUploads(); await client.archiveThread();
   schedulePoll();
 });
+const pastDialog = $('past-chats-dialog');
+function chatDate(value) { return new Date(value).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }); }
+$('past-chats').addEventListener('click', async () => {
+  if ($('past-chats').disabled) return;
+  const list = $('past-chats-list'), note = $('past-chats-note');
+  list.replaceChildren(); note.textContent = 'Loading…'; pastDialog.showModal();
+  try {
+    const threads = await client.archivedThreads();
+    note.textContent = threads.length ? 'Archived chats are kept read-only.' : 'No past chats yet. “New chat” moves the current chat here.';
+    for (const item of threads) {
+      const button = document.createElement('button'); button.type = 'button';
+      const title = document.createElement('strong'); title.textContent = item.title === 'Companion' ? 'Chat' : item.title;
+      const detail = document.createElement('small');
+      detail.textContent = `${chatDate(item.startedAt)} – ${chatDate(item.archivedAt)} · ${item.messages} message${item.messages === 1 ? '' : 's'}`;
+      button.append(title, detail);
+      button.addEventListener('click', async () => { pastDialog.close(); clearUploads(); await client.select(item.id); schedulePoll(); });
+      const row = document.createElement('li'); row.append(button); list.append(row);
+    }
+  } catch (error) {
+    if (error?.code === 'ACCESS_DENIED') { pastDialog.close(); fileAccessDenied(); return; }
+    note.textContent = 'Past chats could not be loaded. Try again in a moment.';
+  }
+});
+$('past-chats-close').addEventListener('click', () => pastDialog.close());
+$('back-to-chat').addEventListener('click', async () => { clearUploads(); await client.open(); schedulePoll(); });
 $('input').addEventListener('input', () => { composerEpoch++; grow(); try { client.setDraft($('input').value); } catch { /* too long: send stays disabled */ } renderAll(); });
 $('input').addEventListener('keydown', event => {
   // Enter sends on computers; on phones the keyboard's Enter adds a line (send with the button).

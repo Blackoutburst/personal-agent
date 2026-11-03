@@ -48,8 +48,13 @@ data class UiState(
     val sendFailed: Boolean = false,
     val uploads: List<PendingUpload> = emptyList(),
     val fileError: String? = null,
-    val deleting: Boolean = false,
-    val deleteFailed: Boolean = false,
+    val archiving: Boolean = false,
+    val archiveFailed: Boolean = false,
+    /** Set while an archived (read-only) chat is open. */
+    val archivedAt: Long? = null,
+    val pastChats: List<ArchivedThread>? = null,
+    val pastChatsLoading: Boolean = false,
+    val pastChatsFailed: Boolean = false,
     val offline: Boolean = false,
     val happyUntil: Long = 0,
     val memories: List<MemoryFile>? = null,
@@ -103,7 +108,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private var poller: Job? = null
     private var visible = false
     private var failedSend: PendingSend? = null
-    private var pendingDelete: PendingDelete? = null
+    private var pendingArchive: PendingArchive? = null
     private var createKey: String? = null
     @Volatile private var scope = 0L
     /** A picker result that arrived while the chat was reloading (see attachFiles). */
@@ -636,7 +641,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         uploadSources.clear(); mediaCache.clear()
         File(getApplication<Application>().cacheDir, "attachment-uploads").deleteRecursively()
         File(getApplication<Application>().cacheDir, "attachment-media").deleteRecursively()
-        failedSend = null; pendingDelete = null; createKey = null
+        failedSend = null; pendingArchive = null; createKey = null
     }
 
     private suspend fun ensureThread(version: Long): String = creating.withLock {
@@ -658,7 +663,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         // Coming back from the system picker restarts the app's chat resync, which is still loading when
         // Android delivers the result: keep the pick and attach it as soon as the chat is loaded (#32).
         if (state.chatLoading) { pendingPick = uris to expectedScope; return }
-        if (state.sending || state.replying || failedSend != null || pendingDelete != null) {
+        if (state.sending || state.replying || failedSend != null || pendingArchive != null) {
             _state.update { it.copy(fileError = "Wait for the current message to finish, then attach the files again.") }; return
         }
         if (state.uploads.size + uris.size > MAX_FILES) { _state.update { it.copy(fileError = "Choose at most eight files for one message.") }; return }
@@ -671,7 +676,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun retryUpload(key: String) {
-        if (failedSend != null || _state.value.sending || pendingDelete != null) return
+        if (failedSend != null || _state.value.sending || pendingArchive != null) return
         val entry = _state.value.uploads.firstOrNull { it.key == key && it.state == "error" } ?: return
         startUpload(entry.key, scope)
     }
@@ -773,7 +778,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     fun send(text: String, expectedScope: Long = scope, onSent: () -> Unit) {
         if (!current(expectedScope)) return
         val now = _state.value
-        if (now.chatLoading || now.sending || now.replying || pendingDelete != null || now.uploads.any { it.state != "ready" }) return
+        if (now.archivedAt != null || now.chatLoading || now.sending || now.replying || pendingArchive != null || now.uploads.any { it.state != "ready" }) return
         val files = now.uploads.mapNotNull { it.file }.toList()
         val retry = failedSend
         if (retry == null && (!validText(text, 8000, 32768) || text.isBlank() && files.isEmpty())) return
@@ -819,33 +824,70 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Called only after the UI's destructive-action confirmation. Retry retains this exact request. */
-    fun deleteThread(expectedScope: Long = scope) {
+    /** "New chat", after the UI's confirmation: the chat moves to Past chats and a fresh one opens. Retry keeps the same request. */
+    fun archiveThread(expectedScope: Long = scope) {
         if (!current(expectedScope)) return
-        val previous = pendingDelete
+        val previous = pendingArchive
         val threadId = previous?.threadId ?: _state.value.threadId ?: return
-        if (_state.value.deleting) return
-        val request = previous ?: PendingDelete(Pkce.randomToken(16), threadId)
-        if (previous == null) { invalidateFiles(); pendingDelete = request }
+        val now = _state.value
+        if (now.archiving || previous == null && (now.archivedAt != null || now.sending || now.replying)) return
+        val request = previous ?: PendingArchive(Pkce.randomToken(16), threadId)
+        if (previous == null) { invalidateFiles(); pendingArchive = request }
         val version = scope
-        _state.update { it.copy(scope = version, deleting = true, deleteFailed = false, chatLoading = false, uploads = emptyList(), fileError = null,
-            messages = emptyList(), turn = null, waitingFor = null, sending = false, sendFailed = false) }
+        _state.update { it.copy(scope = version, archiving = true, archiveFailed = false, uploads = emptyList(), fileError = null) }
         viewModelScope.launch {
             if (!current(version)) return@launch
             try {
-                api.deleteThread(request.threadId, request.requestId)
+                val fresh = api.archiveThread(request.threadId, request.requestId)
                 if (!current(version)) return@launch
-                pendingDelete = null; cursor = "0"
-                _state.update { it.copy(threadId = null, messages = emptyList(), turn = null, waitingFor = null,
-                    sending = false, sendFailed = false, deleting = false, deleteFailed = false) }
-                // A lost refresh after a verified deletion cannot turn it back into an uncertain delete.
+                pendingArchive = null; cursor = "0"
+                _state.update { it.copy(threadId = fresh, archivedAt = null, messages = emptyList(), turn = null, waitingFor = null,
+                    sending = false, sendFailed = false, archiving = false, archiveFailed = false, pastChats = null) }
                 guarded { resync() }; startPolling()
             } catch (error: ApiException) {
                 if (!current(version)) return@launch
                 if (error.signedOut) { signedOut(); return@launch }
-                _state.update { it.copy(deleting = false, deleteFailed = true, fileError = "Deletion was not confirmed. Retry deletion before sending another message.") }
+                val message = when (error.code) {
+                    "BUSY" -> "Wait for the current reply to finish, then start a new chat."
+                    else -> "Starting a new chat was not confirmed. Retry before sending another message."
+                }
+                if (error.code == "BUSY" || error.code == "ARCHIVED") pendingArchive = null
+                _state.update { it.copy(archiving = false, archiveFailed = pendingArchive != null, fileError = message) }
             }
         }
+    }
+
+    /** Loads the list of archived chats for the Past chats sheet. */
+    fun loadPastChats() {
+        val version = scope
+        _state.update { it.copy(pastChatsLoading = true, pastChatsFailed = false) }
+        viewModelScope.launch {
+            try {
+                val list = api.archivedThreads()
+                if (current(version)) _state.update { it.copy(pastChats = list, pastChatsLoading = false) }
+            } catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                _state.update { it.copy(pastChatsLoading = false, pastChatsFailed = true) }
+            }
+        }
+    }
+
+    /** Opens an archived chat read-only. */
+    fun openArchived(threadId: String) {
+        val now = _state.value
+        if (!fileId(threadId) || now.sending || now.archiving || pendingArchive != null || now.uploads.isNotEmpty()) return
+        cursor = "0"
+        _state.update { it.copy(threadId = threadId, archivedAt = null, messages = emptyList(), turn = null, waitingFor = null, fileError = null) }
+        viewModelScope.launch { guarded { resync() } }
+    }
+
+    /** Leaves an archived chat for the ongoing one. */
+    fun backToCurrent() {
+        if (_state.value.archivedAt == null) return
+        cursor = "0"
+        _state.update { it.copy(threadId = null, archivedAt = null, messages = emptyList(), turn = null, waitingFor = null) }
+        viewModelScope.launch { guarded { resync() } }
     }
 
     suspend fun mediaFile(file: Attachment, expectedScope: Long, cancel: TransferCancellation,
@@ -955,7 +997,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             cursor = snapshot.cursor
             _state.update { state ->
                 val waiting = state.waitingFor?.takeIf { id -> snapshot.turn?.requestId != id && snapshot.messages.none { it.role == "assistant" && it.requestId == id } }
-                state.copy(threadId = snapshot.threadId, messages = snapshot.messages, runtime = snapshot.runtime,
+                state.copy(threadId = snapshot.threadId, archivedAt = snapshot.archivedAt, messages = snapshot.messages, runtime = snapshot.runtime,
                     turn = snapshot.turn ?: state.turn?.takeIf { it.state != "streaming" }, waitingFor = waiting, offline = false)
             }
         } finally {
@@ -967,7 +1009,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun sync() {
-        if (pendingDelete != null) return
+        if (pendingArchive != null) return
         val version = scope
         val threadId = _state.value.threadId ?: return resync()
         val needsResync = syncing.withLock {

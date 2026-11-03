@@ -257,7 +257,7 @@ test('clear aborts a pending snapshot and late callbacks cannot restore private 
   f.intercept = (action, payload, options, normal) => { signal = options.signal; const result = normal(); return wait.promise.then(() => result); };
   const opening = f.client.open(); f.client.setDraft('private draft');
   f.client.clear(); assert.ok(signal.aborted); wait.resolve(); await opening;
-  assert.deepEqual(f.client.getState(), { opened: false, synthetic: false, runtime: null, threads: [], threadId: null, messages: [], cursor: null,
+  assert.deepEqual(f.client.getState(), { opened: false, synthetic: false, runtime: null, threads: [], threadId: null, archivedAt: null, messages: [], cursor: null,
     lastSeq: 0, hasMore: false, turn: null, connection: 'disconnected', pending: null, draft: '', error: null });
   assert.equal(f.calls.length, 1);
 });
@@ -315,7 +315,7 @@ test('same-epoch 401/403 after completed events still clears every private displ
     assert.equal(f.client.getState().pending, null); assert.equal(f.client.getState().messages.length, 2);
     f.client.setDraft('another private draft');
     wait.reject(new ConversationError('ACCESS_DENIED', status)); await sending;
-    assert.deepEqual(f.client.getState(), { opened: false, synthetic: false, runtime: null, threads: [], threadId: null, messages: [], cursor: null,
+    assert.deepEqual(f.client.getState(), { opened: false, synthetic: false, runtime: null, threads: [], threadId: null, archivedAt: null, messages: [], cursor: null,
       lastSeq: 0, hasMore: false, turn: null, connection: 'denied', pending: null, draft: '', error: 'ACCESS_DENIED' });
   }
 });

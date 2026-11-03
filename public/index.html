@@ -75,7 +75,12 @@
           </details>
           <div class="conversation-actions">
             <button id="retry-send" class="text-button" type="button" hidden>Retry pending request</button>
-            <button id="delete-conversation" class="text-button" type="button" disabled>Delete conversation</button>
+            <button id="past-chats" class="text-button" type="button" disabled>Past chats</button>
+            <button id="new-chat" class="text-button" type="button" disabled>New chat</button>
+          </div>
+          <div id="archived-banner" class="archived-banner" role="status" hidden>
+            <span id="archived-text"></span>
+            <button id="back-to-chat" class="button" type="button">Back to current chat</button>
           </div>
           <p id="file-note" class="note" role="status" hidden></p>
           <ul id="uploads" class="uploads" aria-label="Files to send" hidden></ul>
@@ -159,6 +164,11 @@
     </main>
     <p id="announce" class="sr-only" role="status" aria-live="polite"></p>
   </div>
+  <dialog id="past-chats-dialog" class="past-chats-dialog" aria-labelledby="past-chats-title">
+    <div class="full-image-heading"><strong id="past-chats-title">Past chats</strong><button id="past-chats-close" class="button" type="button" autofocus>Close</button></div>
+    <p id="past-chats-note" class="note"></p>
+    <ul id="past-chats-list" class="past-chats-list"></ul>
+  </dialog>
   <dialog id="full-image-dialog" class="full-image-dialog" aria-labelledby="full-image-title">
     <div class="full-image-heading"><strong id="full-image-title"></strong><button id="full-image-close" class="button" type="button" autofocus>Close image</button></div>
     <img id="full-image" alt="">

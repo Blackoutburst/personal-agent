@@ -37,7 +37,11 @@ import kotlinx.serialization.json.put
 @Serializable data class Snapshot(
     val threads: List<ChatThread>, val threadId: String? = null, val messages: List<Message>,
     val cursor: String, val runtime: Runtime, val turn: Turn? = null,
+    /** Set when this is an archived (read-only) chat. */
+    val archivedAt: Long? = null,
 )
+@Serializable data class ArchivedThread(val id: String, val title: String, val startedAt: Long, val archivedAt: Long, val messages: Int)
+@Serializable data class ArchivedThreads(val threads: List<ArchivedThread>)
 @Serializable data class Event(
     val seq: Long, val threadId: String, val type: String, val message: Message? = null,
     val requestId: String? = null, val state: String? = null, val error: TurnError? = null,
@@ -177,16 +181,28 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
         (raw.jsonObject["events"] as? JsonArray)?.forEach { event -> event.jsonObject["message"]?.let { validateMessages(JsonArray(listOf(it))) } }
         return checkedEventPage(result, threadId, cursor)
     }
-    suspend fun deleteThread(threadId: String, requestId: String) {
+    /** "New chat": archives the chat and returns the id of the fresh ongoing chat. */
+    suspend fun archiveThread(threadId: String, requestId: String): String {
         if (!fileId(threadId) || !requestKey(requestId)) throw ApiException("INVALID_REQUEST")
         val raw = post(companion + "api/conversation", buildJsonObject {
-            put("action", "deleteThread"); put("threadId", threadId); put("requestId", requestId)
+            put("action", "archiveThread"); put("threadId", threadId); put("requestId", requestId)
         })
-        verified {
+        return verified {
             val result = raw.jsonObject
-            if (result.keys != setOf("version", "synthetic", "deletedThreadId", "requestId") ||
+            val fresh = result["threadId"]?.jsonPrimitive?.content
+            if (result.keys != setOf("version", "synthetic", "archivedThreadId", "threadId", "requestId") ||
                 result["version"].toString() != "1" || result["synthetic"].toString() != "false" ||
-                result["deletedThreadId"]?.jsonPrimitive?.content != threadId || result["requestId"]?.jsonPrimitive?.content != requestId) throw ApiException("INVALID_RESPONSE")
+                result["archivedThreadId"]?.jsonPrimitive?.content != threadId || result["requestId"]?.jsonPrimitive?.content != requestId ||
+                fresh == null || !fileId(fresh)) throw ApiException("INVALID_RESPONSE")
+            fresh
+        }
+    }
+    suspend fun archivedThreads(): List<ArchivedThread> {
+        val raw = post(companion + "api/conversation", buildJsonObject { put("action", "archivedThreads") })
+        return verified {
+            val list = decode<ArchivedThreads>(raw).threads
+            if (list.size > 200 || list.any { !fileId(it.id) || it.title.isBlank() || it.title.length > 80 || it.messages < 0 }) throw ApiException("INVALID_RESPONSE")
+            list
         }
     }
     suspend fun upload(threadId: String, key: String, name: String, source: java.io.File,

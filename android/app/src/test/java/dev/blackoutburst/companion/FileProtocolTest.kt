@@ -17,6 +17,7 @@ import org.junit.Test
 
 class FileProtocolTest {
     private val thread = UUID.randomUUID().toString()
+    private val fresh = UUID.randomUUID().toString()
     private val message = UUID.randomUUID().toString()
     private val fileId = UUID.randomUUID().toString()
     private val file = Attachment(fileId, "empty.txt", "application/octet-stream", 0,
@@ -32,7 +33,7 @@ class FileProtocolTest {
                     if (loseAck) { loseAck = false; throw IOException("synthetic lost ACK") }
                     """{"version":1,"synthetic":false,"accepted":{"requestId":"stable-send","threadId":"$thread","messageId":"$message"}}"""
                 }
-                "deleteThread" -> """{"version":1,"synthetic":false,"deletedThreadId":"$thread","requestId":"stable-delete"}"""
+                "archiveThread" -> """{"version":1,"synthetic":false,"archivedThreadId":"$thread","threadId":"$fresh","requestId":"stable-archive"}"""
                 else -> throw AssertionError("Unexpected operation")
             }
         }.also { calls += it } }) { owner }
@@ -50,7 +51,7 @@ class FileProtocolTest {
             catch (error: ApiException) { assertEquals("INVALID_REQUEST", error.code) }
         }
         assertEquals(2, calls.size)
-        api.deleteThread(thread, "stable-delete"); api.deleteThread(thread, "stable-delete")
+        assertEquals(fresh, api.archiveThread(thread, "stable-archive")); api.archiveThread(thread, "stable-archive")
         assertArrayEquals(calls[2].sent.toByteArray(), calls[3].sent.toByteArray())
         assertEquals(setOf("action", "threadId", "requestId"), calls[2].body().keys)
         calls.forEach {
@@ -86,12 +87,15 @@ class FileProtocolTest {
         try { api.events(thread, "0"); fail("Entire malformed page must fail") } catch (error: ApiException) { assertEquals("INVALID_RESPONSE", error.code) }
     }
 
-    @Test fun deleteAckCannotConfirmAnotherThreadOrRequest() = runBlocking {
-        val api = Api(open = { url -> Connection(url) {
-            """{"version":1,"synthetic":false,"deletedThreadId":"${UUID.randomUUID()}","requestId":"other-request"}"""
-        } }) { owner }
-        try { api.deleteThread(thread, "stable-delete"); fail("Wrong deletion ACK") }
-        catch (error: ApiException) { assertEquals("INVALID_RESPONSE", error.code) }
+    @Test fun archiveAckCannotConfirmAnotherThreadOrRequest() = runBlocking {
+        for (body in listOf(
+            """{"version":1,"synthetic":false,"archivedThreadId":"${UUID.randomUUID()}","threadId":"$fresh","requestId":"stable-archive"}""",
+            """{"version":1,"synthetic":false,"archivedThreadId":"$thread","threadId":"$fresh","requestId":"other-request"}""",
+            """{"version":1,"synthetic":false,"archivedThreadId":"$thread","threadId":"https://foreign.invalid","requestId":"stable-archive"}""")) {
+            val api = Api(open = { url -> Connection(url) { body } }) { owner }
+            try { api.archiveThread(thread, "stable-archive"); fail("Wrong archive ACK") }
+            catch (error: ApiException) { assertEquals("INVALID_RESPONSE", error.code) }
+        }
     }
 
     @Test fun malformedAcknowledgementsStayTypedFailuresInsteadOfStrandingTheComposer() = runBlocking {

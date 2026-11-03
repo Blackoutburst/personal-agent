@@ -195,7 +195,8 @@ private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExpo
 @Composable
 private fun ChatScreen(model: CompanionModel, state: UiState) {
     var draft by rememberSaveable(state.scope) { mutableStateOf("") }
-    var confirmDelete by remember(state.scope) { mutableStateOf(false) }
+    var confirmNew by remember(state.scope) { mutableStateOf(false) }
+    var showChats by remember(state.scope) { mutableStateOf(false) }
     var pickerScope by remember { mutableLongStateOf(state.scope) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> model.attachFiles(uris, pickerScope) }
     var tick by remember { mutableLongStateOf(0L) }
@@ -218,7 +219,7 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
                 Text(state.name, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
                 Text(MOOD_TEXT.getValue(mood), color = Soft, fontSize = 15.sp)
             }
-            ActionButton(enabled = state.threadId != null && !state.deleting && !state.chatLoading, onClick = { confirmDelete = true }) { Text("Delete") }
+            ActionButton(enabled = !state.archiving, onClick = { showChats = true; model.loadPastChats() }) { Text("Chats") }
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth().pointerInput(Unit) { detectTapGestures(onTap = { dismissKeyboard() }) },
             state = list, verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -238,17 +239,21 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
                 UploadCard(model, upload, state.sending || state.sendFailed, Modifier.width(260.dp))
             }
         }
-        if (state.deleteFailed) ActionButton(onClick = { model.deleteThread(state.scope) }) { Text("Retry deletion") }
-        if (state.deleting) Text("Deleting conversation and files…", Modifier.padding(horizontal = 16.dp), color = Soft)
-        Row(Modifier.fillMaxWidth().padding(12.dp, 6.dp), verticalAlignment = Alignment.Bottom) {
+        if (state.archiveFailed) ActionButton(onClick = { model.archiveThread(state.scope) }) { Text("Retry new chat") }
+        if (state.archiving) Text("Starting a new chat…", Modifier.padding(horizontal = 16.dp), color = Soft)
+        if (state.archivedAt != null) Row(Modifier.fillMaxWidth().padding(12.dp, 8.dp).clip(RoundedCornerShape(16.dp)).background(Card).padding(14.dp, 10.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text("Archived chat · ended ${chatDate(state.archivedAt)} · read-only", Modifier.weight(1f), color = Soft, fontSize = 14.sp)
+            ActionButton(onClick = { model.backToCurrent() }) { Text("Back to chat") }
+        } else Row(Modifier.fillMaxWidth().padding(12.dp, 6.dp), verticalAlignment = Alignment.Bottom) {
             RoundButton("Attach files", "+",
-                enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.replying && !state.deleting && !state.deleteFailed && state.uploads.size < MAX_FILES) {
+                enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.replying && !state.archiving && !state.archiveFailed && state.uploads.size < MAX_FILES) {
                 pickerScope = state.scope; picker.launch(arrayOf("*/*"))
             }
             Spacer(Modifier.size(8.dp))
             OutlinedTextField(draft, { if (it.length <= 8000) draft = it }, Modifier.weight(1f),
                 placeholder = { Text("Write a message…") }, shape = RoundedCornerShape(24.dp), maxLines = 5,
-                enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.deleting && !state.deleteFailed,
+                enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.archiving && !state.archiveFailed,
                 textStyle = TextStyle(fontSize = 17.sp, color = Ink),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Default),
                 colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Card, unfocusedContainerColor = Card,
@@ -256,17 +261,43 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
             Spacer(Modifier.size(8.dp))
             if (state.replying) RoundButton("Stop", "■") { model.stop(state.scope) }
             else RoundButton(if (state.sendFailed) "Retry send" else "Send", if (state.sendFailed) "↻" else "↑",
-                enabled = (draft.isNotBlank() || state.uploads.isNotEmpty() || state.sendFailed) && !state.chatLoading && !state.sending && !state.deleting && !state.deleteFailed && state.uploads.all { it.state == "ready" }) {
+                enabled = (draft.isNotBlank() || state.uploads.isNotEmpty() || state.sendFailed) && !state.chatLoading && !state.sending && !state.archiving && !state.archiveFailed && state.uploads.all { it.state == "ready" }) {
                 val submitted = draft
                 model.send(submitted, state.scope) { if (draft == submitted) draft = "" }
             }
         }
     }
-    if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false },
-        title = { Text("Delete conversation?") },
-        text = { Text("This removes this conversation and its stored files. Your companion's memories and any history retained by the AI provider are not erased.") },
-        confirmButton = { ActionButton(onClick = { confirmDelete = false; model.deleteThread(state.scope) }) { Text("Delete conversation", color = Danger) } },
-        dismissButton = { ActionButton(onClick = { confirmDelete = false }) { Text("Keep conversation") } })
+    if (showChats) AlertDialog(onDismissRequest = { showChats = false },
+        title = { Text("Chats") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val canStart = state.archivedAt == null && state.threadId != null && state.messages.isNotEmpty() &&
+                    !state.replying && !state.sending && !state.chatLoading && !state.archiving
+                ActionButton(enabled = canStart, onClick = { showChats = false; confirmNew = true }) { Text("Start a new chat") }
+                Text("Past chats", fontWeight = FontWeight.Bold, color = Ink, modifier = Modifier.padding(top = 6.dp))
+                when {
+                    state.pastChatsLoading && state.pastChats == null -> Text("Loading…", color = Soft)
+                    state.pastChatsFailed -> Text("Past chats could not be loaded. Try again in a moment.", color = Danger)
+                    state.pastChats.isNullOrEmpty() -> Text("No past chats yet. Starting a new chat keeps this one here, read-only.", color = Soft)
+                    else -> LazyColumn(Modifier.heightIn(max = 360.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(state.pastChats, key = { it.id }) { chat ->
+                            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Card)
+                                .clickable { showChats = false; model.openArchived(chat.id) }.padding(12.dp, 10.dp)) {
+                                Text(if (chat.title == "Companion") "Chat" else chat.title, color = Ink, fontWeight = FontWeight.SemiBold, maxLines = 2)
+                                Text("${chatDate(chat.startedAt)} – ${chatDate(chat.archivedAt)} · ${chat.messages} message${if (chat.messages == 1) "" else "s"}",
+                                    color = Soft, fontSize = 13.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { ActionButton(onClick = { showChats = false }) { Text("Close") } })
+    if (confirmNew) AlertDialog(onDismissRequest = { confirmNew = false },
+        title = { Text("Start a new chat?") },
+        text = { Text("This chat moves to Past chats, where you can still read it. ${state.name} keeps their memories.") },
+        confirmButton = { ActionButton(onClick = { confirmNew = false; model.archiveThread(state.scope) }) { Text("Start new chat") } },
+        dismissButton = { ActionButton(onClick = { confirmNew = false }) { Text("Cancel") } })
 }
 
 private val MOOD_TEXT = mapOf(Mood.Idle to "Here with you", Mood.Listening to "Listening…", Mood.Thinking to "Thinking…",
@@ -576,3 +607,6 @@ internal fun RoundButton(label: String, glyph: String, enabled: Boolean = true, 
             fontSize = if (secondary) 28.sp else 22.sp, fontWeight = if (secondary) FontWeight.Normal else FontWeight.Bold)
     }
 }
+
+private fun chatDate(millis: Long): String =
+    java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(millis))

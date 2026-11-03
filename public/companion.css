@@ -356,3 +356,15 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .personality button:disabled, .contacts button:disabled, .release-watches button:disabled, .weather-form button:disabled { opacity: .55; cursor: default; }
 .text-button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 999px; }
 .conversation-actions .text-button { font-size: 12px; padding: 6px 12px; }
+
+/* Past chats: archived conversations, read-only. */
+.past-chats-dialog { width: min(480px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: var(--card); color: var(--ink); }
+.past-chats-dialog[open] { display: flex; flex-direction: column; gap: 10px; }
+.past-chats-dialog::backdrop { background: rgb(0 0 0 / .6); }
+.past-chats-dialog .note { margin: 0; color: var(--soft); }
+.past-chats-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.past-chats-list button { width: 100%; text-align: left; border: 1px solid var(--line); border-radius: 12px; background: transparent; color: var(--ink); padding: 10px 12px; font: inherit; cursor: pointer; }
+.past-chats-list button:hover, .past-chats-list button:focus-visible { border-color: var(--ink); }
+.past-chats-list small { display: block; color: var(--soft); margin-top: 2px; }
+.archived-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 6px 16px; padding: 10px 14px; border: 1px dashed var(--line); border-radius: 14px; color: var(--soft); }
+.archived-banner[hidden] { display: none; }

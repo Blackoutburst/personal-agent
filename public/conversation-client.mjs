@@ -81,9 +81,9 @@ export function parseAttachment(value) {
 function request(action, payload) {
   const selected = plain(payload, action === 'snapshot' ? [] : action === 'createThread' ? ['requestId', 'title'] :
     action === 'submit' ? ['requestId', 'threadId', 'text'] : action === 'events' ? ['threadId', 'cursor'] :
-    ['cancel', 'deleteThread'].includes(action) ? ['requestId', 'threadId'] : ['invalid-action'],
+    ['cancel', 'deleteThread', 'archiveThread'].includes(action) ? ['requestId', 'threadId'] : action === 'archivedThreads' ? [] : ['invalid-action'],
   action === 'snapshot' ? ['threadId'] : action === 'submit' ? ['attachments'] : [], 'INVALID_REQUEST');
-  check(['snapshot', 'createThread', 'submit', 'events', 'cancel', 'deleteThread'].includes(action), 'INVALID_REQUEST');
+  check(['snapshot', 'createThread', 'submit', 'events', 'cancel', 'deleteThread', 'archiveThread', 'archivedThreads'].includes(action), 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'threadId')) identifier(selected.threadId, false, 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'requestId')) identifier(selected.requestId, true, 'INVALID_REQUEST');
   if (action === 'createThread') text(selected.title, 80, 80, false, 'INVALID_REQUEST');
@@ -254,7 +254,9 @@ function turnContext(value) {
   return { ...selected, error };
 }
 function snapshot(value, requested) {
-  const selected = envelope(value, ['threads', 'threadId', 'messages', 'cursor', 'runtime'], ['turn']);
+  const selected = envelope(value, ['threads', 'threadId', 'messages', 'cursor', 'runtime'], ['turn', 'archivedAt']);
+  const archivedAt = Object.hasOwn(selected, 'archivedAt') ? selected.archivedAt : null;
+  check(archivedAt === null || Number.isSafeInteger(archivedAt) && archivedAt > 0 && selected.threadId !== null);
   const threads = array(selected.threads, 200).map(thread); check(new Set(threads.map(item => item.id)).size === threads.length);
   const sourceMessages = array(selected.messages, 500);
   const runtime = plain(selected.runtime, ['state'], ['provider']);
@@ -271,7 +273,7 @@ function snapshot(value, requested) {
   check(requested === undefined || requested === selected.threadId);
   const messages = sourceMessages.map(item => message(item, selected.threadId));
   check(new Set(messages.map(item => item.id)).size === messages.length);
-  return { synthetic: selected.synthetic, threads, threadId: selected.threadId, messages, cursor: selected.cursor, lastSeq: head,
+  return { synthetic: selected.synthetic, threads, threadId: selected.threadId, archivedAt, messages, cursor: selected.cursor, lastSeq: head,
     runtime: { state: runtime.state, ...(runtime.provider ? { provider: runtime.provider } : {}) }, turn };
 }
 function eventPage(value, threadId, from) {
@@ -311,7 +313,7 @@ function confirms(message, pending) {
   check(message.text === pending.text && sameFiles(message.attachments ?? [], (pending.attachments ?? []).map(id => ({ id }))));
   return true;
 }
-const initial = () => ({ opened: false, synthetic: false, runtime: null, threads: [], threadId: null, messages: [], cursor: null,
+const initial = () => ({ opened: false, synthetic: false, runtime: null, threads: [], threadId: null, archivedAt: null, messages: [], cursor: null,
   lastSeq: 0, hasMore: false, turn: null, connection: 'disconnected', pending: null, draft: '', error: null });
 
 // pending is a submit {threadId,text} or createThread {title}, plus stable requestId/status.
@@ -366,7 +368,7 @@ export function createConversationClient({ transport = createConversationTranspo
   async function submitPending(pending, version) {
     try {
       const payload = pending.action === 'submit' ? { requestId: pending.requestId, threadId: pending.threadId, text: pending.text } :
-        pending.action === 'deleteThread' ? { requestId: pending.requestId, threadId: pending.threadId } : { requestId: pending.requestId, title: pending.title };
+        ['deleteThread', 'archiveThread'].includes(pending.action) ? { requestId: pending.requestId, threadId: pending.threadId } : { requestId: pending.requestId, title: pending.title };
       if (pending.action === 'submit' && pending.attachments?.length) payload.attachments = [...pending.attachments];
       const received = await call(pending.action, payload, version);
       if (!current(version)) return pending.action === 'submit' ? { status: 'rejected', requestId: pending.requestId, text: pending.text, error: 'NOT_READY' } : undefined;
@@ -374,6 +376,11 @@ export function createConversationClient({ transport = createConversationTranspo
         const body = envelope(received, ['deletedThreadId', 'requestId']);
         check(body.deletedThreadId === pending.threadId && body.requestId === pending.requestId);
         files.clear(); state = { ...initial(), connection: 'loading' }; emit(); await load(undefined, version); return;
+      }
+      if (pending.action === 'archiveThread') {
+        const body = envelope(received, ['archivedThreadId', 'threadId', 'requestId']);
+        check(body.archivedThreadId === pending.threadId && body.requestId === pending.requestId); identifier(body.threadId);
+        files.clear(); state = { ...initial(), connection: 'loading', threadId: body.threadId }; emit(); await load(body.threadId, version); return;
       }
       if (pending.action === 'createThread') {
         const body = envelope(received, ['thread']), created = thread(body.thread);
@@ -409,7 +416,7 @@ export function createConversationClient({ transport = createConversationTranspo
   async function send(value = state.draft, attachments = []) {
     const ids = attachmentIds(attachments);
     text(value, USER_CHARS, USER_BYTES, ids.length > 0, 'INVALID_REQUEST'); check(!state.pending && state.turn?.state !== 'streaming', 'BUSY');
-    check(state.opened && state.connection === 'ready' && state.threadId !== null, 'NOT_READY');
+    check(state.opened && state.connection === 'ready' && state.threadId !== null && state.archivedAt === null, 'NOT_READY');
     const pending = { action: 'submit', requestId: nextId(), threadId: state.threadId, text: value,
       ...(ids.length ? { attachments: [...ids] } : {}), status: 'submitting' }, version = epoch;
     state = { ...state, pending, error: null }; emit(); return submitPending(pending, version);
@@ -423,6 +430,23 @@ export function createConversationClient({ transport = createConversationTranspo
     check(state.opened && !state.synthetic && state.threadId !== null && state.connection === 'ready' && (!state.pending || state.pending.status === 'accepted'), 'NOT_READY');
     const pending = { action: 'deleteThread', requestId: nextId(), threadId: state.threadId, status: 'submitting' }, version = begin();
     state = { ...state, pending, error: null }; emit(); await submitPending(pending, version); return copy();
+  }
+  // "New chat": the open chat moves to the archive (kept, read-only) and a fresh ongoing chat opens.
+  async function archiveThread() {
+    check(state.opened && !state.synthetic && state.threadId !== null && state.archivedAt === null && state.connection === 'ready'
+      && !state.pending && state.turn?.state !== 'streaming', 'NOT_READY');
+    const pending = { action: 'archiveThread', requestId: nextId(), threadId: state.threadId, status: 'submitting' }, version = begin();
+    state = { ...state, pending, error: null }; emit(); await submitPending(pending, version); return copy();
+  }
+  // The owner's archived chats, newest first. Read-only metadata; opening one uses select(threadId).
+  async function archivedThreads() {
+    const body = envelope(await transport('archivedThreads', {}), ['threads']);
+    return array(body.threads, 200).map(item => {
+      const row = plain(item, ['id', 'title', 'startedAt', 'archivedAt', 'messages']);
+      identifier(row.id); text(row.title, 80, 80);
+      check([row.startedAt, row.archivedAt, row.messages].every(value => Number.isSafeInteger(value) && value >= 0));
+      return row;
+    });
   }
   // Stop the running reply of the open thread. The final turn state arrives as an event.
   async function cancel() {
@@ -476,7 +500,7 @@ export function createConversationClient({ transport = createConversationTranspo
   return Object.freeze({ getState: copy,
     subscribe(listener) { check(typeof listener === 'function', 'INVALID_REQUEST'); listeners.add(listener); listener(copy()); return () => listeners.delete(listener); },
     open, select(threadId) { identifier(threadId, false, 'INVALID_REQUEST'); return open({ threadId }); }, create, send, retry, poll,
-    cancel, refresh, deleteThread,
+    cancel, refresh, deleteThread, archiveThread, archivedThreads,
     setFiles(value) {
       check(state.opened && state.threadId !== null && state.connection === 'ready', 'NOT_READY');
       const selected = array(value, 8).map(parseAttachment); check(selected.every(file => file.direction === 'user') && new Set(selected.map(file => file.id)).size === selected.length, 'INVALID_REQUEST');
