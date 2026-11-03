@@ -46,6 +46,9 @@ val CHARACTERS = listOf(
     CharacterInfo("sprout", "Sprout", "a tiny plant spirit"),
     CharacterInfo("luna", "Luna", "a friendly ghost"),
     CharacterInfo("claude", "Claude", "a cheerful anime girl"),
+    CharacterInfo("astra", "Astra", "a dragon-horned elf girl"),
+    CharacterInfo("gemini", "Gemini", "a starry cat-eared girl"),
+    CharacterInfo("deepseek", "DeepSeek", "a whale-eared maid"),
 )
 
 val COLORS = linkedMapOf(
@@ -173,7 +176,7 @@ val OUTFITS = listOf("base" to "Signature", "cozy-home" to "Cozy at home", "paja
 fun hasOutfits(character: String) = character in PORTRAITS
 
 /** Illustrated characters: an outfit picture with a face patch over it (assets/characters/<id>/). */
-private val PORTRAITS = setOf("claude")
+private val PORTRAITS = setOf("claude", "astra", "gemini", "deepseek")
 private val pictures = HashMap<String, ImageBitmap?>()
 
 @Composable

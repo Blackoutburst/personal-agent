@@ -25,6 +25,32 @@ export const OUTFITS = Object.freeze({
   birthday: { label: 'Birthday', wears: 'a festive dress and a little striped party hat' }
 });
 
+// The other drawn characters wear the same outfits in their own colors; only what differs from Claude-chan's line is here.
+const OTHERS = Object.freeze({
+  base: null,
+  'cozy-home': 'a soft oversized cream knit cardigan over a simple top in your colors, cozy for the evening',
+  pajamas: 'pastel pajamas in your colors with a little print and a sleeping cap with a pompom',
+  sunny: 'a light white sundress and a wide straw hat with a ribbon in your colors',
+  snow: 'a puffy cream winter coat, a chunky knit scarf in your colors and fluffy earmuffs',
+  spring: 'a pastel dress with a white collar and a cherry-blossom pin',
+  summer: 'a light white sailor top with trims in your colors',
+  winter: 'a cream turtleneck sweater and a cozy scarf in your colors',
+  halloween: 'a cute witch outfit: a pointed witch hat with a band in your colors, a black cape and a pumpkin brooch',
+  'new-year': 'a furisode kimono in your colors with an obi and a kanzashi in your hair',
+  'summer-festival': 'a light yukata in your colors with a goldfish pattern and a fireworks hairpin'
+});
+const SIGNATURE = {
+  astra: 'your signature white sleeveless high-collar qipao top with lavender trims',
+  gemini: 'your signature navy halter crop top with a star and white puffy detached sleeves',
+  deepseek: 'your signature maid outfit with a black bow and a blue gem'
+};
+// What this character is wearing in the given outfit, said to the companion.
+export function wears(character, outfit) {
+  if (character === 'claude' || !Object.hasOwn(SIGNATURE, character)) return OUTFITS[outfit].wears;
+  if (outfit === 'base') return SIGNATURE[character];
+  return OTHERS[outfit] ?? OUTFITS[outfit].wears;
+}
+
 // Faces the companion can choose for a reply ([feeling:<name>] at its start).
 export const FEELINGS = Object.freeze(['happy', 'laugh', 'wink', 'surprised', 'sad', 'worried', 'teary-smile', 'embarrassed', 'pout',
   'proud', 'excited', 'confused', 'determined', 'tender', 'love', 'focused', 'thinking', 'sleepy']);

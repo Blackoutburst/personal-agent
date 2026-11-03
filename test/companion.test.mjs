@@ -115,3 +115,22 @@ test('Claude companions get AGENTS.md and their folder in the prompt; Codex read
     assert.doesNotMatch(instructions({ owner: codex, dir, profile: null }), /<AGENTS\.md>/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('the drawn characters describe their own look and outfits, and every picture is shipped', async () => {
+  const look = appearance;
+  const july = new Date('2026-07-01T12:00:00Z');
+  const astra = look({ character: 'astra', color: 'lilac', outfit: 'base' }, 'Your owner', july);
+  assert.match(astra, /dragon horns/); assert.match(astra, /qipao top with lavender trims \(Your owner picked it\)/);
+  assert.match(look({ character: 'gemini', color: 'sky', outfit: 'pajamas' }, 'Your owner', july), /pajamas in your colors/);
+  assert.doesNotMatch(look({ character: 'deepseek', color: 'sky', outfit: 'pajamas' }, 'Your owner', july), /orange/);
+  assert.match(look({ character: 'claude', color: 'peach', outfit: 'pajamas' }, 'Your owner', july), /pastel orange pajamas/);
+  const { OUTFITS: outfits } = await import('../public/companion-character.mjs');
+  for (const id of ['claude', 'astra', 'gemini', 'deepseek']) for (const root of ['public', 'android/app/src/main/assets']) {
+    for (const [outfit] of outfits) {
+      assert.ok(existsSync(new URL(`../${root}/characters/${id}/outfits/${outfit}.webp`, import.meta.url)), `${root} ${id} ${outfit}`);
+      if (outfit !== 'base') assert.ok(existsSync(new URL(`../${root}/characters/${id}/fronts/${outfit}.webp`, import.meta.url)));
+    }
+    for (const face of ['blink', 'talk', 'listening', 'thinking', 'happy', 'sleepy', 'love', 'pout'])
+      assert.ok(existsSync(new URL(`../${root}/characters/${id}/faces/${face}.webp`, import.meta.url)), `${root} ${id} ${face}`);
+  }
+});

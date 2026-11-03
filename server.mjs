@@ -38,6 +38,7 @@ const contentTypeFor = name => CONTENT_TYPES[/\.([a-z0-9]{1,5})$/i.exec(name)?.[
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 // Claude-chan art (docs/COMPANION.md): outfits are whole pictures, faces are patches drawn over them.
+const PORTRAIT_CHARACTERS = ['claude', 'astra', 'gemini', 'deepseek'];
 const PORTRAIT_FACES = ['blink', 'talk', 'listening', 'thinking', 'happy', 'sleepy', 'laugh', 'wink', 'surprised', 'sad', 'worried',
   'teary-smile', 'embarrassed', 'pout', 'proud', 'excited', 'confused', 'determined', 'tender', 'love', 'focused'];
 const PORTRAIT_OUTFITS = ['base', 'cozy-home', 'pajamas', 'rain', 'sunny', 'snow', 'windy', 'spring', 'summer', 'autumn', 'winter',
@@ -61,7 +62,7 @@ const STATIC = new Map([
   // Illustrated characters.
   ...PORTRAIT_FACES.map(face => `faces/${face}`).concat(PORTRAIT_OUTFITS.map(outfit => `outfits/${outfit}`),
     PORTRAIT_OUTFITS.filter(outfit => outfit !== 'base').map(outfit => `fronts/${outfit}`))
-    .map(name => [`/characters/claude/${name}.webp`, [`characters/claude/${name}.webp`, 'image/webp']])
+    .flatMap(name => PORTRAIT_CHARACTERS.map(id => [`/characters/${id}/${name}.webp`, [`characters/${id}/${name}.webp`, 'image/webp']]))
 ]);
 
 // runtimeFile / runtimeDir: the per-owner agent runtime (docs/RUNTIME.md). Without them, account

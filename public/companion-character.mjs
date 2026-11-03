@@ -6,7 +6,10 @@ export const CHARACTERS = [
   { id: 'mochi', label: 'Mochi', hint: 'a soft cat' },
   { id: 'sprout', label: 'Sprout', hint: 'a tiny plant spirit' },
   { id: 'luna', label: 'Luna', hint: 'a friendly ghost' },
-  { id: 'claude', label: 'Claude', hint: 'a cheerful anime girl' }
+  { id: 'claude', label: 'Claude', hint: 'a cheerful anime girl' },
+  { id: 'astra', label: 'Astra', hint: 'a dragon-horned elf girl' },
+  { id: 'gemini', label: 'Gemini', hint: 'a starry cat-eared girl' },
+  { id: 'deepseek', label: 'DeepSeek', hint: 'a whale-eared maid' }
 ];
 export const COLORS = {
   peach: { body: '#FFB38A', shade: '#EE8F64', light: '#FFDCC8', cheek: '#FF7E7E' },
@@ -81,7 +84,7 @@ function extras(mood, c) {
 // characters/<id>/outfits and characters/<id>/faces, then the outfit's front layer (characters/<id>/fronts:
 // a brim, bangs or collar the patch area overlaps; every outfit but base has one). Idle uses the outfit's own resting face and
 // blinks; talking alternates the resting face with the open-mouth patch.
-const PORTRAITS = { claude: true };
+const PORTRAITS = { claude: true, astra: true, gemini: true, deepseek: true };
 const FACE_FOR = { idle: null, listening: 'listening', thinking: 'thinking', talking: null, happy: 'happy', sleepy: 'sleepy' };
 
 // feeling: the face the companion chose for its reply; shown instead of the talking and happy faces.
@@ -96,7 +99,7 @@ function portrait(character, mood, label, outfit = 'base', feeling = null) {
 </svg>`;
 }
 
-// Claude-chan's outfits (the server picks one when automatic: src/wardrobe.mjs).
+// The drawn characters' outfits (the server picks one when automatic: src/wardrobe.mjs).
 export const OUTFITS = [['base', 'Signature'], ['cozy-home', 'Cozy at home'], ['pajamas', 'Pajamas'], ['spring', 'Spring'],
   ['summer', 'Summer'], ['sunny', 'Sunny day'], ['autumn', 'Autumn'], ['windy', 'Windy day'], ['winter', 'Winter'], ['rain', 'Rain'],
   ['snow', 'Snow'], ['halloween', 'Halloween'], ['christmas', 'Christmas'], ['party', "New Year's Eve"], ['new-year', 'New Year'],
