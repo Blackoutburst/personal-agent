@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { PersonalityError, PERSONALITY_LIMITS } from './personality.mjs';
 import { ContactError } from './contacts.mjs';
 import { WeatherError } from './weather.mjs';
+import { PushError } from './push.mjs';
 
 const fail = (status, code, message) => ({ status, body: { error: { code, message } } });
 const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
@@ -17,7 +18,7 @@ const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
 // onForget(companionId): durable session reset BEFORE any memory bytes are replaced.
 // onLook(companionId): called when the name or look changed, so the agent's next session knows.
 // discord: the DiscordBridge (docs/DISCORD.md), or null when connections are unavailable.
-export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null, contacts = null, weather = null }) {
+export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null, contacts = null, weather = null, push = null }) {
   const weatherNow = companionId => weather?.current(companionId) ?? null;
   return async function companion(request) {
     const parsed = await access.read(request, PERSONALITY_LIMITS.requestBytes);
@@ -128,6 +129,15 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
           if (!only(['action', 'token']) || !discord) break;
           return { status: 200, body: { discord: await discord.link(companionId, payload.token) } };
         }
+        // Android push (docs/PUSH.md): the app registers or removes its own FCM token for this owner.
+        case 'pushRegister': {
+          if (!only(['action', 'token']) || !push) break;
+          return { status: 200, body: push.register(companionId, payload.token) };
+        }
+        case 'pushUnregister': {
+          if (!only(['action', 'token']) || !push) break;
+          return { status: 200, body: push.unregister(companionId, payload.token) };
+        }
         case 'discordUnlink': {
           if (!only(['action']) || !discord) break;
           return { status: 200, body: { discord: discord.unlink(companionId) } };
@@ -138,6 +148,7 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
     } catch (error) {
       if (error instanceof WeatherError) return fail(error.status, error.code, error.code === 'PLACE_NOT_FOUND' ? 'That place was not found. Try a nearby city.' : error.code === 'INVALID_REQUEST' ? 'Invalid request.' : 'The weather service is unavailable right now. Try again later.');
       if (error instanceof ContactError) return fail(error.status,error.code,error.message);
+      if (error instanceof PushError) return fail(error.status, error.code, 'Invalid request.');
       if (error instanceof PersonalityError) return fail(error.status, error.code, error.message);
       if (error instanceof CompanionError) return fail(error.status, error.code, 'Invalid request.');
       if (error instanceof MemoryError || error instanceof ConversationError) {

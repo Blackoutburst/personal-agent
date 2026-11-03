@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes, createHash } from 'node:crypto';
@@ -25,6 +25,7 @@ import { PersonalityStore } from './src/personality.mjs';
 import { Contacts, ContactError } from './src/contacts.mjs';
 import { Weather } from './src/weather.mjs';
 import { BoardCompanion } from './src/board-companion.mjs';
+import { PushDevices, FcmSender, PushNotifier } from './src/push.mjs';
 
 const BOARD_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CONTENT_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
@@ -72,7 +73,7 @@ function androidRelease(dataDir) {
 }
 
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {} } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {}, pushOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -98,7 +99,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let agentsConfigured = false;
   let companionHttp;
   let schedulerHttp, schedulerService, schedulerStore, discord = null;
-  let files = null, fileHttp, contacts = null, weather = null, boardCompanion = null;
+  let files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
   const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
@@ -329,7 +330,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id),
         recordReleaseCheck: (companionId, id, check, text) => schedulerStore.recordReleaseCheck(companionId, id, check, text),
         releaseDelivered: (companionId, id) => schedulerStore.releaseDelivered(companionId, id) },
-        onSettled: event => discord?.settled(event),
+        onSettled: event => { discord?.settled(event); pushNotifier?.settled(event); },
         onNativeSettled: companionId => {
           try { if (workspaceFor(companionId)) personality.observe(companionId); }
           catch { console.error('Personality history observation unavailable.'); }
@@ -355,12 +356,19 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       // Board companion duties (docs/BOARD-COMPANION.md): Needs-you wakes, profile sync and attachments.
       boardCompanion = new BoardCompanion({ store, owners, profiles, scheduler: schedulerService,
         companionIdFor: owner => companionIdFor(store, owner), log: message => console.error(message), ...boardOptions });
+      // Android push (docs/PUSH.md): on when the FCM service-account key exists. Devices register through /api/companion.
+      pushDevices = new PushDevices({ store });
+      const pushKey = pushOptions.keyFile ?? process.env.COMPANION_PUSH_KEY
+        ?? join(process.env.HOME ?? '', '.config/personal-agent/fcm-service-account.json');
+      if (pushOptions.sender || existsSync(pushKey)) pushNotifier = new PushNotifier({ devices: pushDevices,
+        sender: pushOptions.sender ?? new FcmSender({ keyFile: pushKey }), nameFor: companionId => profiles.get(companionId)?.name,
+        log: message => console.error(message) });
       // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
       discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, files, ...discordOptions,
         log: message => console.error(message) });
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality, contacts, weather,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
-        discord,
+        discord, push: pushDevices,
         assertMemoryIdle: companionId => conversations.assertMemoryIdle(companionId),
         onForget: companionId => conversations.resetSessions(companionId),
         // Claude reads the look every turn; Codex keeps its first instructions, so it starts afresh.

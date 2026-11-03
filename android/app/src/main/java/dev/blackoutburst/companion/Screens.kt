@@ -43,6 +43,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -164,6 +167,10 @@ private fun SignInScreen(state: UiState, signIn: () -> Unit) {
 @Composable
 private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExportControl) {
     var tab by rememberSaveable { mutableStateOf(Tab.Chat) }
+    LaunchedEffect(state.chatRequest) { if (state.chatRequest > 0) tab = Tab.Chat }
+    // Notifications (docs/PUSH.md): asked once, right after the first message the owner sends.
+    val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { model.notificationsAsked() }
+    LaunchedEffect(state.askNotifications) { if (state.askNotifications) askPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f)) {
             when (tab) {
@@ -401,9 +408,53 @@ private fun LookScreen(model: CompanionModel, state: UiState, first: Boolean, do
             ContactPanel(model, state)
             Spacer(Modifier.height(32.dp))
             ThemePicker(model)
+            if (Push.configured) {
+                Spacer(Modifier.height(32.dp))
+                NotificationsSection(model, profile?.name ?: shownName)
+            }
             Spacer(Modifier.height(32.dp))
             DiscordSection(model, state, profile?.name ?: shownName)
         }
+    }
+}
+
+// Notifications (docs/PUSH.md): on/off and message preview, plus a way back when Android blocks them.
+@Composable
+private fun NotificationsSection(model: CompanionModel, name: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var enabled by remember { mutableStateOf(Push.enabled(context)) }
+    var preview by remember { mutableStateOf(Push.preview(context)) }
+    var permitted by remember { mutableStateOf(Push.permitted(context)) }
+    LifecycleResumeEffect(Unit) { permitted = Push.permitted(context); onPauseOrDispose { } }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        model.notificationsAsked(); permitted = granted
+    }
+    Text("Notifications", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Ink)
+    Spacer(Modifier.height(6.dp))
+    SettingSwitch("Tell me when $name writes", enabled) {
+        enabled = it; model.setNotifications(it)
+        if (it && !permitted) ask.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+    }
+    SettingSwitch("Show the message in the notification", preview, active = enabled) { preview = it; Push.setPreview(context, it) }
+    if (enabled && !permitted) {
+        Spacer(Modifier.height(6.dp))
+        Text("Android is blocking notifications from Companion.", color = Danger, fontSize = 15.sp)
+        Spacer(Modifier.height(8.dp))
+        ActionButton({
+            if (!Push.asked(context)) ask.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            else context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName))
+        }) { Text("Allow notifications", color = Ink, fontWeight = FontWeight.Bold) }
+    }
+}
+
+@Composable
+private fun SettingSwitch(label: String, checked: Boolean, active: Boolean = true, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(enabled = active, role = Role.Switch) { onChange(!checked) }.padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f), color = if (active) Ink else Soft, fontSize = 16.sp)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = active,
+            colors = SwitchDefaults.colors(checkedTrackColor = Color(0xFFEE8F64), checkedThumbColor = Color.White))
     }
 }
 

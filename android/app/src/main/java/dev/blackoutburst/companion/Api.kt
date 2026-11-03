@@ -137,6 +137,9 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
     suspend fun discordLink(token: String): DiscordStatus =
         call<DiscordReply>("api/companion", buildJsonObject { put("action", "discordLink"); put("token", token) }).discord
     suspend fun discordUnlink(): DiscordStatus = call<DiscordReply>("api/companion", buildJsonObject { put("action", "discordUnlink") }).discord
+    /** Android push (docs/PUSH.md): this install's FCM token, bound by the server to the signed-in owner. */
+    suspend fun pushRegister(token: String) { post(companion + "api/companion", buildJsonObject { put("action", "pushRegister"); put("token", token) }) }
+    suspend fun pushUnregister(token: String) { post(companion + "api/companion", buildJsonObject { put("action", "pushUnregister"); put("token", token) }) }
 
     suspend fun snapshot(threadId: String? = null): Snapshot {
         val raw = post(companion + "api/conversation", buildJsonObject {

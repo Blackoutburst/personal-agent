@@ -42,8 +42,8 @@ class MainActivity : ComponentActivity() {
         handle(intent)
     }
 
-    override fun onStart() { super.onStart(); model.setVisible(true) }
-    override fun onStop() { super.onStop(); model.setVisible(false) }
+    override fun onStart() { super.onStart(); Push.foreground = true; Push.clearShown(this); model.setVisible(true) }
+    override fun onStop() { super.onStop(); Push.foreground = false; model.setVisible(false) }
 
     override fun onResume() {
         super.onResume()
@@ -52,6 +52,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handle(intent: Intent?) {
+        intent?.getStringExtra(Push.EXTRA_THREAD)?.let { threadId ->
+            intent.removeExtra(Push.EXTRA_THREAD)
+            model.openThread(threadId)
+        }
         val data = intent?.data ?: return
         if (intent.action == Intent.ACTION_VIEW && data.scheme == "blackoutburst-companion") {
             awaitingBrowser = false

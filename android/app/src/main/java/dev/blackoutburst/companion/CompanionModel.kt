@@ -35,6 +35,10 @@ data class UiState(
     val wearing: String = "base",
     val runtime: Runtime? = null,
     val threadId: String? = null,
+    /** Bumped when a notification tap asks for the Chat tab. */
+    val chatRequest: Long = 0,
+    /** Ask for the notification permission now (once, after the first message the owner sends). */
+    val askNotifications: Boolean = false,
     val chatLoading: Boolean = false,
     val messages: List<Message> = emptyList(),
     val turn: Turn? = null,
@@ -172,6 +176,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     fun signOut() {
         val previousSession = store.session
+        // Stop this phone's notifications for that account before the session goes away.
+        viewModelScope.launch { Push.unregister(Api { previousSession }) }
         // Fence the display immediately, even while logout is in flight.
         invalidateFiles()
         store.session = null
@@ -203,6 +209,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 val info = api.companionInfo()
                 if (!current(version)) return@launch
                 _state.update { it.copy(gate = Gate.Ready, username = session.username, profile = info.profile, wearing = info.wearing, runtime = info.runtime, offline = false) }
+                Push.register(getApplication(), api)
+                pendingThread?.let { id -> pendingThread = null; if (id != _state.value.threadId) _state.update { it.copy(threadId = id) } }
                 resync()
                 startPolling()
             } catch (error: ApiException) {
@@ -211,6 +219,30 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 else { _state.update { it.copy(gate = Gate.Ready, username = session.username, offline = true) }; startPolling() }
             }
         }
+    }
+
+    // ---- Notifications (docs/PUSH.md) ----
+
+    private var pendingThread: String? = null
+
+    /** A notification was tapped: show the Chat tab on that conversation. */
+    fun openThread(threadId: String) {
+        _state.update { it.copy(chatRequest = it.chatRequest + 1) }
+        if (_state.value.gate != Gate.Ready) { pendingThread = threadId; return }
+        if (threadId == _state.value.threadId) return
+        _state.update { it.copy(threadId = threadId, messages = emptyList(), turn = null) }
+        viewModelScope.launch { guarded { resync() } }
+    }
+
+    fun notificationsAsked() {
+        Push.markAsked(getApplication())
+        _state.update { it.copy(askNotifications = false) }
+    }
+
+    /** Turns notifications on or off for this phone and tells the server. */
+    fun setNotifications(enabled: Boolean) {
+        Push.setEnabled(getApplication(), enabled)
+        viewModelScope.launch { if (enabled) Push.register(getApplication(), api) else Push.unregister(api) }
     }
 
     fun setVisible(value: Boolean) {
@@ -756,6 +788,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 val messageId = api.submit(pending.requestId, threadId, pending.text, pending.files.map { it.id })
                 if (!current(version, threadId)) return@launch
                 failedSend = null
+                val app = getApplication<Application>()
+                if (Push.configured && Push.enabled(app) && !Push.asked(app) && !Push.permitted(app)) _state.update { it.copy(askNotifications = true) }
                 _state.update { state ->
                     val mine = Message(messageId, threadId, "user", pending.text, pending.requestId, attachments = pending.files)
                     val finished = state.turn?.let { it.requestId == pending.requestId && it.state != "streaming" } == true
