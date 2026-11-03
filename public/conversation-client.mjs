@@ -109,25 +109,34 @@ export function createConversationTransport({ fetchImpl = globalThis.fetch } = {
         cache: 'no-store', signal: controller.signal, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body });
       if (response.status === 401 || response.status === 403) throw new ConversationError('ACCESS_DENIED', response.status);
       if (response.status === 404) throw new ConversationError('RESYNC_REQUIRED', response.status);
-      if (!response.ok) throw new ConversationError(response.status === 409 ? 'CONFLICT' : response.status >= 500 ? 'UNAVAILABLE' : 'INVALID_REQUEST', response.status);
+      if (!response.ok && response.status !== 409) throw new ConversationError(response.status >= 500 ? 'UNAVAILABLE' : 'INVALID_REQUEST', response.status);
+      const maximum = response.status === 409 ? 4096 : LIMIT;
       check(!response.redirected && /^application\/json(?:\s*;.*)?$/i.test(response.headers.get('content-type') || ''));
       const length = response.headers.get('content-length');
-      check(length === null || (/^[0-9]+$/.test(length) && Number(length) <= LIMIT));
+      check(length === null || (/^[0-9]+$/.test(length) && Number(length) <= maximum));
       let result;
       if (response.body?.getReader) {
         const reader = response.body.getReader(), chunks = []; let size = 0;
         try {
           while (true) {
             const part = await reader.read(); if (part.done) break;
-            size += part.value.byteLength; check(size <= LIMIT); chunks.push(part.value);
+            size += part.value.byteLength; check(size <= maximum); chunks.push(part.value);
           }
           const bytes = new Uint8Array(size); let offset = 0;
           for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
           try { result = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { throw new ConversationError('INVALID_RESPONSE'); }
         } finally { try { await reader.cancel(); } catch { /* No response data enters errors. */ } reader.releaseLock(); }
-      } else { result = await response.text(); check(new TextEncoder().encode(result).length <= LIMIT); }
-      try { return JSON.parse(result); } catch { throw new ConversationError('INVALID_RESPONSE'); }
-    } catch (error) { throw safeError(error); }
+      } else { result = await response.text(); check(new TextEncoder().encode(result).length <= maximum); }
+      let parsed;
+      try { parsed = JSON.parse(result); } catch { throw new ConversationError('INVALID_RESPONSE'); }
+      if (response.status === 409) throw new ConversationError(parsed?.error?.code === 'BUSY' ? 'BUSY' : 'CONFLICT', 409);
+      return parsed;
+    } catch (error) {
+      if (response?.status === 409 && !(error instanceof ConversationError && ['BUSY', 'CONFLICT'].includes(error.code))) {
+        throw new ConversationError('CONFLICT', 409);
+      }
+      throw safeError(error);
+    }
     finally {
       clearTimeout(timeout); signal?.removeEventListener('abort', abort);
       if (response?.body && !response.body.locked) { try { await response.body.cancel(); } catch { /* Ignore consumed-body cancellation. */ } }
@@ -234,6 +243,16 @@ function message(value, threadId) {
     ...(Object.hasOwn(selected, 'attachments') ? { attachments: files } : {}),
     ...(Object.hasOwn(selected, 'feeling') ? { feeling: feeling(selected.feeling, selected.role) } : {}) };
 }
+function turnContext(value) {
+  const selected = plain(value, ['requestId', 'state'], ['error']);
+  identifier(selected.requestId, true); check(TURN_STATES.includes(selected.state));
+  if (!Object.hasOwn(selected, 'error')) return selected;
+  check(selected.state === 'error');
+  const error = plain(selected.error, ['code', 'message'], ['resetsAt']);
+  check(typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)); text(error.message, 500, 2000);
+  check(!Object.hasOwn(error, 'resetsAt') || (typeof error.resetsAt === 'string' && error.resetsAt.length <= 40 && !Number.isNaN(Date.parse(error.resetsAt))));
+  return { ...selected, error };
+}
 function snapshot(value, requested) {
   const selected = envelope(value, ['threads', 'threadId', 'messages', 'cursor', 'runtime'], ['turn']);
   const threads = array(selected.threads, 200).map(thread); check(new Set(threads.map(item => item.id)).size === threads.length);
@@ -244,8 +263,7 @@ function snapshot(value, requested) {
   let turn = null;
   if (Object.hasOwn(selected, 'turn')) {
     check(!selected.synthetic && selected.threadId !== null);
-    const open = plain(selected.turn, ['requestId', 'state']); identifier(open.requestId, true); check(open.state === 'streaming');
-    turn = { requestId: open.requestId, state: 'streaming' };
+    turn = turnContext(selected.turn);
   }
   const head = cursor(selected.cursor);
   if (selected.threadId === null) check(threads.length === 0 && selected.messages.length === 0 && head === 0 && requested === undefined);
@@ -266,13 +284,8 @@ function eventPage(value, threadId, from) {
     if (head.type === 'message') { const exact = plain(item, ['seq', 'threadId', 'type', 'message']); return { ...exact, message: message(exact.message, threadId) }; }
     if (head.type === 'noop') return plain(item, ['seq', 'threadId', 'type']);
     check(head.type === 'turn'); const exact = plain(item, ['seq', 'threadId', 'type', 'requestId', 'state'], ['error']);
-    identifier(exact.requestId, true); check(TURN_STATES.includes(exact.state));
-    if (!Object.hasOwn(exact, 'error')) return exact;
-    check(exact.state === 'error');
-    const error = plain(exact.error, ['code', 'message'], ['resetsAt']);
-    check(typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)); text(error.message, 500, 2000);
-    check(!Object.hasOwn(error, 'resetsAt') || (typeof error.resetsAt === 'string' && error.resetsAt.length <= 40 && !Number.isNaN(Date.parse(error.resetsAt))));
-    return { ...exact, error };
+    const { requestId, state, error } = exact;
+    return { ...exact, ...turnContext({ requestId, state, ...(Object.hasOwn(exact, 'error') ? { error } : {}) }) };
   });
   check(events.every((item, index) => index === 0 || item.seq === events[index - 1].seq + 1), 'RESYNC_REQUIRED');
   const end = cursor(selected.cursor);
@@ -356,7 +369,7 @@ export function createConversationClient({ transport = createConversationTranspo
         pending.action === 'deleteThread' ? { requestId: pending.requestId, threadId: pending.threadId } : { requestId: pending.requestId, title: pending.title };
       if (pending.action === 'submit' && pending.attachments?.length) payload.attachments = [...pending.attachments];
       const received = await call(pending.action, payload, version);
-      if (!current(version)) return;
+      if (!current(version)) return pending.action === 'submit' ? { status: 'rejected', requestId: pending.requestId, text: pending.text, error: 'NOT_READY' } : undefined;
       if (pending.action === 'deleteThread') {
         const body = envelope(received, ['deletedThreadId', 'requestId']);
         check(body.deletedThreadId === pending.threadId && body.requestId === pending.requestId);
@@ -369,19 +382,23 @@ export function createConversationClient({ transport = createConversationTranspo
       }
       const body = envelope(received, ['accepted']), accepted = plain(body.accepted, ['requestId', 'threadId', 'messageId']);
       check(accepted.requestId === pending.requestId && accepted.threadId === pending.threadId); identifier(accepted.messageId);
-      if (state.pending?.requestId !== pending.requestId) return; // Events may already have completed this turn.
+      if (state.pending?.requestId !== pending.requestId) return { status: 'accepted', requestId: pending.requestId, text: pending.text }; // Events may already have completed this turn.
       const messages = [...state.messages];
       const attachments = (pending.attachments ?? []).map(id => files.get(id));
-      if (attachments.some(file => !file)) { await load(pending.threadId, version, pending); return; }
+      if (attachments.some(file => !file)) { await load(pending.threadId, version, pending); return { status: 'accepted', requestId: pending.requestId, text: pending.text }; }
       upsert(messages, { id: accepted.messageId, threadId: pending.threadId, role: 'user', text: pending.text, requestId: pending.requestId,
         ...(attachments.length ? { attachments } : {}) });
       state = { ...state, messages, pending: { ...pending, status: 'accepted' }, draft: state.draft === pending.text ? '' : state.draft, connection: 'ready', error: null,
         turn: state.turn?.requestId === pending.requestId ? state.turn : { requestId: pending.requestId, state: 'streaming' } }; emit();
+      return { status: 'accepted', requestId: pending.requestId, text: pending.text };
     } catch (error) {
       const code = safeError(error).code;
-      if (pending.action === 'submit' && current(version) && state.pending?.requestId !== pending.requestId &&
-        ['NETWORK_ERROR', 'UNAVAILABLE'].includes(code)) return;
+      if (pending.action === 'submit' && current(version) && state.messages.some(message => confirms(message, pending)) &&
+        ['NETWORK_ERROR', 'UNAVAILABLE'].includes(code)) return { status: 'accepted', requestId: pending.requestId, text: pending.text };
+      const valid = current(version);
       failure(error, version, pending, true);
+      if (pending.action === 'submit') return { status: !valid || ['BUSY', 'CONFLICT', 'INVALID_REQUEST', 'ACCESS_DENIED'].includes(code) ? 'rejected' : 'uncertain',
+        requestId: pending.requestId, text: pending.text, error: valid ? code : 'NOT_READY' };
     }
   }
   async function create(title) {
@@ -395,7 +412,7 @@ export function createConversationClient({ transport = createConversationTranspo
     check(state.opened && state.connection === 'ready' && state.threadId !== null, 'NOT_READY');
     const pending = { action: 'submit', requestId: nextId(), threadId: state.threadId, text: value,
       ...(ids.length ? { attachments: [...ids] } : {}), status: 'submitting' }, version = epoch;
-    state = { ...state, pending, error: null }; emit(); await submitPending(pending, version); return copy();
+    state = { ...state, pending, error: null }; emit(); return submitPending(pending, version);
   }
   async function retry() {
     check(state.pending?.status === 'uncertain', 'NOT_READY');

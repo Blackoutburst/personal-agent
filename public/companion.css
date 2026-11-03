@@ -77,6 +77,10 @@ main { flex: 1; min-height: 0; display: flex; }
 .stage-mood { margin: 0; color: var(--soft); font-size: 15px; min-height: 1.4em; }
 .chat { display: flex; flex-direction: column; min-height: 0; background: var(--glass); border-radius: 28px; box-shadow: 0 6px 30px rgba(120,80,90,.08); }
 .history { flex: 1; overflow-y: auto; padding: 22px 22px 8px; scroll-behavior: smooth; outline: none; }
+.history:focus-visible { outline: 2px solid var(--ink); outline-offset: -3px; }
+.held-draft { margin: 8px 20px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; font-size: 12px; min-width: 0; max-height: min(240px, 30dvh); overflow: auto; flex-shrink: 0; }
+.held-draft p { margin: 0 0 6px; }
+.held-draft pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 120px; overflow: auto; font: inherit; }
 .welcome { text-align: center; color: var(--soft); padding: 40px 20px; line-height: 1.6; font-size: 16px; }
 .messages { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .bubble { max-width: min(78%, 560px); padding: 11px 16px; border-radius: 22px; line-height: 1.5; font-size: 15.5px; white-space: pre-wrap; overflow-wrap: anywhere; animation: pop .18s ease-out; }

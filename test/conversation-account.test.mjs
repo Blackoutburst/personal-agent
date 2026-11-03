@@ -6,6 +6,9 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '../server.mjs';
+import { BootstrapStore } from '../src/store.mjs';
+import { Conversations } from '../src/conversations.mjs';
+import { createConversationClient } from '../public/conversation-client.mjs';
 
 // Real-conversation account mode with synthetic accounts and fake provider programs:
 // no platform login, provider account or model usage is involved.
@@ -81,6 +84,64 @@ async function settle(app, proof, threadId, from = '0') {
 }
 const newThread = async (app, proof = A, requestId = 'new-1') =>
   (await post(app, { action: 'createThread', requestId, title: 'New conversation' }, proof)).body.thread.id;
+
+test('recovery: fresh devices retain partial interruption context without replaying events or provider work', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'conversation-recovery-direct-')), store = new BootstrapStore(dir, ROOT), owner = randomUUID(), other = randomUUID();
+  let finish, calls = 0;
+  const result = new Promise(resolve => { finish = resolve; });
+  const original = new Conversations({ store, flushMs: 1, runner: { async turn(_owner, input) {
+    calls++; input.onEvent({ type: 'delta', text: 'A partial answer' }); return result;
+  } } });
+  const recovered = new Conversations({ store, runner: { async turn() { calls++; return { text: 'A new complete answer' }; } } });
+  t.after(async () => { finish({ text: 'Late original answer' }); await original.shutdown(); await recovered.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const runtime = async () => ({ state: 'ready', provider: 'claude' });
+  const threadId = (await original.handle(owner, { action: 'createThread', requestId: 'recovery-thread', title: 'Own chat' })).thread.id;
+  await original.handle(owner, { action: 'submit', requestId: 'interrupted-request', threadId, text: 'Original owner question' });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const running = await original.handle(owner, { action: 'snapshot', threadId }, { runtime });
+  assert.equal(running.turn.state, 'streaming'); assert.equal(running.messages.at(-1).text, 'A partial answer');
+  assert.equal(recovered.recover(), 1);
+  const snapshot = await recovered.handle(owner, { action: 'snapshot', threadId }, { runtime });
+  assert.equal(snapshot.turn.state, 'error'); assert.equal(snapshot.turn.error.code, 'INTERRUPTED');
+  assert.equal(snapshot.messages.at(-1).text, 'A partial answer');
+  const clientFor = () => createConversationClient({ transport: (action, payload) => recovered.handle(owner, { action, ...payload }, { runtime }) });
+  const device = clientFor(), second = clientFor(); await device.open({ threadId }); await second.open({ threadId });
+  assert.deepEqual(device.getState().turn, snapshot.turn); assert.deepEqual(second.getState().turn, snapshot.turn);
+  await device.poll(); assert.deepEqual(device.getState().turn, snapshot.turn); assert.equal(device.getState().cursor, snapshot.cursor);
+  assert.deepEqual((await recovered.handle(owner, { action: 'events', threadId, cursor: snapshot.cursor })).events, []);
+  await assert.rejects(() => recovered.handle(other, { action: 'snapshot', threadId }, { runtime }), { code: 'NOT_FOUND' });
+  assert.equal((await recovered.handle(other, { action: 'snapshot' }, { runtime })).turn, undefined);
+  finish({ text: 'Late original answer' }); await original.idle(); assert.equal(calls, 1);
+  assert.deepEqual((await recovered.handle(owner, { action: 'snapshot', threadId }, { runtime })).turn, snapshot.turn);
+  const accepted = await device.send('A new owner question'); assert.equal(accepted.status, 'accepted'); await recovered.idle();
+  await device.refresh(); await second.refresh();
+  assert.equal(device.getState().turn, null); assert.equal(second.getState().turn, null);
+  assert.equal(device.getState().messages.at(-1).text, 'A new complete answer'); assert.equal(calls, 2);
+});
+
+test('recovery: fresh snapshots show cancellation only until a newer own turn supersedes it', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'conversation-cancel-context-')), store = new BootstrapStore(dir, ROOT), owner = randomUUID();
+  let finish, finishLater, first = true;
+  const wait = new Promise(resolve => { finish = resolve; }), later = new Promise(resolve => { finishLater = resolve; });
+  const conversations = new Conversations({ store, flushMs: 1, runner: { async turn(_owner, input) {
+    if (first) { first = false; input.onEvent({ type: 'delta', text: 'Partial stopped answer' }); return wait; }
+    return later;
+  } } });
+  t.after(async () => { finish({ text: 'Ignored stopped answer' }); finishLater({ text: 'Completed later answer' }); await conversations.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const runtime = async () => ({ state: 'ready', provider: 'codex' });
+  const threadId = (await conversations.handle(owner, { action: 'createThread', requestId: 'cancel-context-thread', title: 'Own chat' })).thread.id;
+  await conversations.handle(owner, { action: 'submit', requestId: 'cancel-context-request', threadId, text: 'Stop this reply' });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  await conversations.handle(owner, { action: 'cancel', requestId: 'cancel-context-request', threadId }); finish({ text: 'Ignored stopped answer' }); await conversations.idle();
+  const stopped = await conversations.handle(owner, { action: 'snapshot', threadId }, { runtime });
+  assert.deepEqual(stopped.turn, { requestId: 'cancel-context-request', state: 'cancelled' });
+  assert.equal(stopped.messages.at(-1).text, 'Partial stopped answer');
+  await conversations.handle(owner, { action: 'submit', requestId: 'newer-context-request', threadId, text: 'Continue later' });
+  const active = await conversations.handle(owner, { action: 'snapshot', threadId }, { runtime });
+  assert.equal(active.turn.requestId, 'newer-context-request'); assert.equal(active.turn.state, 'streaming');
+  finishLater({ text: 'Completed later answer' });
+  await conversations.idle(); assert.equal((await conversations.handle(owner, { action: 'snapshot', threadId }, { runtime })).turn, undefined);
+});
 
 test('personality HTTP controls are private, complete, revision-bound and preserve other owner sessions and memory', async t => {
   const f=setup(t), app=await f.open(); await ready(f,app);
@@ -428,7 +489,8 @@ test('the browser client drives a real conversation: stream, stop, error and reo
   // A reopened client resumes from the snapshot.
   const other = createConversationClient({ transport: createConversationTransport({ fetchImpl }), requestId: () => 'other-1' });
   const reopened = await other.open();
-  assert.equal(reopened.messages.length, 4); assert.equal(reopened.turn, null);
+  assert.equal(reopened.messages.length, 4);
+  assert.deepEqual(reopened.turn, { requestId: state.turn.requestId, state: 'cancelled' });
   assert.deepEqual(reopened.messages.map(m => m.text), state.messages.map(m => m.text));
 
   // An agent error reaches the client with its code and message.

@@ -19,7 +19,7 @@ mode (16 KiB otherwise). Responses carry `version:1` and `synthetic` (`false` in
 
 | Action | Request fields beyond `action` | Response fields |
 | --- | --- | --- |
-| `snapshot` | optional `threadId` | `threads`, selected `threadId` (nullable), the latest 60 `messages`, `cursor`, `runtime:{state, provider?}`, `turn` when a reply is open |
+| `snapshot` | optional `threadId` | `threads`, selected `threadId` (nullable), the latest 60 `messages`, `cursor`, `runtime:{state, provider?}`, optional current or latest failed/stopped `turn` |
 | `createThread` | `requestId`, `title` | `thread:{id,title}` |
 | `submit` | `requestId`, `threadId`, `text` | `accepted:{requestId,threadId,messageId}` |
 | `events` | `threadId`, `cursor` | `events`, next `cursor`, `lastSeq`, `hasMore` (100 events per page) |
@@ -27,6 +27,11 @@ mode (16 KiB otherwise). Responses carry `version:1` and `synthetic` (`false` in
 
 `runtime.state` is `ready`, `signed-out`, `unconfigured` or `provider-missing`
 (`development-double` in demo mode).
+
+A snapshot includes the open reply as `turn:{requestId,state:'streaming'}`. With no open
+reply, it retains the latest owner turn when its state is `error` or `cancelled`, using
+the same turn/error fields as events. A newer successful owner turn clears that context.
+This read does not replay an event or provider call; the cursor remains at the current head.
 
 Events per thread are contiguous:
 
@@ -66,6 +71,11 @@ from event gaps with a snapshot, and keeps an uncertain send's request id for an
 retry. It never resends on its own. The companion app (COMPANION.md) uses it for its single
 ongoing chat: it polls every 0.5 s during a reply and every 3 s otherwise, pauses while the page is
 hidden and reloads the snapshot when it becomes visible again.
+
+Failed reads use bounded reconnect backoff and an explicit Reconnect chat action when
+exhausted. These reads never retry a write. An uncertain write keeps its original key for
+explicit retry; a definite BUSY/CONFLICT refusal keeps the unsent text for review without
+overwriting newer typing. Drafts and unconfirmed payloads remain local to the current tab.
 
 ## Tests
 

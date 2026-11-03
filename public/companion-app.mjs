@@ -21,6 +21,15 @@ let profile = null, runtime = null, view = 'loading', chatOpened = false, state 
 let wearing = 'base', draftLook = null, pollTimer = null, polling = false, happyUntil = 0, lastTurnKey = null;
 const messageNodes = new Map();
 let uploads = [], uploadEpoch = 0, fileNotice = '', uploadsKey = '';
+let ownerEpoch = 0, startRequest = 0, lookRequest = 0, wearingRequest = 0, composerEpoch = 0, sessionDenied = false;
+let readTicket = null, readSequence = 0, readFailures = 0, initialThreadAttempted = false, heldDraft = null;
+const READ_BACKOFF = [1000, 2000, 5000, 10000, 30000];
+const reconnect = el('button', { id: 'reconnect-chat', type: 'button', className: 'text-button', textContent: 'Reconnect chat', hidden: true });
+const kept = el('div', { className: 'held-draft', hidden: true }), keptText = el('pre'), restoreDraft = el('button', { type: 'button', className: 'text-button', textContent: 'Restore unsent message' });
+const dismissDraft = el('button', { type: 'button', className: 'text-button', textContent: 'Dismiss kept message' });
+kept.append(el('p', { textContent: 'This message was not sent. Your newer draft is unchanged. Copy it below, or clear the composer to restore it.' }), keptText, restoreDraft, dismissDraft);
+document.querySelector('.conversation-actions').append(reconnect);
+$('composer').before(kept);
 
 // ---------- Small helpers ----------
 
@@ -75,6 +84,7 @@ function linkify(container, text) {
 // ---------- Views ----------
 
 function show(next) {
+  if (next !== 'look') { clearTimeout(discordTimer); discordTimer = null; }
   view = next;
   $('app').dataset.view = next;
   for (const name of ['loading', 'gate', 'chat', 'memories', 'look']) $(`view-${name}`).hidden = name !== next;
@@ -102,14 +112,17 @@ function route() {
 }
 
 async function start() {
-  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear();
+  resetShell(false);
+  const owner = ownerEpoch, token = ++startRequest;
   try {
     const data = await api({ action: 'get' });
+    if (owner !== ownerEpoch || token !== startRequest) return;
     profile = data.profile; runtime = data.runtime; wearing = data.wearing ?? 'base';
     applyColors(profile);
     route();
   } catch (error) {
-    if (error.status === 401 || error.status === 403) { memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); gate('Hi there!', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true }); }
+    if (owner !== ownerEpoch || token !== startRequest) return;
+    if (error.status === 401 || error.status === 403) fileAccessDenied();
     else gate('Hmm, I can’t reach your companion', 'The server didn’t answer. Check your connection and try again.', { retry: true });
   }
 }
@@ -141,30 +154,44 @@ const MOOD_TEXT = { idle: 'Here with you', listening: 'Listening…', thinking: 
 async function openChat() {
   if (chatOpened) return;
   chatOpened = true;
-  try {
-    const opened = await client.open();
-    if (opened.connection === 'ready' && opened.threadId === null) await client.create('Companion');
-  } catch { /* the state carries the error */ }
-  schedulePoll();
+  return readChat();
 }
 
+const canRead = () => !sessionDenied && profile && chatOpened && document.visibilityState !== 'hidden' && navigator.onLine !== false;
+async function readChat() {
+  if (!canRead() || readTicket) return;
+  clearTimeout(pollTimer); pollTimer = null;
+  const ticket = { owner: ownerEpoch, sequence: ++readSequence }; readTicket = ticket; polling = true; renderAll();
+  const before = state.turn;
+  try {
+    if (state.pending && !state.opened) return;
+    if (!state.opened) await client.open();
+    else if (state.connection !== 'ready' || !state.threadId) await client.refresh();
+    else await client.poll();
+    if (ticket.owner !== ownerEpoch || readTicket !== ticket) return;
+    // Initial creation is attempted once. Reads never replay it or any other write.
+    if (state.connection === 'ready' && state.threadId === null && !state.pending && !initialThreadAttempted && canRead()) {
+      initialThreadAttempted = true; await client.create('Companion');
+    }
+    if (ticket.owner !== ownerEpoch || readTicket !== ticket) return;
+    if (state.connection === 'ready') { readFailures = 0; await remindersUI.refreshIfOpen(); }
+    else readFailures++;
+    if (before?.state === 'streaming' && state.turn?.requestId === before.requestId && state.turn.state === 'complete') happyUntil = Date.now() + 5000;
+  } catch { if (ticket.owner === ownerEpoch && readTicket === ticket) readFailures++; }
+  finally {
+    if (ticket.owner === ownerEpoch && readTicket === ticket) { readTicket = null; polling = false; renderAll(); schedulePoll(); }
+  }
+}
 function schedulePoll() {
   clearTimeout(pollTimer); pollTimer = null;
-  if (!chatOpened || document.visibilityState === 'hidden' || state.connection !== 'ready' || !state.threadId || polling) return;
+  if (!canRead() || readTicket || state.connection === 'loading' || state.pending && !state.opened) return;
+  const recovering = state.connection !== 'ready';
+  if (recovering && readFailures > READ_BACKOFF.length) return;
+  if (!recovering && !state.threadId) return;
   const active = state.turn?.state === 'streaming' || Boolean(state.pending) || state.hasMore;
-  pollTimer = setTimeout(async () => {
-    polling = true;
-    const before = state.turn;
-    try {
-      await client.poll();
-      await remindersUI.refreshIfOpen();
-      if (before?.state === 'streaming' && state.turn?.requestId === before.requestId && state.turn.state !== 'streaming') {
-        if (state.turn.state === 'complete') happyUntil = Date.now() + 5000;
-      }
-    } catch { /* state shows it */ }
-    polling = false;
-    schedulePoll();
-  }, active ? 500 : 3000);
+  const owner = ownerEpoch, sequence = ++readSequence;
+  pollTimer = setTimeout(() => { pollTimer = null; if (owner === ownerEpoch && sequence === readSequence) void readChat(); },
+    recovering ? READ_BACKOFF[Math.max(0, readFailures - 1)] : active ? 500 : 3000);
 }
 
 function dayLabel(date) {
@@ -217,14 +244,22 @@ function turnNote() {
       const when = reset && !Number.isNaN(reset.getTime()) ? reset.toLocaleString([], { weekday: 'long', hour: '2-digit', minute: '2-digit' }) : 'soon';
       return `${name} needs a little rest: your ${providerName()} plan's limit is reached. Back ${when}.`;
     }
-    if (error.code === 'NOT_SIGNED_IN') return `${name} can't think right now: the ${providerName()} account on the server needs to be signed in again.`;
-    if (error.code === 'NO_RUNTIME' || error.code === 'PROVIDER_MISSING') return `${name} isn't set up yet. Ask the server admin to finish the setup.`;
+    if (error.code === 'NOT_SIGNED_IN') return runtime?.state === 'ready'
+      ? `${name}'s earlier reply could not start because the ${providerName()} account needed sign-in. It is connected now; send again when you’re ready.`
+      : `${name} can't think right now: the ${providerName()} account on the server needs to be signed in again.`;
+    if (error.code === 'NO_RUNTIME' || error.code === 'PROVIDER_MISSING') return runtime?.state === 'ready'
+      ? `${name}'s earlier reply could not start because the provider was not set up. It is connected now; send again when you’re ready.`
+      : `${name} isn't set up yet. Ask the server admin to finish the setup.`;
     if (error.code === 'INTERRUPTED') return `${name} got interrupted. Could you say that again?`;
     return `${name} couldn't answer that time. Try again in a moment.`;
   }
-  if (turn?.state === 'cancelled') return null;
   if (state.error === 'ACCESS_DENIED') return 'You were signed out. Reload the page to sign in again.';
-  if (state.connection === 'reconnecting' || state.connection === 'unavailable') return 'Connection lost. Trying again…';
+  if (navigator.onLine === false) return 'You’re offline. Reconnect to load your chat; no message will be sent automatically.';
+  if (state.error === 'BUSY' || state.error === 'CONFLICT') return 'This message was not sent because the conversation changed or another reply is running. Your unsent text is kept; review the current chat before sending again.';
+  if (state.connection === 'reconnecting' || state.connection === 'unavailable') return readTicket ? 'Reconnecting to your chat…'
+    : state.pending && !state.opened ? 'The conversation request could not be confirmed. Use Retry pending request to retry its exact key.'
+      : readFailures > READ_BACKOFF.length ? 'Connection lost. Select Reconnect chat to try again.' : 'Connection lost. A read-only reconnect is scheduled.';
+  if (turn?.state === 'cancelled') return 'This reply was stopped. Any partial answer above may be incomplete.';
   if (runtime && runtime.state !== 'ready' && runtime.state !== undefined) {
     if (runtime.state === 'signed-out') return `${companionName()} is asleep: the ${providerName()} account on the server needs to be signed in.`;
     return `${companionName()} isn't set up yet. Ask the server admin to finish the setup.`;
@@ -245,11 +280,13 @@ function renderChat() {
   if (input.value !== state.draft && document.activeElement !== input) input.value = state.draft;
   const completed = uploads.filter(item => item.status === 'ready');
   const waiting = uploads.some(item => item.status !== 'ready' || item.removing);
-  $('send').disabled = !ready || Boolean(state.pending) || streaming || waiting || (!input.value.trim() && !completed.length) || input.value.length > USER_CHARS;
+  $('send').disabled = !ready || Boolean(state.pending) || Boolean(heldDraft) || streaming || waiting || (!input.value.trim() && !completed.length) || input.value.length > USER_CHARS;
   $('attach').disabled = !ready || Boolean(state.pending) || streaming || uploads.length >= 8;
   $('file-picker').disabled = $('attach').disabled;
   $('retry-send').hidden = state.pending?.status !== 'uncertain';
   $('delete-conversation').disabled = !ready || state.synthetic || (state.pending && state.pending.status !== 'accepted');
+  reconnect.hidden = sessionDenied || Boolean(state.pending && !state.opened) || (!readFailures && state.connection === 'ready'); reconnect.disabled = Boolean(readTicket) || navigator.onLine === false;
+  kept.hidden = !heldDraft; keptText.textContent = heldDraft?.text ?? ''; restoreDraft.disabled = Boolean(input.value) || Boolean(state.pending);
   input.placeholder = `Write to ${companionName()}…`;
   renderUploads();
 }
@@ -294,8 +331,24 @@ function syncFiles() {
   if (state.opened && state.threadId && state.connection === 'ready') client.setFiles(uploads.filter(item => item.status === 'ready').map(item => item.dto));
 }
 function fileAccessDenied() {
-  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); client.clear(); remindersUI.clear();
+  if (sessionDenied) return;
+  resetShell(true);
   gate('Your session ended', 'Sign in with your Blackoutburst account to see your companion.', { signIn: true });
+}
+function resetShell(denied) {
+  ownerEpoch++; startRequest++; lookRequest++; wearingRequest++; discordRequest++; composerEpoch++; readSequence++;
+  sessionDenied = denied; profile = null; runtime = null; draftLook = null; heldDraft = null; chatOpened = false;
+  initialThreadAttempted = false; readFailures = 0; readTicket = null; polling = false;
+  clearTimeout(pollTimer); pollTimer = null; clearTimeout(discordTimer); discordTimer = null;
+  discord = null; discordBusy = false; discordLoading = false; discordError = '';
+  const tokenInput = $('discord-token'); if (tokenInput) tokenInput.value = '';
+  $('discord-body').replaceChildren(); $('name').value = ''; $('input').value = ''; $('look-error').textContent = ''; $('look-error').hidden = true;
+  for (const id of ['look-preview', 'stage-character']) { $(id).replaceChildren(); $(id).dataset.markup = ''; }
+  $('stage-name').textContent = ''; $('stage-mood').textContent = '';
+  for (const id of ['pick-character', 'pick-color', 'pick-outfit']) $(id).replaceChildren();
+  for (const id of ['discord-pick', 'android-pick']) $(id).hidden = true;
+  kept.hidden = true; keptText.textContent = ''; reconnect.hidden = true;
+  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); remindersUI.clear(); client.clear(); clearUploads(); clearFullImage();
 }
 function clearUploads() {
   uploadEpoch++;
@@ -371,6 +424,8 @@ function loadMemories() { return memoryUI.load(companionName()); }
 // ---------- Look ----------
 
 function startLook() {
+  lookRequest++;
+  const owner = ownerEpoch;
   $('contacts-panel').hidden = !profile;
   if (profile) contactUI.load(); else contactUI.clear(); weatherUI.clear();
   $('weather-panel').hidden = !profile;
@@ -391,6 +446,7 @@ function startLook() {
     const pic = document.createElement('span'); pic.className = 'pic'; pic.setAttribute('aria-hidden', 'true');
     button.append(pic, Object.assign(document.createElement('span'), { textContent: item.label }), Object.assign(document.createElement('small'), { textContent: item.hint }));
     button.addEventListener('click', () => {
+      if (owner !== ownerEpoch || sessionDenied) return;
       const suggested = CHARACTERS.some(c => c.label === $('name').value) || !$('name').value.trim();
       draftLook.character = item.id; if (suggested) $('name').value = item.label;
       renderLook();
@@ -400,7 +456,7 @@ function startLook() {
   $('pick-color').replaceChildren(...Object.entries(COLORS).map(([id, colors]) => {
     const button = Object.assign(document.createElement('button'), { type: 'button' });
     button.dataset.color = id; button.style.background = colors.body; button.setAttribute('aria-label', id);
-    button.addEventListener('click', () => { draftLook.color = id; renderLook(); });
+    button.addEventListener('click', () => { if (owner === ownerEpoch && !sessionDenied) { draftLook.color = id; renderLook(); } });
     return button;
   }));
   if (first && !$('name').value) $('name').value = 'Pip';
@@ -409,7 +465,7 @@ function startLook() {
     button.dataset.outfit = id;
     const pic = document.createElement('span'); pic.className = 'pic'; pic.setAttribute('aria-hidden', 'true');
     button.append(pic, Object.assign(document.createElement('span'), { textContent: label }));
-    button.addEventListener('click', () => { draftLook.outfit = id; renderLook(); });
+    button.addEventListener('click', () => { if (owner === ownerEpoch && !sessionDenied) { draftLook.outfit = id; renderLook(); } });
     return button;
   }));
   $('theme-pick').hidden = first;
@@ -420,14 +476,16 @@ function startLook() {
 
 // The Android app card shows only when a release is published on the server.
 async function loadAndroid() {
+  const owner = ownerEpoch, token = lookRequest;
   try {
     const response = await fetch('android.json', { cache: 'no-store' });
     const release = response.ok ? await response.json() : null;
+    if (owner !== ownerEpoch || token !== lookRequest || sessionDenied) return;
     if (!release?.version) { $('android-pick').hidden = true; return; }
     const megabytes = release.size ? ` · ${(release.size / 1048576).toFixed(1)} MB` : '';
     $('android-download').textContent = `Download for Android (${release.version}${megabytes})`;
     $('android-pick').hidden = false;
-  } catch { $('android-pick').hidden = true; }
+  } catch { if (owner === ownerEpoch && token === lookRequest) $('android-pick').hidden = true; }
 }
 
 // App theme: System (default), Light or Dark. companion-theme.js applies and stores it.
@@ -497,13 +555,15 @@ client.subscribe(next => {
   if (key && key !== lastTurnKey && next.turn.state === 'complete' && lastTurnKey?.startsWith(next.turn.requestId)) happyUntil = Date.now() + 5000;
   lastTurnKey = key;
   const previousThread = state.threadId; state = next;
+  if (next.runtime) runtime = next.runtime;
   if (previousThread !== next.threadId || !next.opened) clearFullImage();
   if (previousThread !== next.threadId || next.connection === 'denied' || (!next.opened && next.connection !== 'loading')) clearUploads();
   if (!next.opened) { messageNodes.clear(); $('messages').replaceChildren(); }
   if (uploads.length && uploads.every(item => item.dto) &&
       ((next.pending?.action === 'submit' && next.pending.status === 'accepted' && uploads.every(item => next.pending.attachments?.includes(item.dto.id))) ||
        next.messages.some(message => message.role === 'user' && uploads.every(item => message.attachments?.some(file => file.id === item.dto.id))))) clearUploads();
-  if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') { remindersUI.clear(); memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); }
+  if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') { fileAccessDenied(); return; }
+  if (previousThread !== next.threadId) { heldDraft = null; composerEpoch++; }
   renderAll();
   if (!polling) schedulePoll();
 });
@@ -514,11 +574,26 @@ $('composer').addEventListener('submit', async event => {
   const text = $('input').value;
   if ($('send').disabled) return;
   const files = uploads.filter(item => item.status === 'ready').map(item => item.dto.id);
+  const owner = ownerEpoch, threadId = state.threadId, edited = ++composerEpoch;
   $('input').value = ''; grow();
-  try { syncFiles(); client.setDraft(''); await client.send(text, files); }
-  catch { $('input').value = text; grow(); }
+  try {
+    syncFiles(); client.setDraft(''); const result = await client.send(text, files);
+    if (result?.status === 'rejected' && result.text === text && ['BUSY', 'CONFLICT', 'INVALID_REQUEST'].includes(result.error)) keepRejected(text, owner, threadId, edited);
+  } catch (error) { if (['BUSY', 'CONFLICT', 'INVALID_REQUEST'].includes(error?.code)) keepRejected(text, owner, threadId, edited); }
   schedulePoll();
 });
+function keepRejected(text, owner, threadId, edited) {
+  if (owner !== ownerEpoch || sessionDenied || state.threadId !== threadId || typeof text !== 'string') return;
+  if (composerEpoch === edited && !$('input').value) { $('input').value = text; client.setDraft(text); grow(); }
+  else if (!heldDraft) heldDraft = { owner, threadId, text };
+  renderAll();
+}
+reconnect.addEventListener('click', () => { if (!sessionDenied && !readTicket) { readFailures = 0; return readChat(); } });
+restoreDraft.addEventListener('click', () => {
+  if (!heldDraft || heldDraft.owner !== ownerEpoch || heldDraft.threadId !== state.threadId || $('input').value || state.pending) return;
+  const text = heldDraft.text; heldDraft = null; composerEpoch++; $('input').value = text; client.setDraft(text); grow(); $('input').focus(); renderAll();
+});
+dismissDraft.addEventListener('click', () => { if (heldDraft?.owner === ownerEpoch) { heldDraft = null; renderAll(); } });
 $('attach').addEventListener('click', () => $('file-picker').click());
 $('full-image-close').addEventListener('click', clearFullImage);
 $('full-image-dialog').addEventListener('close', clearFullImage);
@@ -539,7 +614,7 @@ $('delete-conversation').addEventListener('click', async () => {
   if (state.connection === 'ready' && state.threadId === null) await client.create('Companion');
   schedulePoll();
 });
-$('input').addEventListener('input', () => { grow(); try { client.setDraft($('input').value); } catch { /* too long: send stays disabled */ } renderAll(); });
+$('input').addEventListener('input', () => { composerEpoch++; grow(); try { client.setDraft($('input').value); } catch { /* too long: send stays disabled */ } renderAll(); });
 $('input').addEventListener('keydown', event => {
   // Enter sends on computers; on phones the keyboard's Enter adds a line (send with the button).
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && matchMedia('(pointer: fine)').matches) {
@@ -557,42 +632,62 @@ $('look-form').addEventListener('submit', async event => {
   const name = $('name').value.trim();
   if (!name) { $('look-error').textContent = 'Give them a name.'; $('look-error').hidden = false; return; }
   $('save-look').disabled = true;
+  const owner = ownerEpoch, token = ++lookRequest;
   try {
-    const first = !profile;
     const saved = await api({ action: 'setProfile', profile: { name, character: draftLook.character, color: draftLook.color, timezone,
       outfit: draftLook.outfit ?? 'auto' } });
+    if (owner !== ownerEpoch || token !== lookRequest) return;
     profile = saved.profile; wearing = saved.wearing ?? wearing;
     applyColors(profile);
-    if (first || location.hash !== '#chat') location.hash = '#chat'; else route();
-  } catch {
-    $('look-error').textContent = 'That didn’t save. Names can be up to 24 letters.'; $('look-error').hidden = false;
-  } finally { $('save-look').disabled = false; }
+    if (location.hash !== '#chat') location.hash = '#chat'; else route();
+  } catch (error) {
+    if (owner !== ownerEpoch || token !== lookRequest) return;
+    if (error.status === 401 || error.status === 403) { fileAccessDenied(); return; }
+    $('look-error').textContent = error.status === 400 ? 'Check the name and appearance. Names can be up to 24 characters.' : 'That change could not be confirmed. Reload before trying again.'; $('look-error').hidden = false;
+  } finally { if (owner === ownerEpoch && token === lookRequest) $('save-look').disabled = false; }
 });
 $('name').addEventListener('input', () => { if (draftLook) draftLook.name = $('name').value; $('look-error').hidden = true; });
 
 // ---------- Discord (docs/DISCORD.md): the owner's own bot, for chatting in Discord DMs ----------
 
-let discord = null, discordBusy = false, discordError = '', discordTimer = null;
+let discord = null, discordBusy = false, discordLoading = false, discordError = '', discordTimer = null, discordRequest = 0;
 const DISCORD_ERRORS = { INVALID_TOKEN: 'That token didn’t work. Copy it again from your bot’s page (Bot → Reset Token).',
   BOT_IN_USE: 'This bot is already linked to another companion. Create a new bot for this one.' };
 async function loadDiscord() {
+  if (discordBusy || sessionDenied) return;
   clearTimeout(discordTimer);
-  try { discord = (await api({ action: 'discord' })).discord; } catch { discord = discord ?? null; }
-  renderDiscord();
+  const owner = ownerEpoch, token = ++discordRequest; discordLoading = true; discordError = ''; renderDiscord();
+  try {
+    const result = await api({ action: 'discord' }); if (owner !== ownerEpoch || token !== discordRequest) return; discord = result.discord;
+  } catch (error) {
+    if (owner !== ownerEpoch || token !== discordRequest) return;
+    if (error.status === 401 || error.status === 403) { fileAccessDenied(); return; }
+    discord = null; discordError = 'Discord settings could not be loaded. Retry when the connection is available.';
+  } finally { if (owner === ownerEpoch && token === discordRequest) { discordLoading = false; renderDiscord(); } }
   // While waiting for the pairing message, check again every few seconds.
-  if (view === 'look' && discord?.linked && !discord.user && document.visibilityState !== 'hidden') discordTimer = setTimeout(loadDiscord, 4000);
+  if (owner === ownerEpoch && token === discordRequest && view === 'look' && discord?.linked && !discord.user && document.visibilityState !== 'hidden' && navigator.onLine !== false) discordTimer = setTimeout(() => { if (owner === ownerEpoch && token === discordRequest) void loadDiscord(); }, 4000);
 }
 async function discordAction(body) {
+  if (discordBusy || sessionDenied) return;
+  const owner = ownerEpoch, token = ++discordRequest; clearTimeout(discordTimer); discordTimer = null;
   discordBusy = true; discordError = ''; renderDiscord();
-  try { discord = (await api(body)).discord; }
-  catch (error) { discordError = DISCORD_ERRORS[error.message] ?? 'Discord couldn’t be reached. Try again in a moment.'; }
-  discordBusy = false; renderDiscord();
-  if (discord?.linked && !discord.user) { clearTimeout(discordTimer); discordTimer = setTimeout(loadDiscord, 4000); }
+  try { const result = await api(body); if (owner !== ownerEpoch || token !== discordRequest) return; discord = result.discord; }
+  catch (error) {
+    if (owner !== ownerEpoch || token !== discordRequest) return;
+    if (error.status === 401 || error.status === 403) { fileAccessDenied(); return; }
+    discordError = DISCORD_ERRORS[error.message] ?? 'Discord change could not be confirmed. Reload its settings before trying again.';
+  } finally { if (owner === ownerEpoch && token === discordRequest) { discordBusy = false; renderDiscord(); } }
+  if (owner === ownerEpoch && token === discordRequest && view === 'look' && discord?.linked && !discord.user && document.visibilityState !== 'hidden' && navigator.onLine !== false) discordTimer = setTimeout(() => { if (owner === ownerEpoch && token === discordRequest) void loadDiscord(); }, 4000);
 }
 function el(tag, props = {}, ...children) { const node = Object.assign(document.createElement(tag), props); node.append(...children); return node; }
 function renderDiscord() {
   const body = $('discord-body'), name = companionName();
-  if (!discord) { body.replaceChildren(el('p', { textContent: 'Loading…' })); return; }
+  const owner = ownerEpoch;
+  if (!discord) {
+    body.replaceChildren(el('p', { textContent: discordLoading ? 'Loading…' : discordError || 'Discord settings are unavailable.' }));
+    if (!discordLoading) { const retry = el('button', { type: 'button', className: 'button', textContent: 'Retry Discord settings' }); retry.addEventListener('click', () => { if (owner === ownerEpoch) return loadDiscord(); }); body.append(retry); }
+    return;
+  }
   const nodes = [];
   if (!discord.linked) {
     const link = el('a', { href: 'https://discord.com/developers/applications', target: '_blank', rel: 'noopener', textContent: 'Discord Developer Portal' });
@@ -605,7 +700,7 @@ function renderDiscord() {
     input.setAttribute('aria-label', 'Discord bot token');
     for (const flag of ['data-1p-ignore', 'data-lpignore', 'data-bwignore', 'data-form-type']) input.setAttribute(flag, flag === 'data-form-type' ? 'other' : 'true');
     const form = el('form', {}, input, el('button', { className: 'button primary', type: 'submit', disabled: discordBusy, textContent: discordBusy ? 'Connecting…' : 'Connect' }));
-    form.addEventListener('submit', event => { event.preventDefault(); if (input.value.trim()) discordAction({ action: 'discordLink', token: input.value.trim() }); });
+    form.addEventListener('submit', event => { event.preventDefault(); if (owner === ownerEpoch && input.value.trim()) return discordAction({ action: 'discordLink', token: input.value.trim() }); });
     nodes.push(form);
   } else {
     const state = discord.state === 'online' ? 'Online' : discord.state === 'error' ? 'Not connected' : 'Connecting…';
@@ -624,10 +719,12 @@ function renderDiscord() {
       el('p', { textContent: 'Waiting for your message… The code works for an hour.' }));
     }
     const off = el('button', { className: 'button', type: 'button', disabled: discordBusy, textContent: 'Disconnect' });
-    off.addEventListener('click', () => { if (confirm(`Disconnect ${discord.bot.name} from ${name}?`)) discordAction({ action: 'discordUnlink' }); });
+    off.addEventListener('click', () => { if (owner === ownerEpoch && confirm(`Disconnect ${discord.bot.name} from ${name}?`)) return discordAction({ action: 'discordUnlink' }); });
     nodes.push(el('div', { className: 'actions' }, off));
   }
   if (discordError) nodes.push(el('p', { className: 'error', role: 'alert', textContent: discordError }));
+  const reload = el('button', { type: 'button', className: 'button', textContent: 'Reload Discord settings', disabled: discordBusy });
+  reload.addEventListener('click', () => { if (owner === ownerEpoch) return loadDiscord(); }); nodes.push(reload);
   body.replaceChildren(...nodes);
 }
 
@@ -635,15 +732,18 @@ window.addEventListener('hashchange', () => { if (view !== 'loading' && view !==
 // Her outfit follows the time of day: check again every 10 minutes and when the page comes back.
 async function refreshWearing() {
   if (!profile || document.visibilityState === 'hidden') return;
-  try { const data = await api({ action: 'get' }); wearing = data.wearing ?? wearing; runtime = data.runtime ?? runtime; renderAll(); }
-  catch { /* the chat shows connection problems */ }
+  const owner = ownerEpoch, token = ++wearingRequest;
+  try { const data = await api({ action: 'get' }); if (owner !== ownerEpoch || token !== wearingRequest) return; wearing = data.wearing ?? wearing; runtime = data.runtime ?? runtime; renderAll(); }
+  catch (error) { if (owner === ownerEpoch && token === wearingRequest && (error.status === 401 || error.status === 403)) fileAccessDenied(); }
 }
 setInterval(refreshWearing, 10 * 60 * 1000);
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'hidden') { clearTimeout(pollTimer); pollTimer = null; return; }
+  if (document.visibilityState === 'hidden') { clearTimeout(pollTimer); pollTimer = null; clearTimeout(discordTimer); discordTimer = null; return; }
   refreshWearing();
-  if (chatOpened && state.opened && state.connection !== 'loading' && !polling) { try { await client.refresh(); } catch { /* state */ } }
+  if (chatOpened && state.connection !== 'loading' && !polling) { readFailures = 0; await readChat(); }
   schedulePoll();
 });
+window.addEventListener('offline', () => { clearTimeout(pollTimer); pollTimer = null; clearTimeout(discordTimer); discordTimer = null; renderAll(); });
+window.addEventListener('online', () => { if (canRead()) { readFailures = 0; void readChat(); } });
 
 start();

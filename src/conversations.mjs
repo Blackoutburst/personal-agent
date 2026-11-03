@@ -390,8 +390,12 @@ export class Conversations {
           SELECT request_id,state,created_at FROM conv_turns WHERE thread_id=? AND state IN ('queued','running')
           UNION ALL SELECT request_id,state,created_at FROM conv_wakes WHERE thread_id=? AND state='running')
           ORDER BY created_at DESC LIMIT 1`).get(selected.id, selected.id);
+        const latest = open ? null : this.#db.prepare('SELECT request_id,state,error FROM conv_turns WHERE thread_id=? ORDER BY rowid DESC LIMIT 1').get(selected.id);
+        const context = open ? { requestId: open.request_id, state: 'streaming' }
+          : latest && ['error', 'cancelled'].includes(latest.state) ? { requestId: latest.request_id, state: latest.state,
+            ...(latest.state === 'error' && latest.error ? { error: JSON.parse(latest.error) } : {}) } : null;
         const { last_seq: seq } = this.#db.prepare('SELECT last_seq FROM conv_threads WHERE id=?').get(selected.id);
-        return { messages: rows.map(row => this.#message(row)), cursor: seq, turn: open ? { requestId: open.request_id, state: 'streaming' } : null };
+        return { messages: rows.map(row => this.#message(row)), cursor: seq, turn: context };
       }));
     }
     return { version: 1, synthetic: false, threads, threadId: selected?.id ?? null, messages, cursor: String(cursor),
