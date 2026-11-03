@@ -332,8 +332,23 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .connection .status[data-state="error"]::before { background: var(--danger); }
 .connection .error { color: var(--danger); }
 .connection input.secret { -webkit-text-security: disc; text-security: disc; }
-.weather-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
-.weather-form label { display: flex; flex-direction: column; gap: 4px; flex: 1 1 200px; }
-.weather-form input { border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 8px 12px; font: inherit; color: inherit; }
+.connection .weather-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.weather-form label { display: flex; flex-direction: column; gap: 6px; flex: 1 1 220px; min-width: 0; color: var(--soft); font-size: 14px; }
+/* The input sits in a vertical label: never let the panel's flex-basis turn into a 240px height. */
+.weather-form label input { flex: 0 0 auto; width: 100%; box-sizing: border-box; }
 .weather-form button { border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 8px 12px; cursor: pointer; }
 .weather-form input:focus-visible, .weather-form button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+/* One look for every secondary action: a real, bordered pill button (never bare clickable text). */
+.text-button, .memory-actions button, .memory-controls button, .memory-editor button, .personality button, .contacts button,
+.release-watches button, .watch-actions button, .watch-confirmation button, .watch-editor button, .weather-form button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--card); color: var(--ink); padding: 8px 14px; font: inherit; font-size: 13px; font-weight: 600; line-height: 1.2;
+  text-decoration: none; cursor: pointer; box-shadow: 0 2px 8px rgba(120,80,90,.08); }
+.text-button:hover:not(:disabled), .memory-actions button:hover:not(:disabled), .memory-controls button:hover:not(:disabled),
+.memory-editor button:hover:not(:disabled), .personality button:hover:not(:disabled), .contacts button:hover:not(:disabled),
+.release-watches button:hover:not(:disabled), .weather-form button:hover:not(:disabled) { border-color: var(--body); }
+.text-button:disabled, .memory-actions button:disabled, .memory-controls button:disabled, .memory-editor button:disabled,
+.personality button:disabled, .contacts button:disabled, .release-watches button:disabled, .weather-form button:disabled { opacity: .55; cursor: default; }
+.text-button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 999px; }
+.conversation-actions .text-button { font-size: 12px; padding: 6px 12px; }

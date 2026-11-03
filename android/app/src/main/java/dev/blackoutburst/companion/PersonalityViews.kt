@@ -14,7 +14,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -57,11 +56,11 @@ fun PersonalityPanel(model: CompanionModel, state: UiState) {
     Column(Modifier.fillMaxWidth()) {
         Text("Personality", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = ink)
         Text("${state.name} keeps growing its own SOUL.md and tells you when it changes. Suggestions stay in your chat.", color = soft)
-        TextButton(onClick = { open = !open }) { Text(if (open) "Close personality" else "Open personality") }
+        ActionButton(onClick = { open = !open }) { Text(if (open) "Close personality" else "Open personality") }
         if (open) {
             Row {
-                TextButton(enabled = !locked, onClick = { model.loadPersonality() }) { Text("Reload") }
-                TextButton(enabled = !locked && state.personality != null, onClick = { model.editPersonality(state.scope) }) {
+                ActionButton(enabled = !locked, onClick = { model.loadPersonality() }) { Text("Reload") }
+                ActionButton(enabled = !locked && state.personality != null, onClick = { model.editPersonality(state.scope) }) {
                     Text(if (state.personalityDraft == null) "Edit SOUL.md" else "Draft is open")
                 }
             }
@@ -70,7 +69,7 @@ fun PersonalityPanel(model: CompanionModel, state: UiState) {
             state.personalityError?.let { Text(it, color = danger) }
             state.personalityNotice?.let { Text(it, color = soft) }
             if (state.personalityErrorCode == "PERSONALITY_BUSY" && state.replying)
-                TextButton(onClick = { model.stop(state.scope) }) { Text("Stop current reply") }
+                ActionButton(onClick = { model.stop(state.scope) }) { Text("Stop current reply") }
             state.personality?.let { current ->
                 Text("SOUL.md · file updated ${personalityDate(current.modifiedAtISO, state.profile?.timezone)}", color = soft, fontSize = 12.sp)
                 SelectionContainer { Text(current.content.ifEmpty { "(Empty file)" }, color = ink) }
@@ -79,7 +78,7 @@ fun PersonalityPanel(model: CompanionModel, state: UiState) {
                 Text("Up to 20 versions the app saw. Changes between observations may be missing. These dates describe files and observations, not individual traits.", color = soft, fontSize = 13.sp)
                 if (current.history.isEmpty()) Text("No observed versions yet.", color = soft)
                 for (version in current.history) {
-                    TextButton(enabled = !locked && !state.personalityVersionLoading,
+                    ActionButton(enabled = !locked && !state.personalityVersionLoading,
                         onClick = { model.selectPersonalityVersion(version.revision, state.scope) }) {
                         Column(Modifier.fillMaxWidth()) {
                             Text("${personalitySource(version.source)} · ${personalityDate(version.observedAtISO, state.profile?.timezone)}")
@@ -107,7 +106,7 @@ fun PersonalityPanel(model: CompanionModel, state: UiState) {
                             }
                         }
                     }
-                    TextButton(enabled = !locked && version.revision != current.revision,
+                    ActionButton(enabled = !locked && version.revision != current.revision,
                         onClick = { restoring = PersonalityRestore(version.revision, current.revision, state.scope) }) { Text("Restore this version") }
                 }
             }
@@ -117,10 +116,10 @@ fun PersonalityPanel(model: CompanionModel, state: UiState) {
         AlertDialog(onDismissRequest = { if (!state.personalityBusy) restoring = null },
             title = { Text("Restore this personality version?") },
             text = { Text("Replace SOUL.md ${confirmation.expectedRevision.take(12)} with the observed version ${confirmation.targetRevision.take(12)}. Any open draft will be discarded after success. Your name, look, memories and past chats stay.") },
-            confirmButton = { TextButton(enabled = !state.personalityBusy, onClick = {
+            confirmButton = { ActionButton(enabled = !state.personalityBusy, onClick = {
                 restoring = null; model.restorePersonality(confirmation)
             }) { Text("Restore this version") } },
-            dismissButton = { TextButton(enabled = !state.personalityBusy, onClick = { restoring = null }) { Text("Keep current") } })
+            dismissButton = { ActionButton(enabled = !state.personalityBusy, onClick = { restoring = null }) { Text("Keep current") } })
     }
     state.personalityDraft?.let { PersonalityEditor(model, state, it) }
 }
@@ -138,10 +137,10 @@ private fun PersonalityEditor(model: CompanionModel, state: UiState, draft: Pers
                 Text("${draft.content.toByteArray(Charsets.UTF_8).size} / $PERSONALITY_BYTES bytes", fontSize = 12.sp)
                 if (draft.conflicted) Text("This draft has an older revision. Copy it if needed, discard it, then review the current file before editing again.")
                 state.personalityError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                TextButton(onClick = { clipboard.setText(AnnotatedString(draft.content)) }) { Text("Copy draft") }
+                ActionButton(onClick = { clipboard.setText(AnnotatedString(draft.content)) }) { Text("Copy draft") }
             }
         },
-        confirmButton = { TextButton(enabled = !state.personalityBusy && !state.personalityLoading && !draft.conflicted && validPersonalityContent(draft.content),
+        confirmButton = { ActionButton(enabled = !state.personalityBusy && !state.personalityLoading && !draft.conflicted && validPersonalityContent(draft.content),
             onClick = { model.savePersonalityDraft(state.scope) }) { Text(if (state.personalityBusy) "Saving…" else "Save") } },
-        dismissButton = { TextButton(enabled = !state.personalityBusy, onClick = { model.closePersonalityDraft(state.scope) }) { Text("Discard draft") } })
+        dismissButton = { ActionButton(enabled = !state.personalityBusy, onClick = { model.closePersonalityDraft(state.scope) }) { Text("Discard draft") } })
 }

@@ -26,7 +26,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -96,12 +95,12 @@ fun AttachmentView(model: CompanionModel, file: Attachment, scope: Long, preview
             update = { view -> if (view.drawable !== drawable) view.setImageDrawable(drawable); (drawable as? AnimatedImageDrawable)?.start() })
         else if (local != null && file.mime in VIDEO_TYPES) VideoAttachment(local!!, file.name)
         else if (local != null && file.mime in AUDIO_TYPES) AudioAttachment(local!!)
-        else if (playable && !requested) TextButton(onClick = { requested = true }) {
+        else if (playable && !requested) ActionButton(onClick = { requested = true }) {
             Text("Load ${if (file.mime in VIDEO_TYPES) "video" else "audio"} (${fileSize(file.size)})")
         }
         error?.let {
             Text(it, color = MaterialTheme.colorScheme.error)
-            TextButton(onClick = { attempt++ }) { Text("Retry preview") }
+            ActionButton(onClick = { attempt++ }) { Text("Retry preview") }
         }
         if (playable && local == null) Text("Playback is available after the private download completes.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         file.caption?.takeIf { it.isNotBlank() }?.let { Text(it) }
@@ -130,7 +129,7 @@ private fun FullImage(local: File, name: String, close: () -> Unit) {
     DisposableEffect(drawable) { onDispose { (drawable as? AnimatedImageDrawable)?.stop() } }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.fillMaxSize().background(Color.Black).statusBarsPadding().navigationBarsPadding()) {
-            TextButton(onClick = close) { Text("Close full-size image", color = Color.White) }
+            ActionButton(onClick = close) { Text("Close full-size image", color = Color.White) }
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                 if (drawable != null) AndroidView(factory = { context -> ImageView(context).apply {
                     scaleType = ImageView.ScaleType.FIT_CENTER; contentDescription = name
@@ -164,10 +163,10 @@ private fun DownloadChip(model: CompanionModel, file: Attachment, scope: Long) {
         }
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        TextButton(enabled = !saving, onClick = { save.launch(file.name) }, modifier = Modifier.weight(1f)) {
+        ActionButton(enabled = !saving, onClick = { save.launch(file.name) }, modifier = Modifier.weight(1f)) {
             Text("Download ${file.name} · ${fileSize(file.size)}")
         }
-        if (saving) TextButton(onClick = { cancellation?.cancel() }) { Text("Cancel") }
+        if (saving) ActionButton(onClick = { cancellation?.cancel() }) { Text("Cancel") }
     }
     if (saving) Text("Saving ${fileSize(progress)} / ${fileSize(file.size)}…")
     result?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -235,8 +234,8 @@ fun UploadCard(model: CompanionModel, upload: PendingUpload, scope: Long, locked
             "remove-error" -> Text(upload.error ?: "Removal was not confirmed.", color = MaterialTheme.colorScheme.error)
         }
         Row {
-            if (upload.state == "error") TextButton(enabled = !locked, onClick = { model.retryUpload(upload.key) }) { Text("Retry upload") }
-            TextButton(enabled = !locked && upload.state != "removing", onClick = { model.removeUpload(upload.key) }) {
+            if (upload.state == "error") ActionButton(enabled = !locked, onClick = { model.retryUpload(upload.key) }) { Text("Retry upload") }
+            ActionButton(enabled = !locked && upload.state != "removing", onClick = { model.removeUpload(upload.key) }) {
                 Text(when (upload.state) { "preparing", "uploading" -> "Cancel upload"; "remove-error" -> "Retry removal"; else -> "Remove file" })
             }
         }

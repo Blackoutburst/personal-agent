@@ -9,7 +9,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,7 +38,7 @@ fun WeatherPanel(model: CompanionModel, state: UiState) {
                 label = { Text("City") }, enabled = !state.weatherBusy,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { model.saveWeather(city) }))
-            TextButton(enabled = !state.weatherBusy, onClick = { model.saveWeather(city) }) { Text(if (state.weatherBusy) "Saving…" else "Save") }
+            ActionButton(enabled = !state.weatherBusy, onClick = { model.saveWeather(city) }) { Text(if (state.weatherBusy) "Saving…" else "Save") }
         }
         val weather = state.weather
         Text(when {

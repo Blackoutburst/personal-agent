@@ -16,7 +16,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -100,14 +99,14 @@ fun MemoryPanel(model: CompanionModel, state: UiState, exporter: MemoryExportCon
             Text("What ${state.name} remembers", Modifier.padding(top = 20.dp), fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = ink)
             Text("${state.name} keeps notes as you talk. You can correct or remove a note here.", color = soft, fontSize = 15.sp)
             Row {
-                TextButton(enabled = !locked, onClick = { model.loadMemories() }) { Text("Reload notes") }
-                TextButton(enabled = !locked && !exporter.busy, onClick = exporter.launch) { Text("Export saved notes") }
+                ActionButton(enabled = !locked, onClick = { model.loadMemories() }) { Text("Reload notes") }
+                ActionButton(enabled = !locked && !exporter.busy, onClick = exporter.launch) { Text("Export saved notes") }
             }
-            if (exporter.busy) TextButton(onClick = exporter.cancel) { Text("Cancel export") }
+            if (exporter.busy) ActionButton(onClick = exporter.cancel) { Text("Cancel export") }
             exporter.message?.let { Text(it, color = soft) }
             state.memoryNotice?.let { Text(it, color = soft) }
             state.memoryError?.let { Text(it, color = danger) }
-            if (state.memoryErrorCode == "MEMORY_BUSY" && state.replying) TextButton(onClick = { model.stop(state.scope) }) { Text("Stop current reply") }
+            if (state.memoryErrorCode == "MEMORY_BUSY" && state.replying) ActionButton(onClick = { model.stop(state.scope) }) { Text("Stop current reply") }
             if (state.memoryBusy) Text("Saving memory change…", color = soft)
             else if (state.memoryLoading) Text("Opening the notebook…", color = soft)
             else if (state.memories == null && state.memoriesFailed) Text("Couldn't open the notes. Reload to try again.", color = soft)
@@ -129,33 +128,33 @@ fun MemoryPanel(model: CompanionModel, state: UiState, exporter: MemoryExportCon
                     else Text(content.removeSuffix("\r"), color = ink, fontSize = 16.sp,
                         fontWeight = if (content.startsWith('#')) FontWeight.Bold else FontWeight.Normal)
                     if (!file.readOnly && note != null) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(enabled = !locked, onClick = { model.editMemory(file, note, state.scope) }) { Text("Edit / correct") }
-                        TextButton(enabled = !locked, onClick = { forgetting = ForgetNote(file, note, state.scope) }) { Text("Forget note", color = danger) }
+                        ActionButton(enabled = !locked, onClick = { model.editMemory(file, note, state.scope) }) { Text("Edit / correct") }
+                        ActionButton(enabled = !locked, onClick = { forgetting = ForgetNote(file, note, state.scope) }) { Text("Forget note", color = danger) }
                     }
                 }
             }
         }
         item {
             Spacer(Modifier.height(20.dp))
-            TextButton(enabled = !locked && state.memoryRevision != null, onClick = { forgetAll = state.memoryRevision }) {
+            ActionButton(enabled = !locked && state.memoryRevision != null, onClick = { forgetAll = state.memoryRevision }) {
                 Text("Forget everything the companion remembers", color = danger)
             }
-            TextButton(onClick = { model.signOut() }) { Text("Sign out${state.username?.let { " ($it)" } ?: ""}", color = soft) }
+            ActionButton(onClick = { model.signOut() }) { Text("Sign out${state.username?.let { " ($it)" } ?: ""}", color = soft) }
             Spacer(Modifier.height(20.dp))
         }
     }
     forgetting?.let { target -> AlertDialog(onDismissRequest = { forgetting = null },
         title = { Text("Forget this note?") }, text = { Text("${target.item.text}\n\nThis removes the note from this memory file. Past chats and the diary stay.") },
-        confirmButton = { TextButton(enabled = !locked, onClick = {
+        confirmButton = { ActionButton(enabled = !locked, onClick = {
             forgetting = null; model.forget(target.file, target.item, target.scope)
         }) { Text("Forget note", color = danger) } },
-        dismissButton = { TextButton(onClick = { forgetting = null }) { Text("Keep note") } }) }
+        dismissButton = { ActionButton(onClick = { forgetting = null }) { Text("Keep note") } }) }
     forgetAll?.let { revision -> AlertDialog(onDismissRequest = { forgetAll = null },
         title = { Text("Forget everything the companion remembers?") },
         text = { Text("This clears About you, Our memories and the diary. The companion's personality and past conversations stay. Deleting a conversation is a separate action.") },
-        confirmButton = { TextButton(enabled = !locked, onClick = { forgetAll = null; model.forgetAllMemory(revision, state.scope) }) {
+        confirmButton = { ActionButton(enabled = !locked, onClick = { forgetAll = null; model.forgetAllMemory(revision, state.scope) }) {
             Text("Forget everything", color = danger)
-        } }, dismissButton = { TextButton(onClick = { forgetAll = null }) { Text("Keep memories") } }) }
+        } }, dismissButton = { ActionButton(onClick = { forgetAll = null }) { Text("Keep memories") } }) }
     state.memoryDraft?.let { draft -> MemoryEditor(model, state, draft) }
 }
 
@@ -173,10 +172,10 @@ private fun MemoryEditor(model: CompanionModel, state: UiState, draft: MemoryDra
             if (!valid) Text("Use one nonempty line, up to 4000 characters, without tabs or line breaks.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
             state.memoryError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (draft.conflicted) Text("Your draft is kept here. Copy it before closing, then review the latest notes and edit again.")
-            TextButton(onClick = { clipboard.setText(AnnotatedString(draft.text)) }) { Text("Copy draft") }
-            if (state.memoryErrorCode == "MEMORY_BUSY" && state.replying) TextButton(onClick = { model.stop(state.scope) }) { Text("Stop current reply") }
+            ActionButton(onClick = { clipboard.setText(AnnotatedString(draft.text)) }) { Text("Copy draft") }
+            if (state.memoryErrorCode == "MEMORY_BUSY" && state.replying) ActionButton(onClick = { model.stop(state.scope) }) { Text("Stop current reply") }
         } },
-        confirmButton = { TextButton(enabled = valid && !draft.conflicted && !state.memoryBusy,
+        confirmButton = { ActionButton(enabled = valid && !draft.conflicted && !state.memoryBusy,
             onClick = { model.saveMemoryDraft(state.scope) }) { Text(if (state.memoryBusy) "Saving…" else "Save correction") } },
-        dismissButton = { TextButton(enabled = !state.memoryBusy, onClick = { model.closeMemoryDraft(state.scope) }) { Text("Discard draft") } })
+        dismissButton = { ActionButton(enabled = !state.memoryBusy, onClick = { model.closeMemoryDraft(state.scope) }) { Text("Discard draft") } })
 }

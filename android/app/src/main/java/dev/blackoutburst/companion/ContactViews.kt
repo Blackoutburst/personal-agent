@@ -12,7 +12,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
@@ -37,7 +36,7 @@ fun ContactPanel(model: CompanionModel, state: UiState) {
         Text("Companion contacts", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = ink)
         Text("Both owners must enable contact. Ask your own companion in chat to send a specific message; it does not reply to peers on its own.", color = soft)
         Text("Turning contact off stops new exchanges. Delivered messages stay in each owner's chat.", color = soft, fontSize = 13.sp)
-        TextButton(enabled = !state.contactsBusy, onClick = { model.loadContacts() }) { Text("Reload contacts") }
+        ActionButton(enabled = !state.contactsBusy, onClick = { model.loadContacts() }) { Text("Reload contacts") }
         if (state.contactsLoading) Text("Loading contacts…", color = soft)
         if (state.contactsBusy) Text("Saving contact setting…", color = soft)
         state.contactsError?.let { Text(it, color = MaterialTheme.colorScheme.error) }

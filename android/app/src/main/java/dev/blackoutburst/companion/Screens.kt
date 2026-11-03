@@ -43,7 +43,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -202,7 +201,7 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
                 Text(state.name, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
                 Text(MOOD_TEXT.getValue(mood), color = Soft, fontSize = 15.sp)
             }
-            TextButton(enabled = state.threadId != null && !state.deleting && !state.chatLoading, onClick = { confirmDelete = true }) { Text("Delete") }
+            ActionButton(enabled = state.threadId != null && !state.deleting && !state.chatLoading, onClick = { confirmDelete = true }) { Text("Delete") }
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)) {
@@ -222,11 +221,14 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
                 }
             }
         }
-        if (state.deleteFailed) TextButton(onClick = { model.deleteThread(state.scope) }) { Text("Retry deletion") }
+        if (state.deleteFailed) ActionButton(onClick = { model.deleteThread(state.scope) }) { Text("Retry deletion") }
         if (state.deleting) Text("Deleting conversation and files…", Modifier.padding(horizontal = 16.dp), color = Soft)
         Row(Modifier.fillMaxWidth().padding(12.dp, 6.dp), verticalAlignment = Alignment.Bottom) {
-            TextButton(enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.replying && !state.deleting && !state.deleteFailed && state.uploads.size < MAX_FILES,
-                onClick = { pickerScope = state.scope; picker.launch(arrayOf("*/*")) }) { Text("Attach") }
+            RoundButton("Attach files", "+", secondary = true,
+                enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.replying && !state.deleting && !state.deleteFailed && state.uploads.size < MAX_FILES) {
+                pickerScope = state.scope; picker.launch(arrayOf("*/*"))
+            }
+            Spacer(Modifier.size(8.dp))
             OutlinedTextField(draft, { if (it.length <= 8000) draft = it }, Modifier.weight(1f),
                 placeholder = { Text("Write a message…") }, shape = RoundedCornerShape(24.dp), maxLines = 5,
                 enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.deleting && !state.deleteFailed,
@@ -246,8 +248,8 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false },
         title = { Text("Delete conversation?") },
         text = { Text("This removes this conversation and its stored files. Your companion's memories and any history retained by the AI provider are not erased.") },
-        confirmButton = { TextButton(onClick = { confirmDelete = false; model.deleteThread(state.scope) }) { Text("Delete conversation", color = Danger) } },
-        dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Keep conversation") } })
+        confirmButton = { ActionButton(onClick = { confirmDelete = false; model.deleteThread(state.scope) }) { Text("Delete conversation", color = Danger) } },
+        dismissButton = { ActionButton(onClick = { confirmDelete = false }) { Text("Keep conversation") } })
 }
 
 private val MOOD_TEXT = mapOf(Mood.Idle to "Here with you", Mood.Listening to "Listening…", Mood.Thinking to "Thinking…",
@@ -411,7 +413,7 @@ private fun DiscordSection(model: CompanionModel, state: UiState, name: String) 
                 Text("Talk to $name in Discord direct messages. Reminders arrive there too.", color = Soft, fontSize = 15.sp)
                 Spacer(Modifier.height(8.dp))
                 Text("1. Open the Discord Developer Portal and create a New Application.", color = Soft, fontSize = 15.sp)
-                TextButton({ uri.openUri("https://discord.com/developers/applications") }) { Text("Open the Developer Portal", color = Color(0xFFD9764A)) }
+                ActionButton({ uri.openUri("https://discord.com/developers/applications") }) { Text("Open the Developer Portal", color = Color(0xFFD9764A)) }
                 Text("2. In Bot, press Reset Token and copy the token.", color = Soft, fontSize = 15.sp)
                 Text("3. Paste it here. It stays on the server and is never shown again.", color = Soft, fontSize = 15.sp)
                 Spacer(Modifier.height(10.dp))
@@ -441,21 +443,21 @@ private fun DiscordSection(model: CompanionModel, state: UiState, name: String) 
                         color = Soft, fontSize = 15.sp)
                     discord.pairing != null -> {
                         Text("1. Add the bot to a server you’re in (your own server is fine).", color = Soft, fontSize = 15.sp)
-                        if (bot != null) TextButton({ uri.openUri(bot.inviteUrl) }) { Text("Add the bot to a server", color = Color(0xFFD9764A)) }
+                        if (bot != null) ActionButton({ uri.openUri(bot.inviteUrl) }) { Text("Add the bot to a server", color = Color(0xFFD9764A)) }
                         Text("2. Send the bot this code in a direct message:", color = Soft, fontSize = 15.sp)
                         Spacer(Modifier.height(8.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(discord.pairing.code, Modifier.clip(RoundedCornerShape(12.dp)).background(Card).border(1.dp, Line, RoundedCornerShape(12.dp))
                                 .padding(horizontal = 14.dp, vertical = 8.dp), color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold,
                                 fontFamily = FontFamily.Monospace, letterSpacing = 2.sp)
-                            TextButton({ clipboard.setText(AnnotatedString(discord.pairing.code)) }) { Text("Copy", color = Color(0xFFD9764A)) }
+                            ActionButton({ clipboard.setText(AnnotatedString(discord.pairing.code)) }) { Text("Copy", color = Color(0xFFD9764A)) }
                         }
                         Spacer(Modifier.height(6.dp))
                         Text("Waiting for your message… The code works for an hour.", color = Soft, fontSize = 14.sp)
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                TextButton({ confirmOff = true }, enabled = !state.discordBusy) { Text("Disconnect", color = Ink, fontWeight = FontWeight.Bold) }
+                ActionButton({ confirmOff = true }, enabled = !state.discordBusy) { Text("Disconnect", color = Ink, fontWeight = FontWeight.Bold) }
             }
         }
         state.discordError?.let { Text(it, color = Danger, fontSize = 15.sp, modifier = Modifier.padding(top = 8.dp)) }
@@ -464,8 +466,8 @@ private fun DiscordSection(model: CompanionModel, state: UiState, name: String) 
         AlertDialog(onDismissRequest = { confirmOff = false },
             title = { Text("Disconnect Discord?") },
             text = { Text("$name will stop answering in Discord. You can link a bot again any time.") },
-            confirmButton = { TextButton({ confirmOff = false; model.unlinkDiscord() }) { Text("Disconnect") } },
-            dismissButton = { TextButton({ confirmOff = false }) { Text("Cancel") } })
+            confirmButton = { ActionButton({ confirmOff = false; model.unlinkDiscord() }) { Text("Disconnect") } },
+            dismissButton = { ActionButton({ confirmOff = false }) { Text("Cancel") } })
     }
 }
 
@@ -497,10 +499,13 @@ private fun Pill(text: String, enabled: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun RoundButton(label: String, glyph: String, enabled: Boolean = true, onClick: () -> Unit) {
-    Box(Modifier.size(52.dp).clip(CircleShape).background(if (enabled) Color(0xFFEE8F64) else Line)
+private fun RoundButton(label: String, glyph: String, enabled: Boolean = true, secondary: Boolean = false, onClick: () -> Unit) {
+    // secondary: the attach "+" (soft background, ink glyph), like the web composer.
+    val fill = when { secondary -> Blush; enabled -> Color(0xFFEE8F64); else -> Line }
+    Box(Modifier.size(52.dp).clip(CircleShape).background(fill)
         .clickable(enabled = enabled, role = Role.Button, onClick = onClick).semantics { contentDescription = label },
         contentAlignment = Alignment.Center) {
-        Text(glyph, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text(glyph, color = if (secondary) Ink.copy(alpha = if (enabled) 1f else 0.4f) else Color.White,
+            fontSize = if (secondary) 28.sp else 22.sp, fontWeight = if (secondary) FontWeight.Normal else FontWeight.Bold)
     }
 }
