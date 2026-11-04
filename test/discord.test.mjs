@@ -59,7 +59,7 @@ function fixture(t, { handler, me, withFiles = false } = {}) {
   let bridge;
   const conversations = new Conversations({ store, flushMs: 1, systemPrompt: () => 'persona', files,
     runner: { turn: async (id, turn) => (handler ?? (() => ({ text: 'Hello from Pip!' })))(id, turn) },
-    onSettled: event => bridge.settled(event), turnNote: (_id, requestId) => bridge.turnNote(requestId) });
+    onSettled: event => bridge.settled(event), turnNote: (id, requestId) => bridge.turnNote(id, requestId) });
   const links = new DiscordLinks({ store });
   bridge = new DiscordBridge({ links, conversations, files, fetchImpl: discord.fetchImpl, WebSocketImpl: discord.WebSocketImpl });
   t.after(async () => { bridge.stop(); await conversations.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -182,7 +182,7 @@ test('attachments from the DM are fetched into the chat and shown to the compani
     f.discord.sent.map(item => item.content).join(' | '));
   assert.equal(turns.length, 2);
   assert.equal(turns[1].images.length, 0);
-  assert.match(turns[1].prompt, /^And these\?\n\n\(Note from the app, not from the owner: they also sent “evil\.png” \(image\/png, 0 MB\), which could not be received: not a Discord file; “gone\.png”/);
+  assert.match(turns[1].prompt, /^And these\?\n\n\(Note from the app, not from the owner: in Discord they also sent “evil\.png” \(image\/png, 0 MB\), which could not be received: not a Discord file; “gone\.png”/);
   assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM conv_files').get().n, 1);
   // Discord's declared size can be smaller than what its CDN serves (the IMG_3396 case): the real bytes are stored.
   f.socket.dm(OWNER, '', '888888888888888889', [{ ...shot, id: '666666666666666669', filename: 'IMG_3396.png', size: png.length - 20 }]);
@@ -196,6 +196,13 @@ test('attachments from the DM are fetched into the chat and shown to the compani
   await f.conversations.idle(); await sleep(10);
   assert.equal(f.discord.sent.at(-1).content, '*I couldn’t receive “huge.png” (too large, max 0 MB).*');
   assert.equal(turns.length, before);
+  // That file-only failure starts no turn, so its note goes with the owner's next turn, once.
+  f.socket.dm(OWNER, 'Did you get it?', '888888888888888891');
+  await f.conversations.idle(); await sleep(10);
+  assert.match(turns.at(-1).prompt, /^Did you get it\?\n\n\(Note from the app, not from the owner: in Discord they also sent “huge\.png” \(image\/png, 0 MB\), which could not be received: too large, max 0 MB\./);
+  f.socket.dm(OWNER, 'Ok', '888888888888888892');
+  await f.conversations.idle(); await sleep(10);
+  assert.doesNotMatch(turns.at(-1).prompt, /Note from the app/);
 });
 
 test('files the companion attaches go to the DM after the text; app-only turns never reach Discord', async t => {

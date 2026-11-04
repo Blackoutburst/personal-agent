@@ -18,6 +18,7 @@ const DISCORD_CHARS = 2000;
 const CDN_HOSTS = new Set(['cdn.discordapp.com', 'media.discordapp.net']);
 const MAX_ATTACHMENTS = 8;
 const DOWNLOAD_MS = 60_000;
+const CARRY_MS = 6 * 3600_000; // How long a failed file-only message's note waits for the owner's next turn.
 const UPLOAD_BYTES = 10 * 1024 ** 2; // Discord's upload limit for a bot in a DM.
 const MB = bytes => `${Math.round(bytes / 1024 ** 2 * 10) / 10} MB`;
 // #48: why an attachment could not be taken, said briefly to the owner, the server log and the companion.
@@ -144,14 +145,25 @@ class Gateway {
 }
 
 export class DiscordBridge {
-  #links; #conversations; #files; #fetch; #WebSocket; #gateways = new Map(); #states = new Map(); #pending = new Map(); #log; #notes = new Map();
+  #links; #conversations; #files; #fetch; #WebSocket; #gateways = new Map(); #states = new Map(); #pending = new Map(); #log; #notes = new Map(); #carried = new Map();
   // files: the chat FileStore. Without it, attachments are refused with a short note.
   constructor({ links, conversations, files = null, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, log = () => {} }) {
     this.#links = links; this.#conversations = conversations; this.#files = files; this.#fetch = fetchImpl; this.#WebSocket = WebSocketImpl; this.#log = log;
   }
 
-  // #48: the failed-attachment note for this Discord turn, read once by Conversations (turnNote hook).
-  turnNote(requestId) { const note = this.#notes.get(requestId) ?? null; this.#notes.delete(requestId); return note; }
+  // #48: the failed-attachment note for an owner turn, read once by Conversations (turnNote hook). A message with only
+  // failed files starts no turn, so its note waits (up to CARRY_MS) for the owner's next turn, in Discord or the app.
+  turnNote(companionId, requestId) {
+    const notes = [], carried = this.#carried.get(companionId);
+    this.#carried.delete(companionId);
+    if (carried && Date.now() - carried.at < CARRY_MS) notes.push(...carried.files);
+    notes.push(...(this.#notes.get(requestId) ?? []));
+    this.#notes.delete(requestId);
+    if (!notes.length) return null;
+    return '\n\n(Note from the app, not from the owner: in Discord they also sent '
+      + notes.map(item => `“${item.name}” (${item.type}, ${MB(item.size)}), which could not be received: ${item.reason}`).join('; ')
+      + '. You cannot see it. If it matters, say so briefly and suggest sending it again or through the app.)';
+  }
 
   start() { for (const link of this.#links.all()) if (!link.problem) this.#connect(link.companion_id, link.token); }
   stop() { for (const gateway of this.#gateways.values()) gateway.stop(); this.#gateways.clear(); }
@@ -281,10 +293,13 @@ export class DiscordBridge {
       const { ids, skipped } = await this.#download(companionId, threadId, message.id, sent);
       if (skipped.length) await this.#say(link, message.channel_id, `*I couldn’t receive ${skipped.map(item => `“${item.name}” (${item.reason})`).join(', ')}${
         ids.length || text ? '; answering the rest' : ''}.*`);
-      if (!ids.length && !text) { clearInterval(typing); this.#pending.delete(requestId); return; }
-      if (skipped.length) this.#notes.set(requestId, '\n\n(Note from the app, not from the owner: they also sent '
-        + skipped.map(item => `“${item.name}” (${item.type}, ${MB(item.size)}), which could not be received: ${item.reason}`).join('; ')
-        + '. You cannot see it. If it matters, say so briefly and suggest sending it again or through the app.)');
+      if (!ids.length && !text) {
+        clearInterval(typing); this.#pending.delete(requestId);
+        const carried = this.#carried.get(companionId)?.files ?? [];
+        this.#carried.set(companionId, { at: Date.now(), files: [...carried, ...skipped].slice(-MAX_ATTACHMENTS) });
+        return;
+      }
+      if (skipped.length) this.#notes.set(requestId, skipped);
       await this.#conversations.handle(companionId, { action: 'submit', requestId, threadId, text,
         ...(ids.length ? { attachments: ids } : {}) });
     } catch (error) {

@@ -18,7 +18,8 @@ Each owner can link **their own Discord bot** so they can talk to their companio
   `media.discordapp.net` only, no bot token sent) into the chat file store, the same as app uploads, so the companion
   sees images and can read files. Anything it couldn't fetch is named in a short note with the reason (too large,
   storage full, download failed or timed out…) and the rest is answered (#48). The companion's turn gets a matching
-  app note (name, type, size, reason) so it knows a file is missing, and the server logs the code with type and sizes
+  app note (name, type, size, reason) so it knows a file is missing. A message with only failed files starts no
+  turn, so its note goes with the owner's next turn, in Discord or the app, within 6 hours (memory only), and the server logs the code with type and sizes
   only. The bytes actually received are stored: Discord's declared `size` can be smaller than what the CDN serves, which
   used to reject iPhone PNG screenshots as FILE_TOO_LARGE.
   Files the companion sends with `send_file` in a reply to a Discord message (or in a proactive message) are posted
