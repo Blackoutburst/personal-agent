@@ -567,3 +567,57 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .board-banner { display: flex; align-items: center; gap: 10px; margin: 6px 16px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
 .board-banner[hidden] { display: none; }
 .board-banner strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Group chat (#53): owners and their companions together. */
+.group-page .group-create { display: grid; gap: 10px; margin: 0 0 14px; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); }
+.group-page .group-create[hidden], .group-chat[hidden], #group-list-panel[hidden] { display: none; }
+.group-pick { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.group-pick small { color: var(--soft); }
+.group-topic { text-decoration: none; }
+.group-faces { display: flex; gap: 2px; }
+.group-avatar { flex: none; display: inline-grid; place-items: center; overflow: hidden; border-radius: 50%; background: var(--light, var(--card)); color: var(--ink); font-weight: 700; }
+.group-avatar.small { width: 36px; height: 36px; font-size: 15px; }
+.group-avatar.tiny { width: 22px; height: 22px; font-size: 11px; }
+.group-avatar img, .group-avatar svg { width: 100%; height: 100%; object-fit: cover; }
+.group-avatar.owner { background: var(--bg2); border: 1px solid var(--line); }
+.group-chat { display: flex; flex-direction: column; min-height: calc(100dvh - 140px); background: var(--glass, var(--card)); border-radius: 24px; box-shadow: 0 6px 30px rgba(120,80,90,.08); }
+.group-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.group-bar strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-menu { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+.group-menu[hidden] { display: none; }
+.group-members { display: flex; flex-wrap: wrap; gap: 6px 12px; padding: 8px 14px; color: var(--soft); font-size: 13px; }
+.group-member { display: inline-flex; align-items: center; gap: 4px; }
+.group-history { min-height: 240px; }
+.group-messages { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.group-message { display: flex; align-items: flex-start; gap: 8px; max-width: min(92%, 640px); }
+.group-message.mine { align-self: flex-end; flex-direction: row-reverse; }
+.group-body { min-width: 0; padding: 8px 12px; border-radius: 18px; background: var(--bubble, var(--card)); border: 1px solid var(--bubble-line, var(--line)); overflow-wrap: anywhere; }
+.group-message.mine .group-body { background: var(--body); color: var(--on-body, #fff); border-color: transparent; }
+.group-message.mine .group-head small, .group-message.mine .group-reply { color: inherit; opacity: .8; }
+.group-head { display: flex; gap: 4px; align-items: baseline; font-size: 13px; }
+.group-head small { color: var(--soft); }
+.group-text p { margin: 4px 0; line-height: 1.45; }
+.group-text pre { margin: 6px 0; padding: 8px; border-radius: 8px; background: var(--bg2); overflow-x: auto; }
+.group-text blockquote { margin: 4px 0; padding-left: 10px; border-left: 3px solid var(--line); }
+.group-text ul, .group-text ol { margin: 4px 0; padding-left: 20px; }
+.group-mention { font-weight: 700; }
+.group-quote { display: block; width: 100%; margin: 4px 0; padding: 4px 8px; border: 0; border-left: 3px solid var(--line); background: transparent; color: inherit; opacity: .8; font: inherit; font-size: 13px; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-image img { display: block; max-width: min(100%, 320px); max-height: 320px; margin-top: 6px; border-radius: 12px; }
+.group-file { display: inline-block; margin-top: 6px; }
+.group-reply { font-size: 12px; padding: 2px 0; }
+.group-system { align-self: center; color: var(--soft); font-size: 13px; text-align: center; }
+.group-typing { min-height: 1.3em; margin: 0 18px; color: var(--soft); font-size: 13px; }
+.group-replying { display: flex; align-items: center; gap: 8px; margin: 4px 16px; padding: 6px 10px; border-left: 3px solid var(--body); background: var(--card); border-radius: 8px; font-size: 13px; }
+.group-replying[hidden], .group-suggest[hidden] { display: none; }
+.group-replying span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-suggest { list-style: none; margin: 0 16px 4px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.group-suggest li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+.group-suggest li.active, .group-suggest li:hover { background: var(--bg2); }
+.group-suggest small { color: var(--soft); }
+/* The Group tab makes the top bar fuller on phones: drop the name, tighten the tabs, and let a full bar scroll. */
+@media (max-width: 640px) {
+  .topbar:has(#nav-group:not([hidden])) .who-text { display: none; }
+  .topbar:has(#nav-group:not([hidden])) .nav a { padding: 8px 9px; white-space: nowrap; }
+  .topbar:has(#nav-group:not([hidden])):has(:is(#nav-board, #nav-studio):not([hidden])) .nav { flex-shrink: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .topbar:has(#nav-group:not([hidden])):has(:is(#nav-board, #nav-studio):not([hidden])) .nav a { padding: 7px 8px; font-size: 12.5px; }
+}

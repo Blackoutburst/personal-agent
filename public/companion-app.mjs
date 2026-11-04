@@ -13,6 +13,7 @@ import { createWebPushUI, createPushPresence, registerServiceWorker } from './we
 import { splitBubbles } from './bubbles.mjs';
 import { createVoiceRecorder, voiceView } from './voice-ui.mjs';
 import { createBoardUI } from './board-ui.mjs';
+import { createGroupUI } from './group-ui.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
@@ -28,6 +29,9 @@ const weatherUI = createWeatherUI({ document, api, onDenied: fileAccessDenied, o
 // Board tab (#55): one sub-conversation per Board ticket; opening one shows it in the chat view (#board/<thread>).
 const boardUI = createBoardUI({ document, inbox: client, onOpen: threadId => { location.hash = '#board/' + threadId; },
   onDenied: fileAccessDenied, onChange: () => { if (view === 'chat') renderAll(); } });
+// Group tab (#53): owners and their companions together; #group lists them, #group/<id> opens one.
+const groupUI = createGroupUI({ document, renderCharacter, onDenied: fileAccessDenied, visible: () => view === 'group' && Boolean(groupThread) });
+let groupThread = null;
 const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
 let profile = null, runtime = null, view = 'loading', chatOpened = false, state = client.getState();
@@ -115,7 +119,8 @@ function show(next) {
   view = next;
   if (!connectorsShown()) { clearTimeout(discordTimer); discordTimer = null; }
   $('app').dataset.view = next;
-  for (const name of ['loading', 'gate', 'chat', 'calendar', 'studio', 'board']) $(`view-${name}`).hidden = name !== next;
+  for (const name of ['loading', 'gate', 'chat', 'calendar', 'studio', 'board', 'group']) $(`view-${name}`).hidden = name !== next;
+  $('group-list-panel').hidden = Boolean(groupThread); $('group-chat-panel').hidden = !groupThread;
   $('view-me').hidden = next !== 'me' && next !== 'look';
   $('me-tabs').hidden = next !== 'me';
   $('view-look').hidden = !lookShown();
@@ -134,6 +139,8 @@ function show(next) {
   }
   if (next === 'chat') openChat();
   if (next === 'board') void boardUI.show(); else boardUI.hide();
+  if (next === 'group' && groupThread) void groupUI.open(groupThread); else groupUI.close();
+  if (next === 'group' && !groupThread) void groupUI.refresh();
   if (next === 'me' && meSection === 'memories') loadMemories();
   if (next === 'me' && meSection === 'profile') void ownerProfileUI.show();
   if (connectorsShown()) { $('discord-pick').hidden = false; void loadConnectors(); void loadDiscord(); }
@@ -163,7 +170,9 @@ function route() {
   // #board is the Board tab; #board/<thread> opens that Board sub-conversation in the chat view (also from a push).
   const board = /^board\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(hash);
   boardThread = board ? board[1] : null;
-  show(hash === 'board' ? 'board' : board ? 'chat' : hash === 'studio' ? 'studio' : hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
+  const group = /^group\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(hash);
+  groupThread = group ? group[1] : null;
+  show(hash === 'group' || group ? 'group' : hash === 'board' ? 'board' : board ? 'chat' : hash === 'studio' ? 'studio' : hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
 }
 
 async function start() {
@@ -174,7 +183,7 @@ async function start() {
     if (owner !== ownerEpoch || token !== startRequest) return;
     profile = data.profile; runtime = data.runtime; wearing = data.wearing ?? 'base';
     applyColors(profile);
-    if (profile) { void studioUI.probe(); void boardUI.refresh(); }
+    if (profile) { void studioUI.probe(); void boardUI.refresh(); void groupUI.refresh(); }
     route();
   } catch (error) {
     if (owner !== ownerEpoch || token !== startRequest) return;
@@ -459,7 +468,7 @@ function resetShell(denied) {
   for (const id of ['discord-pick', 'android-pick']) $(id).hidden = true;
   connectors = null; connectorsBusy = false; githubForm = false; xForm = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
   kept.hidden = true; keptText.textContent = ''; reconnect.hidden = true;
-  selectedBoard = null; boardReadMarked = null; boardUI.clear();
+  selectedBoard = null; boardReadMarked = null; boardUI.clear(); groupUI.clear();
   memoryUI.clear(); personalityUI.clear(); contactUI.clear(); ownerProfileUI.clear(); weatherUI.clear(); remindersUI.clear(); calendarUI.clear(); studioUI.clear(); client.clear(); clearUploads(); clearFullImage();
 }
 function clearUploads() {
@@ -786,7 +795,7 @@ $('board-done').addEventListener('click', async () => {
   if (await boardUI.archive(selectedBoard, done) && done) location.hash = '#board'; else renderAll();
 });
 // The Board badge follows new Board messages while the app is open.
-setInterval(() => { if (profile && !sessionDenied && document.visibilityState !== 'hidden') void boardUI.refresh(); }, 30000);
+setInterval(() => { if (profile && !sessionDenied && document.visibilityState !== 'hidden') { void boardUI.refresh(); if (!(view === 'group' && groupThread)) void groupUI.refresh(); } }, 30000);
 $('input').addEventListener('input', () => { composerEpoch++; grow(); try { client.setDraft($('input').value); } catch { /* too long: send stays disabled */ } noteTyping(); renderAll(); });
 // Tells the server the owner is typing (at most every 3 s while they type), like the "typing…" a person sees,
 // so a reply still waiting for more texts keeps waiting. Clearing the box says they stopped.
@@ -1066,7 +1075,7 @@ setInterval(refreshWearing, 10 * 60 * 1000);
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'hidden') { clearTimeout(pollTimer); pollTimer = null; clearTimeout(discordTimer); discordTimer = null; return; }
   refreshWearing();
-  if (profile) void boardUI.refresh();
+  if (profile) { void boardUI.refresh(); void groupUI.refresh(); }
   if (chatOpened && state.connection !== 'loading' && !polling) { readFailures = 0; await readChat(); }
   schedulePoll();
 });

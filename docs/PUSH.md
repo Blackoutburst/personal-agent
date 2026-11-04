@@ -63,3 +63,10 @@ needs no review and updates with every deploy. The same works on Android Chrome 
 - **Key**: the VAPID key pair lives at `~/.config/personal-agent/web-push-vapid.json` (chmod 600, or
   `COMPANION_WEB_PUSH_KEY`). It is created on first use, but the live unit has `ProtectHome=read-only`, so on the
   server it was created ahead of time (3 Nov 2026). Replacing it invalidates every web subscription: each device turns notifications on again.
+
+## Group chat (#53)
+
+Group messages push to every human member who did not write them, with a group flag and the group id for the deep
+link (Android data `{type:"group", group:"1", groupId, messageId, name}`, still no message text; Web Push titled with
+the group, body "Author: preview"). Mention-only members get only messages that mention them, and nobody gets a group
+push during their own quiet hours. Details: [GROUP-CHAT.md](GROUP-CHAT.md).
