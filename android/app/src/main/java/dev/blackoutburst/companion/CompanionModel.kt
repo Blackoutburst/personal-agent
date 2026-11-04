@@ -84,6 +84,12 @@ data class UiState(
     val contactsConfirmed: Boolean = false,
     val contactsError: String? = null,
     val contactsNotice: String? = null,
+    val ownerProfile: OwnerProfileReply? = null,
+    val ownerProfileLoading: Boolean = false,
+    val ownerProfileBusy: Boolean = false,
+    val ownerProfileConfirmed: Boolean = false,
+    val ownerProfileError: String? = null,
+    val ownerProfileNotice: String? = null,
     val weather: WeatherSnapshot? = null,
     val weatherBusy: Boolean = false,
     val weatherError: String? = null,
@@ -152,6 +158,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private var personalityVersionJob: Job? = null
     @Volatile private var contactsEpoch = 0L
     private var contactsJob: Job? = null
+    @Volatile private var ownerProfileEpoch = 0L
+    private var ownerProfileJob: Job? = null
 
     init {
         // An interrupted prior process must not leave an unbounded or reusable private media cache.
@@ -550,6 +558,45 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ---- The human's display identity (kept separate from the companion). ----
+    private fun ownerProfileCurrent(version: Long, request: Long) = current(version) && ownerProfileEpoch == request
+    fun loadOwnerProfile() {
+        if (_state.value.ownerProfileBusy) return
+        val version = scope; val request = ++ownerProfileEpoch; ownerProfileJob?.cancel()
+        _state.update { it.copy(ownerProfileLoading = true, ownerProfileConfirmed = false, ownerProfileError = null, ownerProfileNotice = null) }
+        ownerProfileJob = viewModelScope.launch {
+            if (!ownerProfileCurrent(version, request)) return@launch
+            try {
+                val result = api.ownerProfile()
+                if (ownerProfileCurrent(version, request)) _state.update { it.copy(ownerProfile = result, ownerProfileConfirmed = true) }
+            } catch (error: ApiException) {
+                if (!ownerProfileCurrent(version, request)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                _state.update { it.copy(ownerProfileError = "Your profile could not be loaded. Try Reload profile.") }
+            } finally { if (ownerProfileCurrent(version, request)) _state.update { it.copy(ownerProfileLoading = false) } }
+        }
+    }
+    fun saveOwnerProfile(displayName: String, photo: OwnerPhoto?, changePhoto: Boolean, expectedScope: Long) {
+        val shown = _state.value
+        if (!current(expectedScope) || shown.ownerProfileBusy || shown.ownerProfileLoading || !shown.ownerProfileConfirmed) return
+        val before = shown.ownerProfile ?: return
+        val request = ++ownerProfileEpoch; ownerProfileJob?.cancel()
+        _state.update { it.copy(ownerProfileBusy = true, ownerProfileConfirmed = false, ownerProfileError = null, ownerProfileNotice = null) }
+        ownerProfileJob = viewModelScope.launch {
+            if (!ownerProfileCurrent(expectedScope, request)) return@launch
+            try {
+                val result = api.saveOwnerProfile(displayName.trim(), before.profile.revision, photo, changePhoto)
+                if (ownerProfileCurrent(expectedScope, request)) _state.update { it.copy(ownerProfile = result, ownerProfileConfirmed = true, ownerProfileNotice = "Profile saved.") }
+            } catch (error: ApiException) {
+                if (!ownerProfileCurrent(expectedScope, request)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                _state.update { it.copy(ownerProfileError = if (error.code == "PROFILE_CONFLICT")
+                    "Your profile changed elsewhere. Your draft is still here. Reload before another edit."
+                    else "The save was not confirmed. Your draft is still here. Reload to check the saved profile.") }
+            } finally { if (ownerProfileCurrent(expectedScope, request)) _state.update { it.copy(ownerProfileBusy = false) } }
+        }
+    }
+
     // ---- Contacts: consent settings only. Sending remains in the owner's native turn. ----
 
     private fun contactsCurrent(version: Long, request: Long) = current(version) && contactsEpoch == request
@@ -829,6 +876,9 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     private fun invalidateFiles(stopPolling: Boolean = true) {
         scope++
+        ownerProfileEpoch++; ownerProfileJob?.cancel(); ownerProfileJob = null
+        _state.update { it.copy(ownerProfile = null, ownerProfileLoading = false, ownerProfileBusy = false,
+            ownerProfileConfirmed = false, ownerProfileError = null, ownerProfileNotice = null) }
         contactsEpoch++; contactsJob?.cancel(); contactsJob = null
         _state.update { it.copy(contacts = null, contactsLoading = false, contactsBusy = false,
             contactsConfirmed = false, contactsError = null, contactsNotice = null) }

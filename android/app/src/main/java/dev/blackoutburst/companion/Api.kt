@@ -14,6 +14,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.contentOrNull
@@ -117,6 +118,17 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
     private val transfers = FileTransfers(session, open)
 
     suspend fun companionInfo(): CompanionInfo = call("api/companion", buildJsonObject { put("action", "get") })
+    suspend fun ownerProfile(): OwnerProfileReply = parseOwnerProfile(post(companion + "api/owner-profile", buildJsonObject { put("action", "get") }))
+    suspend fun saveOwnerProfile(displayName: String, expectedRevision: Long, photo: OwnerPhoto?, changePhoto: Boolean): OwnerProfileReply {
+        if (!ownerDisplayName(displayName) || !contactRevision(expectedRevision)) throw ApiException("INVALID_REQUEST")
+        if (changePhoto) photo?.let { ownerPhotoBytes(it) }
+        val result = parseOwnerProfile(post(companion + "api/owner-profile", buildJsonObject {
+            put("action", "set"); put("displayName", displayName); put("expectedRevision", expectedRevision)
+            if (changePhoto) put("photo", photo?.let { buildJsonObject { put("mime", it.mime); put("base64", it.base64) } } ?: JsonNull)
+        }))
+        if (result.profile.revision != expectedRevision + 1 || result.profile.displayName != displayName) throw ApiException("INVALID_RESPONSE")
+        return result
+    }
     suspend fun weather(): WeatherSnapshot = call("api/companion", buildJsonObject { put("action", "weather") })
     suspend fun setWeatherPlace(place: String): WeatherSnapshot =
         call("api/companion", buildJsonObject { put("action", "setWeatherPlace"); put("place", place.trim().take(100)) })

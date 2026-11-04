@@ -7,6 +7,7 @@ import { createStudioUI } from './studio-ui.mjs';
 import { createMemoryUI } from './memory-ui.mjs';
 import { createPersonalityUI } from './personality-ui.mjs';
 import { createContactUI, renderPeerCard } from './contact-ui.mjs';
+import { createOwnerProfileUI } from './owner-profile-ui.mjs';
 import { createWeatherUI } from './weather-ui.mjs';
 import { createWebPushUI, createPushPresence, registerServiceWorker } from './web-push-ui.mjs';
 import { splitBubbles } from './bubbles.mjs';
@@ -21,6 +22,7 @@ const remindersUI = createRemindersUI({ document, visible: () => view === 'me' &
 const memoryUI = createMemoryUI({ document, api, onDenied: fileAccessDenied });
 const personalityUI = createPersonalityUI({ document, api, onDenied: fileAccessDenied });
 const contactUI = createContactUI({ document, api, onDenied: fileAccessDenied });
+const ownerProfileUI = createOwnerProfileUI({ document, onDenied: fileAccessDenied });
 const weatherUI = createWeatherUI({ document, api, onDenied: fileAccessDenied, onWearing: next => { wearing = next; renderAll(); } });
 const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
@@ -114,6 +116,7 @@ function show(next) {
   $('view-memories').hidden = !(next === 'me' && meSection === 'memories');
   $('view-settings').hidden = !(next === 'me' && meSection === 'settings');
   $('view-connectors').hidden = !connectorsShown();
+  $('view-owner-profile').hidden = !(next === 'me' && meSection === 'profile');
   $('view-watches').hidden = !(next === 'me' && meSection === 'watches');
   for (const link of document.querySelectorAll('#me-tabs a')) {
     if (next === 'me' && link.dataset.section === meSection) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
@@ -124,6 +127,7 @@ function show(next) {
   }
   if (next === 'chat') openChat();
   if (next === 'me' && meSection === 'memories') loadMemories();
+  if (next === 'me' && meSection === 'profile') void ownerProfileUI.show();
   if (connectorsShown()) { $('discord-pick').hidden = false; void loadConnectors(); void loadDiscord(); }
   if (lookShown()) startLook();
   if (next === 'me' && (meSection === 'watches' || meSection === 'settings')) void remindersUI.show();
@@ -146,7 +150,7 @@ function route() {
   const hash = location.hash.replace('#', '');
   // #memories, #look and #watches are older links into what is now the Me tab.
   const me = { me: 'memories', memories: 'memories', 'me/companion': 'companion', look: 'companion', 'me/watches': 'watches', watches: 'watches',
-    'me/connectors': 'connectors', 'me/settings': 'settings' }[hash];
+    'me/connectors': 'connectors', 'me/settings': 'settings', 'me/profile': 'profile' }[hash];
   if (me) meSection = me;
   show(hash === 'studio' ? 'studio' : hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
 }
@@ -430,7 +434,7 @@ function resetShell(denied) {
   for (const id of ['discord-pick', 'android-pick']) $(id).hidden = true;
   connectors = null; connectorsBusy = false; githubForm = false; xForm = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
   kept.hidden = true; keptText.textContent = ''; reconnect.hidden = true;
-  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); remindersUI.clear(); calendarUI.clear(); studioUI.clear(); client.clear(); clearUploads(); clearFullImage();
+  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); ownerProfileUI.clear(); weatherUI.clear(); remindersUI.clear(); calendarUI.clear(); studioUI.clear(); client.clear(); clearUploads(); clearFullImage();
 }
 function clearUploads() {
   uploadEpoch++;

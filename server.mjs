@@ -24,6 +24,7 @@ import { Calendar } from './src/calendar.mjs';
 import { GitHub } from './src/github.mjs';
 import { Mail } from './src/mail.mjs';
 import { Studio, createStudioHttp } from './src/studio.mjs';
+import { OwnerProfiles, createOwnerProfileHttp } from './src/owner-profile.mjs';
 import { XPosts } from './src/x-posts.mjs';
 import { SecretBox } from './src/secrets.mjs';
 import { DiscordLinks, DiscordBridge } from './src/discord.mjs';
@@ -60,6 +61,7 @@ const STATIC = new Map([
   ['/personality-ui.mjs', ['personality-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/contact-ui.mjs', ['contact-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/studio-ui.mjs', ['studio-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/owner-profile-ui.mjs', ['owner-profile-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/web-push-ui.mjs', ['web-push-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/bubbles.mjs', ['bubbles.mjs', 'text/javascript; charset=utf-8']],
   ['/voice-ui.mjs', ['voice-ui.mjs', 'text/javascript; charset=utf-8']],
@@ -113,7 +115,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   const headers = {
     'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
-    'content-security-policy': "default-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    'content-security-policy': "default-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
   };
   let accountHttp;
   let privateHttp;
@@ -121,6 +123,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let agentsConfigured = false;
   let companionHttp;
   let studioHttp;
+  let ownerProfileHttp;
   let schedulerHttp, schedulerService, schedulerStore, calendar = null, github = null, mail = null, x = null, discord = null;
   let asr = null, files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
   const fileTurns = new Map();
@@ -227,6 +230,11 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         if (result.closeConnection) res.setHeader('connection', 'close');
         return send(result.status, result.body);
       }
+      if (path === '/api/owner-profile' && mode === 'account') {
+        const result = await ownerProfileHttp(req);
+        if (result.closeConnection) res.setHeader('connection', 'close');
+        return send(result.status, result.body);
+      }
       if (path === '/api/companion' && mode === 'account') {
         if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'Method not available.');
         const result = await companionHttp(req);
@@ -284,6 +292,11 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       schedulerStore = new SchedulerStore({ store, timezoneFor: companionId => profiles.get(companionId)?.timezone ?? 'UTC',
         log: message => console.error(message), ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
       const owners = loadRuntimeConfig(runtimeFile);
+      const ownerProfiles = new OwnerProfiles({ store, nameFor: id => {
+        const owner = owners.find(value => companionIdFor(store, value) === id);
+        return owner?.label ?? 'You';
+      } });
+      ownerProfileHttp = createOwnerProfileHttp({ access, profiles: ownerProfiles });
       if (owners.length) {
         if (!runtimeDir) throw new Error('COMPANION_RUNTIME_DIR is required with COMPANION_RUNTIME_FILE');
         const appServersFor = runnerOptions.mcpServersFor ?? (() => []);
