@@ -5,7 +5,7 @@ export const CLAUDE_FILE_TOOLS = Object.freeze(['Read', 'Edit', 'Write', 'Glob',
 export const BUILTIN_TOOLS = Object.freeze([...WEB_TOOLS, ...CLAUDE_FILE_TOOLS]);
 export const READ_ONLY_BOARD_TOOLS = Object.freeze([
   'get_work', 'list_projects', 'list_tickets', 'get_ticket',
-  'get_text', 'get_thread', 'list_human_requests', 'read_inbox'
+  'get_text', 'get_thread', 'get_message', 'list_human_requests', 'read_inbox'
 ]);
 
 function plainObject(value, name) {

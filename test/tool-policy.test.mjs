@@ -15,7 +15,7 @@ test('pure normalization keeps explicit opt-in and separate frozen web/file cons
   assert.deepEqual(CLAUDE_FILE_TOOLS, ['Read', 'Edit', 'Write', 'Glob', 'Grep']);
   assert.deepEqual(BUILTIN_TOOLS, [...WEB_TOOLS, ...CLAUDE_FILE_TOOLS]);
   assert.deepEqual(READ_ONLY_BOARD_TOOLS, ['get_work', 'list_projects', 'list_tickets', 'get_ticket',
-    'get_text', 'get_thread', 'list_human_requests', 'read_inbox']);
+    'get_text', 'get_thread', 'get_message', 'list_human_requests', 'read_inbox']);
   for (const list of [WEB_TOOLS, CLAUDE_FILE_TOOLS, BUILTIN_TOOLS, READ_ONLY_BOARD_TOOLS]) {
     assert.ok(Object.isFrozen(list));
   }

@@ -18,7 +18,7 @@ projects stay with the human owner.
 "board": {
   "configDir": "/home/ubuntu/.config/personal-agent/board/blackout",
   "allowedTools": ["get_work", "list_projects", "list_tickets", "get_ticket", "get_text", "get_thread",
-    "list_human_requests", "read_inbox", "create_ticket", "update_ticket", "post_message",
+    "get_message", "list_human_requests", "read_inbox", "create_ticket", "update_ticket", "post_message",
     "release_ticket", "resolve_human_request", "update_companion_profile"]
 }
 ```
