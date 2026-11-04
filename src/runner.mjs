@@ -93,8 +93,18 @@ export class CompanionRunner {
 
   // prompt: user text. resume: provider session id from a previous turn of the same thread.
   // onEvent receives {type:'session'|'delta'|'rate'|'tool'|'acting'} events while the reply streams ('acting': a tool call started).
-  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal } = {}) {
-    return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, images, appServers, onEvent, signal });
+  // group (#53, docs/GROUP-CHAT.md): a group chat turn runs in its own empty folder (runtimeDir/<label>/groups/<id>),
+  // never in the private workspace, so the provider loads no workspace files and keeps a separate session per group.
+  // Codex runs it read-only there.
+  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal, group = null } = {}) {
+    return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, images, appServers, onEvent, signal, group });
+  }
+
+  groupDir(owner, groupId) {
+    if (typeof groupId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(groupId)) throw new TypeError('Invalid group');
+    const base = join(this.runtimeDir, owner.label), groups = join(base, 'groups'), dir = join(groups, groupId);
+    for (const path of [this.runtimeDir, base, groups, dir]) mkdirSync(path, { recursive: true, mode: 0o700 });
+    return dir;
   }
 
   // Application-owned release wakes alone may use native web tools regardless of
@@ -108,9 +118,9 @@ export class CompanionRunner {
     return this.#enqueue(this.owners.find(owner => owner.label === label) ?? null, options);
   }
 
-  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal } = {}, releaseCheck = false) {
+  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal, group = null } = {}, releaseCheck = false) {
     if (!owner) return Promise.reject(new RunnerError('NO_RUNTIME'));
-    let toolPolicy;
+    let toolPolicy, cwd = null;
     try {
       const configured = releaseCheck ? [] : this.mcpServersFor(owner);
       if (configured && typeof configured.then === 'function') {
@@ -125,21 +135,22 @@ export class CompanionRunner {
           && (toolPolicy.tools.length !== WEB_TOOLS.length || !WEB_TOOLS.every(tool => toolPolicy.tools.includes(tool)))) {
         throw new TypeError('Codex web tools must be selected together');
       }
+      if (group !== null) cwd = this.groupDir(owner, group);
     } catch {
       return Promise.reject(new RunnerError('TOOL_POLICY_REFUSED'));
     }
     const previous = this.queues.get(owner.label) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(() => this.#turn(owner, { prompt, resume, systemPrompt, toolPolicy, images: [...images], onEvent, signal, releaseCheck }));
+    const current = previous.catch(() => {}).then(() => this.#turn(owner, { prompt, resume, systemPrompt, toolPolicy, images: [...images], onEvent, signal, releaseCheck, cwd }));
     this.queues.set(owner.label, current);
     current.finally(() => { if (this.queues.get(owner.label) === current) this.queues.delete(owner.label); }).catch(() => {});
     return current;
   }
 
-  async #turn(owner, { prompt, resume, systemPrompt, toolPolicy, images, onEvent, signal, releaseCheck }) {
+  async #turn(owner, { prompt, resume, systemPrompt, toolPolicy, images, onEvent, signal, releaseCheck, cwd = null }) {
     if (signal?.aborted) throw new RunnerError('CANCELLED');
     const adapter = ADAPTERS[owner.provider], { home, workspace } = this.paths(owner);
-    const spec = adapter.command({ binary: this.binaries[owner.provider], home, resume, model: owner.model, systemPrompt, toolPolicy, images, readOnly: releaseCheck });
-    const child = this.#run(spec, workspace);
+    const spec = adapter.command({ binary: this.binaries[owner.provider], home, resume, model: owner.model, systemPrompt, toolPolicy, images, readOnly: releaseCheck || cwd !== null });
+    const child = this.#run(spec, cwd ?? workspace);
     child.stdin.on('error', () => {});
     child.stdin.end((spec.promptPrefix ?? '') + prompt);
 

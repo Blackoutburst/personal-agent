@@ -480,6 +480,13 @@ export class SchedulerStore {
     else this.#db.prepare("UPDATE " + (row.routine ? 'scheduler_routine_occurrences' : 'scheduler_occurrences') + " SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
     return true;
   }
+  // The owner's quiet hours are on now (#53: group pushes and own-initiative group posts). Owners who never saved
+  // settings have the default 22:00–08:00.
+  quietNow(companionId) {
+    let settings = null;
+    try { settings = this.#owner(companionId, false); } catch { settings = null; }
+    return this.#quiet(companionId, settings ?? { quiet_start: '22:00', quiet_end: '08:00' }, this.#time());
+  }
   canDeliver(companionId, id) {
     const settings = this.#owner(companionId, false), row = this.#lookup(companionId, id);
     return this.#eligible(companionId, row, settings, this.#time());

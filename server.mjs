@@ -16,7 +16,9 @@ import { CompanionRunner } from './src/runner.mjs';
 import { Conversations } from './src/conversations.mjs';
 import { WebBudget } from './src/web-budget.mjs';
 import { Connectors } from './src/connectors.mjs';
-import { Profiles, ensureWorkspace, instructions } from './src/companion.mjs';
+import { Profiles, ensureWorkspace, instructions, groupInstructions } from './src/companion.mjs';
+import { outfitFor } from './src/wardrobe.mjs';
+import { GroupChat, createGroupHttp } from './src/group-chat.mjs';
 import { createCompanionHttp } from './src/companion-http.mjs';
 import { SchedulerStore, SchedulerService } from './src/scheduler.mjs';
 import { createSchedulerHttp, schedulerOperation } from './src/scheduler-http.mjs';
@@ -63,6 +65,7 @@ const STATIC = new Map([
   ['/contact-ui.mjs', ['contact-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/studio-ui.mjs', ['studio-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/board-ui.mjs', ['board-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/group-ui.mjs', ['group-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/owner-profile-ui.mjs', ['owner-profile-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/web-push-ui.mjs', ['web-push-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/bubbles.mjs', ['bubbles.mjs', 'text/javascript; charset=utf-8']],
@@ -99,7 +102,7 @@ function androidRelease(dataDir) {
 }
 
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, githubOptions = {}, mailOptions = {}, xOptions = {}, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {}, pushOptions = {} } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, githubOptions = {}, mailOptions = {}, xOptions = {}, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {}, pushOptions = {}, groupOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -127,6 +130,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let studioHttp;
   let ownerProfileHttp;
   let schedulerHttp, schedulerService, schedulerStore, calendar = null, github = null, mail = null, x = null, discord = null;
+  let groupChat = null, groupHttp = null;
   let asr = null, files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
@@ -206,6 +210,8 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         }
       }
       if ((path === '/api/files' || path.startsWith('/api/files/')) && mode === 'account') return fileHttp(req, res, headers);
+      // Group chat (#53, docs/GROUP-CHAT.md): JSON actions, and the group's own attachments.
+      if ((path === '/api/groups' || path.startsWith('/api/groups/')) && mode === 'account') return groupHttp(req, res, headers);
       if (path === '/internal/scheduler' && mode === 'account') {
         // The provider's stdio adapter receives an ephemeral token for exactly one owner.
         // This path never accepts cookies, companion selectors or settings changes.
@@ -397,7 +403,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, mail: () => mail, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
       // Board inbox (#55, docs/BOARD-INBOX.md): one sub-conversation per Board thread or ticket, out of the main chat.
       const boardInbox = new BoardInbox({ store, ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
-      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget: new WebBudget({ store }), boardInbox,
+      const webBudget = new WebBudget({ store });
+      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget, boardInbox,
+        // #53: the companion's own wakes may choose to look in on a group chat it is in.
+        groupWakes: { note: companionId => groupChat?.wakeNote(companionId) ?? '', nudge: (companionId, groupId, note) => groupChat?.nudge(companionId, groupId, note) ?? false },
         linkContext: (companionId, text) => x.forTurn(companionId, text),
         turnNote: (companionId, requestId) => discord?.turnNote(companionId, requestId) ?? null,
         toolFilterFor: companionId => connectors.toolFilter(companionId), wakePolicy: {
@@ -423,11 +432,35 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           });
         }
       };
+      // Group chat (#53, docs/GROUP-CHAT.md): owners and their companions together. A group turn gets the companion's
+      // personality and the group only (groupInstructions), never its private files or 1:1 chat.
+      const groupSystemPrompt = (companionId, context) => {
+        const workspace = workspaceFor(companionId);
+        if (!workspace) return null;
+        ensureWorkspace(workspace.dir, workspace.owner);
+        return groupInstructions({ owner: workspace.owner, profile: profiles.get(companionId), dir: workspace.dir, ...context });
+      };
+      groupChat = new GroupChat({ store, runner, systemPrompt: groupSystemPrompt, webBudget,
+        directory: () => owners.map(owner => ({ label: owner.label, companionId: companionIdFor(store, owner) })).filter(owner => owner.companionId),
+        ownerProfile: companionId => ownerProfiles.publicProfile(companionId),
+        ownerPhoto: companionId => ownerProfiles.readPhoto(companionId, companionId),
+        companionLook: companionId => {
+          const look = profiles.get(companionId);
+          return look ? { name: look.name, character: look.character, color: look.color,
+            outfit: look.outfit && look.outfit !== 'auto' ? look.outfit : outfitFor(look, new Date(), weather.current(companionId)) } : null;
+        },
+        toolFilterFor: companionId => connectors.toolFilter(companionId), quiet: companionId => schedulerStore.quietNow(companionId),
+        onMessage: event => { pushNotifier?.group(event); webPushNotifier?.group(event); },
+        filesDir: join(dataDir, 'group-files'), log: message => console.error(message),
+        ...(conversationOptions.allowedTools ? { allowedTools: conversationOptions.allowedTools } : {}),
+        ...(conversationOptions.gatherMs ? { gatherMs: conversationOptions.gatherMs } : {}), ...groupOptions });
+      groupHttp = createGroupHttp({ access, groups: groupChat });
       calendar = new Calendar({ store, timezoneFor: companionId => profiles.get(companionId)?.timezone ?? 'UTC',
         ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}), reminders: schedulerStore,
         changed: (companionId, eventId) => schedulerService?.cancelEvents(companionId, `cal-${eventId}-`) });
       schedulerService = new SchedulerService({ scheduler: schedulerStore, conversations, prepare: companionId => {
         calendar.enqueueDue(companionId);
+        try { groupChat?.tick(companionId); } catch { /* own-initiative group posts wait for the next tick */ }
         const notice = github.expiryNotice(companionId);
         if (notice) try { schedulerStore.enqueueEvent(companionId, { requestId: notice.requestId, kind: 'connector', prompt: notice.prompt }); } catch { /* next tick */ }
         const mailNotice = connectors.mailOn(companionId) ? mail.newMailNotice(companionId) : null;
@@ -486,6 +519,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     refreshWorkspaceInstructions();
     files?.recover();
     conversations?.recover();
+    groupChat?.recover();
     schedulerService?.start();
     if (weatherOptions.poll !== false) weather?.start();
     if (boardOptions.poll !== false) boardCompanion?.start();
@@ -495,18 +529,20 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     discord?.stop();
     await schedulerService?.stop();
     if (server.listening) await new Promise(resolve => server.close(resolve));
+    await groupChat?.shutdown();
     await conversations?.shutdown();
     store.close(); throw error;
   }
   return {
     server, store, url: `http://127.0.0.1:${server.address().port}`,
-    conversations, files, scheduler: schedulerService, discord,
+    conversations, files, scheduler: schedulerService, discord, groupChat,
     async close() {
       weather?.stop(); boardCompanion?.stop();
       discord?.stop();
       await schedulerService?.stop();
       await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       // Running replies end as interrupted; nothing writes to a closed store.
+      await groupChat?.shutdown();
       await conversations?.shutdown();
       asr?.stop();
       store.close();

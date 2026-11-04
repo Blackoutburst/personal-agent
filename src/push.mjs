@@ -117,6 +117,21 @@ export class PushNotifier {
     this.#deliver(tokens, data).catch(error => this.#log(`Push failed: ${error.code ?? error.message}`));
   }
 
+  // A group chat message for one human member (#53, docs/GROUP-CHAT.md). Data-only like every push: the group flag and
+  // ids for the deep link and the group's name, never the message text (the app fetches it from this server).
+  group({ companionId, groupId, groupName, messageId, mentioned = false }) {
+    if (typeof groupId !== 'string' || typeof messageId !== 'string') return;
+    const key = companionId + ':' + messageId;
+    if (this.#recent.has(key)) return;
+    this.#recent.add(key);
+    if (this.#recent.size > RECENT) this.#recent.delete(this.#recent.values().next().value);
+    const tokens = this.#devices.tokens(companionId);
+    if (!tokens.length) return;
+    const name = String(groupName ?? '').slice(0, 60);
+    const data = { type: 'group', group: '1', groupId, messageId, ...(name ? { name } : {}), ...(mentioned ? { mention: '1' } : {}) };
+    this.#deliver(tokens, data).catch(error => this.#log(`Push failed: ${error.code ?? error.message}`));
+  }
+
   async #deliver(tokens, data) {
     const counts = { sent: 0, gone: 0, failed: 0 };
     for (const token of tokens) {

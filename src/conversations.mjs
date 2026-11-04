@@ -170,7 +170,7 @@ function titleFrom(text) {
 }
 
 export class Conversations {
-  #db; #runner; #now; #systemPrompt; #boardInbox; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote; #gatherMs; #texting; #gathering = new Map(); #typing = new Map(); #runs = new Map();
+  #db; #runner; #now; #systemPrompt; #boardInbox; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote; #gatherMs; #texting; #groupWakes; #gathering = new Map(); #typing = new Map(); #runs = new Map();
   // Both filters must keep a tool (connector switches, #43, on top of the wake or web-allowance filter).
   #filter(companionId, own) {
     const extra = this.#toolFilterFor(companionId);
@@ -186,7 +186,7 @@ export class Conversations {
   // Omitted tools inherit owner policy; [] is an explicit turn-level narrowing.
   constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools,
     session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 }, wakePolicy = {}, onSettled = () => {}, files = null,
-    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null, gatherMs = 0, texting = false, boardInbox = null }) {
+    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null, gatherMs = 0, texting = false, boardInbox = null, groupWakes = null }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
     this.#session = session; this.#allowedTools = allowedTools; this.#onSettled = onSettled;
     this.#files = files; this.#fileToolsForTurn = fileToolsForTurn;
@@ -197,6 +197,9 @@ export class Conversations {
     this.#turnNote = turnNote;
     // boardInbox (#55): Board wakes go to one sub-conversation per Board thread or ticket instead of the main chat.
     this.#boardInbox = boardInbox;
+    // groupWakes (#53, docs/GROUP-CHAT.md): { note(companionId) -> prompt text, nudge(companionId, groupId, note) -> boolean }.
+    // The companion's own wakes may choose to look in on a group chat it is in instead of messaging its owner.
+    this.#groupWakes = groupWakes;
     // gatherMs: an owner message waits this long before the companion starts answering. Messages sent in the
     // meantime join the same turn, so a burst of short texts gets one reply, like talking to a person.
     this.#gatherMs = Number.isSafeInteger(gatherMs) && gatherMs > 0 ? gatherMs : 0;
@@ -818,10 +821,12 @@ export class Conversations {
         WHERE thread_id=? ORDER BY created_at DESC,r DESC LIMIT ?) ORDER BY created_at,r`).all(thread.id, this.#session.recentMessages)
         .map(row=>({role:row.role,text:row.text,...(row.role==='peer'?{peer:JSON.parse(row.peer_json)}:{})}));
       let buffered = '', overflow = false;
+      let groups = '';
+      if (OWN_WAKES.includes(wake.kind) && this.#groupWakes) { try { groups = String(this.#groupWakes.note(companionId) ?? ''); } catch { groups = ''; } }
       const turnInput = {
         prompt: 'This is a private background ' + wake.kind + ' wake, not a user message. Decide whether to contact the owner. '
           + 'For this background turn only, return exactly one JSON object, without markdown or other text: {"action":"message","text":"your message"} '
-          + 'or {"action":"silent"}. Your native feeling tag may precede the JSON. Message text must be nonempty and at most 4000 characters. Respond naturally again on normal user turns.\n\n' + wake.prompt,
+          + 'or {"action":"silent"}' + (groups ? ' (or the group choice below)' : '') + '. Your native feeling tag may precede the JSON. Message text must be nonempty and at most 4000 characters. Respond naturally again on normal user turns.\n\n' + wake.prompt + groups,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }),
         allowedTools: this.#allowedTools, toolFilter: this.#filter(companionId, wakeToolFilter(wake.kind)), signal: controller.signal,
         onEvent: event => {
@@ -842,10 +847,15 @@ export class Conversations {
       const split = splitFeeling(raw);
       if (split.pending) throw invalid();
       const decision = JSON.parse(split.text);
-      if (!decision || typeof decision !== 'object' || Array.isArray(decision)
+      // A group choice (#53): the wake itself ends silent here; the group turn decides there, with the group's context only.
+      const group = groups && decision?.action === 'group' && typeof decision.groupId === 'string'
+        && Object.keys(decision).every(key => ['action', 'groupId', 'note'].includes(key))
+        && (decision.note === undefined || typeof decision.note === 'string' && decision.note.length <= 300) ? decision : null;
+      if (!group && (!decision || typeof decision !== 'object' || Array.isArray(decision)
           || !(decision.action === 'silent' && Object.keys(decision).length === 1
             || decision.action === 'message' && Object.keys(decision).length === 2
-              && Object.hasOwn(decision, 'text') && wellFormed(decision.text, 4000, 16000))) throw invalid();
+              && Object.hasOwn(decision, 'text') && wellFormed(decision.text, 4000, 16000)))) throw invalid();
+      let chose = false;
       this.#tx(() => {
         const current = this.#wake(companionId, id);
         if (current?.state !== 'running' || current.attempt_token !== wake.attempt_token) return;
@@ -853,12 +863,14 @@ export class Conversations {
           if (reply.sessionId) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(reply.sessionId, thread.id);
           this.#db.prepare('UPDATE conv_threads SET session_turns=session_turns+1,session_at=? WHERE id=?').run(this.#now(), thread.id);
         }
-        if (decision.action === 'silent') {
+        if (decision.action === 'silent' || group) {
           this.#db.prepare("UPDATE conv_wakes SET state='silent',result_text=NULL,result_feeling=NULL,updated_at=? WHERE companion_id=? AND id=?")
             .run(this.#now(), companionId, id);
           this.#append(thread.id, { type: 'turn', requestId: wake.request_id, state: 'complete' });
+          chose = Boolean(group);
         } else this.#deliverWake({ ...current, result_text: decision.text, result_feeling: split.feeling });
       });
+      if (chose) { try { this.#groupWakes.nudge(companionId, group.groupId, group.note ?? null); } catch { /* the group turn is best effort */ } }
       this.#notifyWake(companionId, id);
     } catch (error) {
       this.#endWake(wake, this.#closing ? 'interrupted' : controller.signal.aborted ? 'cancelled' : 'error');

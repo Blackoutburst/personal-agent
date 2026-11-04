@@ -184,6 +184,23 @@ export class WebPushNotifier {
       .catch(error => this.#log(`Web push failed: ${error.code ?? error.message}`));
   }
 
+  // A group chat message for one human member (#53): titled with the group, "Author: text" as the (optional) preview.
+  group({ companionId, groupId, groupName, messageId, author, text }) {
+    if (typeof groupId !== 'string' || typeof messageId !== 'string') return;
+    const key = companionId + ':' + messageId;
+    if (this.#recent.has(key)) return;
+    this.#recent.add(key);
+    if (this.#recent.size > RECENT) this.#recent.delete(this.#recent.values().next().value);
+    const subscriptions = this.#subscriptions.list(companionId).filter(row => !this.#subscriptions.isPresent(row.endpoint));
+    if (!subscriptions.length) return;
+    let preview = previewText(text);
+    if (preview.length > PREVIEW) preview = preview.slice(0, PREVIEW - 1).trimEnd() + '…';
+    const who = String(author ?? '').slice(0, 60);
+    this.#deliver(subscriptions, { type: 'group', groupId, messageId, title: String(groupName ?? '').slice(0, 60) || 'Group', group: true },
+      preview ? (who ? `${who}: ${preview}` : preview) : 'New message')
+      .catch(error => this.#log(`Web push failed: ${error.code ?? error.message}`));
+  }
+
   async #deliver(subscriptions, base, preview) {
     const counts = { sent: 0, gone: 0, failed: 0 };
     for (const subscription of subscriptions) {
