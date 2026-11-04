@@ -274,7 +274,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     if (mode === 'account') {
       const profiles = new Profiles({ store });
       schedulerStore = new SchedulerStore({ store, timezoneFor: companionId => profiles.get(companionId)?.timezone ?? 'UTC',
-        ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
+        log: message => console.error(message), ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
       const owners = loadRuntimeConfig(runtimeFile);
       if (owners.length) {
         if (!runtimeDir) throw new Error('COMPANION_RUNTIME_DIR is required with COMPANION_RUNTIME_FILE');

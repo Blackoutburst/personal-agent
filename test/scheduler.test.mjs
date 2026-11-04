@@ -449,3 +449,45 @@ test('service stop joins an active tick and prevents timer callbacks from admitt
   await delay(25);
   assert.equal(conversations.calls.length, count);
 });
+
+// #51: once the proactive daily budget was spent, every later Board mention stayed queued until midnight.
+test('Board wakes never spend or wait on the proactive daily budget, and held wakes log why once', t => {
+  const lines = [];
+  const f = fixture(t, { minSpacingMs: 0, maxTurnsPerDay: 1, log: line => lines.push(line) });
+  f.create('budget-reminder'); f.create('budget-second'); f.advance(MINUTE);
+  const [reminder, second] = f.scheduler.prepareDue(f.a);
+  assert.equal(f.admit(f.a, reminder.id), true);
+  f.scheduler.finishOccurrence(f.a, reminder.id, 'complete');
+  assert.equal(f.admit(f.a, second.id), false, 'The proactive budget is spent');
+  assert.equal(f.admit(f.a, second.id), false);
+  assert.deepEqual(lines.filter(line => line.endsWith(': daily_cap')).length, 1, 'A held wake logs its reason once');
+  f.scheduler.enqueueEvent(f.a, { requestId: 'board-mention-after-cap', kind: 'board', prompt: 'Mentioned on the Board.' });
+  const board = f.scheduler.pending(f.a).find(wake => wake.kind === 'board');
+  assert.equal(f.admit(f.a, board.id), true, 'A Board mention is admitted after the proactive cap');
+  f.scheduler.finishOccurrence(f.a, board.id, 'silent');
+  assert.equal(f.admit(f.a, second.id), false, 'The Board wake did not refill or reset the proactive budget');
+  assert.ok(lines.every(line => !line.includes('Mentioned on the Board')), 'Logs never carry prompts');
+});
+
+test('Board wakes keep their own spacing and rolling cap so reply loops stay bounded', t => {
+  const lines = [];
+  const f = fixture(t, { boardSpacingMs: 30000, maxBoardWakesPerDay: 2, log: line => lines.push(line) });
+  const enqueue = requestId => {
+    f.scheduler.enqueueEvent(f.a, { requestId, kind: 'board', prompt: `Board ${requestId}` });
+    return f.scheduler.pending(f.a).find(wake => wake.prompt === `Board ${requestId}`);
+  };
+  const first = enqueue('board-first'), second = enqueue('board-second');
+  assert.equal(f.admit(f.a, first.id), true);
+  f.scheduler.finishOccurrence(f.a, first.id, 'message');
+  assert.equal(f.admit(f.a, second.id), false, 'Board spacing holds a burst');
+  assert.ok(lines.some(line => line.startsWith('Scheduler held board wake') && line.endsWith(': board_spacing')));
+  f.advance(30000); assert.equal(f.admit(f.a, second.id), true);
+  f.scheduler.finishOccurrence(f.a, second.id, 'message');
+  f.advance(MINUTE); const third = enqueue('board-third');
+  assert.equal(f.admit(f.a, third.id), false, 'The rolling Board cap holds further wakes');
+  assert.ok(lines.some(line => line.endsWith(': board_daily_cap')));
+  f.advance(DAY); assert.equal(f.admit(f.a, third.id), true, 'The rolling window frees capacity again');
+  f.create('proactive-still-free'); f.advance(MINUTE);
+  const reminder = f.scheduler.prepareDue(f.a).find(wake => wake.kind !== 'board');
+  assert.equal(f.admit(f.a, reminder.id), true, 'Board wakes did not consume proactive spacing or budget');
+});

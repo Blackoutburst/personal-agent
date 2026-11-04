@@ -29,11 +29,11 @@ function fakeClient(requests, inbox) {
   } };
 }
 
-function fixture(t, { requests = () => [], inbox = () => [], profile = { name: 'Claude', character: 'claude' }, owners = [owner] } = {}) {
+function fixture(t, { requests = () => [], inbox = () => [], profile = { name: 'Claude', character: 'claude' }, owners = [owner], log = () => {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'board-companion-')), store = new BootstrapStore(dir, ROOT);
   const events = [], client = fakeClient(requests, inbox);
   const companion = new BoardCompanion({ store, owners, profiles: { get: id => id === ID ? profile : null },
-    scheduler: { enqueueEvent: (id, input) => events.push([id, input]) }, companionIdFor: () => ID, clientFor: () => client });
+    scheduler: { enqueueEvent: (id, input) => events.push([id, input]) }, companionIdFor: () => ID, clientFor: () => client, log });
   t.after(() => { companion.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { companion, events, client, profile, store };
 }
@@ -253,4 +253,16 @@ test('the Board client unwraps FastMCP list results and passes objects through',
     assert.deepEqual(await client.call('list_human_requests', { view: 'full' }), [{ id: 'r1' }]);
     assert.deepEqual(await client.call('read_inbox', {}), { session: { owner_id: 'o' } });
   } finally { client.close(); }
+});
+
+// #51: every mention either queues a wake or leaves a reason in the log.
+test('baseline skips, replays and queued wakes are logged with counts only', async t => {
+  const lines = []; let pending = [ping('old1')];
+  const { companion } = fixture(t, { log: line => lines.push(line), inbox: () => { const page = pending; pending = []; return page; } });
+  await companion.tick();
+  assert.ok(lines.some(line => /1 message\(s\) from before the first check skipped/.test(line)));
+  pending = [ping('m1'), ping('old1')];
+  await companion.tick();
+  assert.ok(lines.some(line => /queued mention wake for 1 message\(s\) in thread th1/.test(line)));
+  assert.ok(lines.some(line => /1 already-woken message\(s\) skipped/.test(line)));
 });

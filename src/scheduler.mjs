@@ -4,7 +4,7 @@ import { ReleaseWatches } from './release-watches.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/, HASH = /^[a-f0-9]{64}$/, CLOCK = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
-const PERIOD = 6 * 3600000, GRACE = 24 * 3600000;
+const PERIOD = 6 * 3600000, GRACE = 24 * 3600000, DAY_MS = 24 * 3600000;
 const TERMINAL = new Set(['message', 'silent', 'cancelled', 'interrupted', 'error', 'missed']);
 const ROUTINES = ['dailyDigest', 'weeklyCheckin'];
 const CODES = new Set(['INVALID_REQUEST', 'NOT_FOUND', 'CONFLICT', 'CAPACITY', 'UNAVAILABLE', 'IDENTITY_CHANGED']);
@@ -69,12 +69,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS scheduler_routine_attempt ON scheduler_routine
  WHERE admitted_at IS NOT NULL;`;
 
 export class SchedulerStore {
-  #db; #timezone; #now; #spacing; #cap; #release;
-  constructor({ store, timezoneFor = () => 'UTC', now = Date.now, minSpacingMs = 300000, maxTurnsPerDay = 24 }) {
+  #db; #timezone; #now; #spacing; #cap; #release; #boardSpacing; #boardCap; #log; #heldLogged = new Set();
+  // log(line) receives only kinds, reasons and id prefixes: never prompts or private content.
+  constructor({ store, timezoneFor = () => 'UTC', now = Date.now, minSpacingMs = 300000, maxTurnsPerDay = 24,
+    boardSpacingMs = 30000, maxBoardWakesPerDay = 200, log = () => {} }) {
     requireSchedule(store?.db && typeof timezoneFor === 'function' && typeof now === 'function'
-      && integer(minSpacingMs) && integer(maxTurnsPerDay, 1, 1000));
+      && integer(minSpacingMs) && integer(maxTurnsPerDay, 1, 1000) && integer(boardSpacingMs)
+      && integer(maxBoardWakesPerDay, 1, 10000) && typeof log === 'function');
     this.#db = store.db; this.#timezone = timezoneFor; this.#now = now; this.#spacing = minSpacingMs; this.#cap = maxTurnsPerDay;
+    this.#boardSpacing = boardSpacingMs; this.#boardCap = maxBoardWakesPerDay; this.#log = log;
     this.#tx(() => { this.#db.exec(SCHEMA); this.#release = new ReleaseWatches(this.#db, code => new SchedulerError(code)); });
+  }
+  // A wake that stays queued says why, once per wake and reason (#51), instead of waiting silently.
+  #held(row, reason) {
+    const key = row.id + ':' + reason;
+    if (!this.#heldLogged.has(key)) {
+      if (this.#heldLogged.size > 2000) this.#heldLogged.clear();
+      this.#heldLogged.add(key);
+      this.#log(`Scheduler held ${row.kind ?? 'routine'} wake ${String(row.id).slice(0, 8)}: ${reason}`);
+    }
+    return false;
   }
   #tx(run) {
     try {
@@ -382,17 +396,31 @@ export class SchedulerStore {
   startInTransaction(companionId, id) {
     const settings = this.#owner(companionId, false), now = this.#time();
     const row = this.#lookup(companionId, id);
-    if (!this.#eligible(companionId, row, settings, now, true)) return false;
+    if (!this.#eligible(companionId, row, settings, now, true)) {
+      if (row && settings?.enabled && !TERMINAL.has(row.state) && !row.release_watch && this.#quiet(companionId, settings, now)) this.#held(row, 'quiet_hours');
+      return false;
+    }
     if (row.admitted_at !== null) return true;
     if (row.release_watch) {
       if (now < settings.cooldown_until) return false;
       this.#db.prepare("UPDATE scheduler_release_occurrences SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
       return true;
     }
-    if (now < settings.cooldown_until || settings.last_started_at !== null && now - settings.last_started_at < this.#spacing) return false;
+    if (now < settings.cooldown_until) return this.#held(row, 'provider_cooldown');
+    // Board wakes answer someone who addressed the companion (#51): they never spend the owner's proactive budget,
+    // which once left every later mention of the day queued. Their own spacing and rolling cap bound reply loops.
+    if (row.kind === 'board') {
+      const board = this.#db.prepare(`SELECT MAX(admitted_at) AS last, SUM(admitted_at>?) AS recent FROM scheduler_occurrences
+        WHERE companion_id=? AND kind='board' AND admitted_at IS NOT NULL`).get(now - DAY_MS, companionId);
+      if (board?.last != null && now - board.last < this.#boardSpacing) return this.#held(row, 'board_spacing');
+      if ((board?.recent ?? 0) >= this.#boardCap) return this.#held(row, 'board_daily_cap');
+      this.#db.prepare("UPDATE scheduler_occurrences SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
+      return true;
+    }
+    if (settings.last_started_at !== null && now - settings.last_started_at < this.#spacing) return this.#held(row, 'spacing');
     const day = this.#local(companionId, now).day;
     const count = this.#db.prepare('SELECT turns FROM scheduler_days WHERE companion_id=? AND local_day=?').get(companionId, day)?.turns ?? 0;
-    if (count >= this.#cap) return false;
+    if (count >= this.#cap) return this.#held(row, 'daily_cap');
     this.#db.prepare(`INSERT INTO scheduler_days VALUES(?,?,1) ON CONFLICT(companion_id,local_day) DO UPDATE SET turns=turns+1`).run(companionId, day);
     this.#db.prepare('UPDATE scheduler_settings SET last_started_at=? WHERE companion_id=?').run(now, companionId);
     this.#db.prepare("UPDATE " + (row.routine ? 'scheduler_routine_occurrences' : 'scheduler_occurrences') + " SET state='admitted',admitted_at=? WHERE id=?").run(now, id);

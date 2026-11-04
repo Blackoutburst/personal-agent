@@ -158,11 +158,12 @@ export class BoardCompanion {
       // One wake per thread and addressee: messages for the companion, and messages that only ping its owner
       // (the Board puts both in a companion's inbox).
       const threads = new Map();
+      let replayed = 0;
       for (const message of messages) {
         if (!message || typeof message.id !== 'string' || !ID.test(message.id) || typeof message.thread_id !== 'string'
           || !ID.test(message.thread_id)) continue;
         if (session?.agent_id && message.author?.agent_id === session.agent_id) continue;
-        if (seen.get(companionId, message.id)) continue;
+        if (seen.get(companionId, message.id)) { replayed++; continue; }
         const mentions = Array.isArray(message.mentions) ? message.mentions : null;
         const forOwner = Boolean(mentions && boardOwner && mentions.includes(boardOwner)
           && !(session?.agent_id && mentions.includes('agent:' + session.agent_id)));
@@ -171,11 +172,15 @@ export class BoardCompanion {
         threads.get(key).ids.push(message.id);
       }
       const now = Date.now();
+      // Every skipped mention leaves a reason in the log (#51); counts only, never message content.
+      if (replayed) this.#log(`Board companion: ${replayed} already-woken message(s) skipped for ${owner.label}`);
+      if (baseline && threads.size) this.#log(`Board companion: ${[...threads.values()].reduce((n, t) => n + t.ids.length, 0)} message(s) from before the first check skipped for ${owner.label}`);
       for (const { threadId, forOwner, ids } of threads.values()) {
         if (!baseline) {
           const requestId = (forOwner ? 'board-owner-ping-' : 'board-mention-') + createHash('sha256').update(ids.join(',')).digest('hex').slice(0, 32);
           this.#scheduler.enqueueEvent(companionId, { requestId, kind: 'board',
             prompt: (forOwner ? ownerMentionPrompt : mentionPrompt)(threadId, ids.slice(0, 20)) });
+          this.#log(`Board companion: queued ${forOwner ? 'owner-ping' : 'mention'} wake for ${ids.length} message(s) in thread ${threadId.slice(0, 8)}`);
         }
         for (const id of ids) mark.run(companionId, id, now);
       }
