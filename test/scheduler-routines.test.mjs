@@ -17,7 +17,7 @@ function fixture(t, { deferNew = false, ...options } = {}) {
   const f = { dir, clock: Date.parse('2026-11-02T08:00:00Z'), zones: new Map() };
   f.at = value => { f.clock = Date.parse(value); };
   f.open = () => { const store = new BootstrapStore(join(dir, 'data'), ROOT); stores.add(store); return store; };
-  f.make = store => new SchedulerStore({ store, now: () => f.clock, timezoneFor: owner => f.zones.get(owner) ?? 'UTC', minSpacingMs: 0, ...options });
+  f.make = store => new SchedulerStore({ store, now: () => f.clock, timezoneFor: owner => f.zones.get(owner) ?? 'UTC', minSpacingMs: 0, proactiveByDefault: false, ...options });
   f.store = f.open(); if (!deferNew) f.scheduler = f.make(f.store);
   for (const label of ['a', 'b', 'c']) f[label] = f.store.getOrInsert('companion-identity-v1',
     principalKey({ issuer: 'https://synthetic.invalid', subject: 'routine-owner-' + label }), { companionId: randomUUID() }).companionId;

@@ -48,4 +48,16 @@ class WatchesTest {
         val older = json.decodeFromString(ScheduleSettings.serializer(), "{$base}")
         assertFalse(older.boardCapOffered)
     }
+
+    @Test fun proactiveSettingsAndFollowupsAreOptionalForOlderServers() {
+        val base = "\"heartbeatEnabled\":false,\"quietStart\":\"22:00\",\"quietEnd\":\"08:00\""
+        val current = json.decodeFromString<Schedules>("{\"timezone\":\"UTC\",\"settings\":{$base,\"proactive\":{\"enabled\":true,\"perDay\":6}}," +
+            "\"followups\":[{\"id\":\"f1\",\"note\":\"Ask about the trip\",\"dueAt\":\"2026-11-14T17:00:00.000Z\",\"state\":\"active\",\"createdAt\":\"2026-11-02T12:00:00.000Z\",\"canCancel\":true}]}")
+        assertEquals(Proactive(true, 6), current.settings.proactive)
+        assertEquals("Ask about the trip", current.followups.single().note)
+        val older = json.decodeFromString<Schedules>("{\"timezone\":\"UTC\",\"settings\":{$base}}")
+        assertEquals(null, older.settings.proactive)
+        assertTrue(older.followups.isEmpty())
+        assertEquals(listOf(2, 4, 6, 8), PROACTIVE_FREQUENCIES.map { it.first })
+    }
 }

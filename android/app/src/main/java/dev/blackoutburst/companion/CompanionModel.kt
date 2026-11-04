@@ -507,6 +507,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelReminder(reminder: Reminder) = mutateSchedules("Reminder cancelled.", { api.cancelReminder(reminder.id) })
+    fun cancelFollowup(followup: Followup) = mutateSchedules("Follow-up cancelled.", { api.cancelFollowup(followup.id) })
 
     fun changeWatch(watch: Watch, operation: String, condition: String? = null, intervalHours: Int? = null) =
         sendWatchChange(WatchChange(java.util.UUID.randomUUID().toString(), watch, operation, condition, intervalHours))

@@ -28,7 +28,7 @@ let prompt = ''; process.stdin.on('data', value => prompt += value); process.std
   const session = args.includes('--resume') ? args[args.indexOf('--resume')+1] : 'synthetic-'+label;
   out({type:'system',subtype:'init',session_id:session});
   const wake = prompt.startsWith('This is a private background ');
-  const result = wake ? JSON.stringify(prompt.includes('background heartbeat wake') ? {action:'silent'} :
+  const result = wake ? JSON.stringify(prompt.includes('background heartbeat wake') || fs.existsSync(path.join(home,'silent')) ? {action:'silent'} :
     {action:'message',text:'Scheduled hello for '+label}) : 'Natural reply for '+label;
   out({type:'stream_event',event:{type:'content_block_delta',delta:{type:'text_delta',text:result.slice(0,12)}}});
   while (fs.existsSync(path.join(home,'hold')) && !fs.existsSync(path.join(home,'release'))) {
@@ -38,7 +38,7 @@ let prompt = ''; process.stdin.on('data', value => prompt += value); process.std
 });
 `;
 
-function fixture(t) {
+function fixture(t, options = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'scheduler-account-'))), apps = new Set(), children = new Set();
   const fake = join(dir, 'fake-claude.cjs'), runtimeFile = join(dir, 'owners.json');
   writeFileSync(fake, FAKE.replaceAll('\r\n', '\n'));
@@ -62,7 +62,7 @@ function fixture(t) {
         assert.equal(binary, fake, 'The application may execute only this synthetic provider');
         return spawn(process.execPath, [fake, ...args], options);
       } },
-      conversationOptions: { now: () => f.clock, flushMs: 1 }, schedulerOptions: { now: () => f.clock, pollMs: HOUR } });
+      conversationOptions: { now: () => f.clock, flushMs: 1, ...options.conversation }, schedulerOptions: { now: () => f.clock, pollMs: HOUR, proactiveByDefault: false, ...options.scheduler } });
     apps.add(app); return app;
   };
   f.close = async app => { await app.close(); apps.delete(app); };
@@ -210,7 +210,7 @@ test('generated owner MCP bindings run the actual scheduler child and permit onl
   assert.equal(configA.env.COMPANION_SCHEDULER_URL, app.url + '/internal/scheduler');
   const ownerA = await mcpChild(f, configA), ownerB = await mcpChild(f, configB);
   const tools = await ownerA.request('tools/list', {});
-  assert.deepEqual(tools.result.tools.map(tool => tool.name), ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'create_topic_watch', 'update_release_watch',
+  assert.deepEqual(tools.result.tools.map(tool => tool.name), ['create_schedule', 'list_schedules', 'cancel_schedule', 'schedule_followup', 'cancel_followup', 'create_release_watch', 'create_topic_watch', 'update_release_watch',
     'list_calendar', 'create_event', 'update_event', 'delete_event', 'github_list_repos', 'github_repo', 'github_pulls', 'github_pull', 'github_create_repo',
     'mail_status', 'mail_inbox', 'mail_read', 'mail_send', 'mail_mark_handled', 'mail_opt_out', 'read_x_post', 'watch_x_video']);
   const input = { requestId: 'from-real-mcp-child', text: 'Created through the owned scheduler tool', dueAt: iso(f.clock + 10 * MINUTE) };
@@ -397,4 +397,76 @@ test('calendar events (#44): owner UI and the real MCP child share one owner-bou
   assert.match((await child.call('update_event', { id: created.event.id, expectedVersion: 1, event: { ...event, title: 'Again' } })).result.content[0].text, /CONFLICT/);
   assert.equal(toolValue(await child.call('delete_event', { id: created.event.id })).deleted, true);
   child.child.stdin.end();
+});
+
+// #54: the companion's own wakes, end to end with the synthetic provider and the real scheduler MCP child.
+test('own wakes start at night for quiet work, hold their message without notifying until quiet hours end', async t => {
+  const settled = [];
+  const f = fixture(t, { scheduler: { proactiveByDefault: true, random: () => 0.5 }, conversation: { onSettled: event => settled.push(event) } });
+  f.clock = Date.UTC(2026, 10, 2, 18);
+  const app = await f.open(); await ready(f, app);
+  const listed = await schedules(app, { action: 'list' });
+  assert.deepEqual(listed.body.settings.proactive, { enabled: true, perDay: 4 }, 'Owners who never chose are on, four a day');
+  // Owner B turns them off from the browser; owner A keeps the default.
+  const off = await schedules(app, { action: 'configure', input: { proactive: { enabled: false } } }, B);
+  assert.equal(off.status, 200); assert.deepEqual(off.body.settings.proactive, { enabled: false, perDay: 4 });
+  // Four a day with a middle random factor: the first own wake is six hours later, at midnight, inside quiet hours.
+  f.clock = Date.UTC(2026, 10, 3, 0); await settle(app);
+  assert.equal(f.calls('blackout').length, 1, 'A night wake may start for quiet work'); assert.equal(f.calls('screamer').length, 0);
+  const prompt = f.calls('blackout')[0].prompt;
+  assert.match(prompt, /^This is a private background proactive wake/); assert.match(prompt, /one of your own wakes/);
+  assert.match(prompt, /inside their quiet hours/); assert.match(prompt, /00:00 \(UTC\)/);
+  assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM conv_wakes WHERE kind='proactive' AND state='waiting_delivery'").get().n, 1);
+  assert.deepEqual((await chat(app, { action: 'snapshot' })).body.messages, [], 'Its message waits for the morning');
+  assert.equal(settled.filter(event => event.proactive).length, 0, 'Nothing is pushed at night');
+  f.clock = Date.UTC(2026, 10, 3, 8); await settle(app);
+  assert.equal(f.calls('blackout').length, 1, 'Delivery does not start another provider turn');
+  assert.equal((await chat(app, { action: 'snapshot' })).body.messages.at(-1).text, 'Scheduled hello for blackout');
+  assert.equal(settled.filter(event => event.proactive).length, 1);
+  // Older clients that only save legacy preferences keep the owner's choice.
+  const legacy = await schedules(app, { action: 'configure', input: { heartbeatEnabled: false, quietStart: '22:00', quietEnd: '08:00' } }, B);
+  assert.deepEqual(legacy.body.settings.proactive, { enabled: false, perDay: 4 });
+  // The browser cannot schedule the companion's follow-ups.
+  assert.equal((await schedules(app, { action: 'createFollowup', input: { requestId: 'browser', at: iso(f.clock + HOUR), note: 'x' } })).status, 400);
+});
+
+test('the companion schedules its own follow-up through the real MCP child; it wakes once with the note', async t => {
+  // Own wakes on (follow-ups need them), the next one about nine hours away.
+  const f = fixture(t, { scheduler: { proactiveByDefault: true, random: () => 0.99 } }), app = await f.open(); await ready(f, app);
+  const thread = await chat(app, { action: 'createThread', requestId: 'thread-followup', title: 'Conversation' });
+  await chat(app, { action: 'submit', requestId: 'hello-followup', threadId: thread.body.thread.id, text: 'I leave for Lisbon tomorrow' });
+  await app.conversations.idle();
+  const owner = await mcpChild(f, descriptor(f.calls('blackout')[0]));
+  const input = { requestId: 'lisbon-trip', at: iso(f.clock + 2 * HOUR), note: 'Ask how the Lisbon trip went.' };
+  const created = toolValue(await owner.call('schedule_followup', input));
+  assert.equal(created.createdFollowup.note, input.note); assert.equal(created.followups.length, 1);
+  assert.equal(toolValue(await owner.call('schedule_followup', input)).createdFollowup.id, created.createdFollowup.id, 'Exact retries return the same follow-up');
+  assert.equal((await owner.call('schedule_followup', { ...input, note: 'Something else' })).result.isError, true);
+  assert.deepEqual((await schedules(app, { action: 'list' }, B)).body.followups, [], 'Follow-ups are owner-private');
+  assert.deepEqual((await schedules(app, { action: 'list' })).body.followups.map(item => item.id), [created.createdFollowup.id], 'The owner sees it');
+  f.clock += 2 * HOUR; await settle(app);
+  const wake = f.calls('blackout').at(-1).prompt;
+  assert.match(wake, /^This is a private background followup wake/); assert.match(wake, /Ask how the Lisbon trip went\./);
+  assert.equal((await chat(app, { action: 'snapshot' })).body.messages.at(-1).text, 'Scheduled hello for blackout');
+  assert.deepEqual((await schedules(app, { action: 'list' })).body.followups, [], 'A follow-up runs once');
+  const calls = f.calls('blackout').length; f.clock += 6 * HOUR; await settle(app);
+  assert.equal(f.calls('blackout').length, calls);
+  // The owner can cancel one from the browser.
+  const later = toolValue(await owner.call('schedule_followup', { ...input, requestId: 'later', at: iso(f.clock + 24 * HOUR) })).createdFollowup;
+  const cancelled = await schedules(app, { action: 'cancelFollowup', input: { id: later.id } });
+  assert.equal(cancelled.status, 200); assert.deepEqual(cancelled.body.followups, []);
+  assert.equal((await schedules(app, { action: 'cancelFollowup', input: { id: later.id } }, B)).status, 404);
+});
+
+test('a silent own wake publishes nothing and notifies nobody', async t => {
+  const settled = [];
+  const f = fixture(t, { scheduler: { proactiveByDefault: true, random: () => 0 }, conversation: { onSettled: event => settled.push(event) } });
+  const app = await f.open(); await ready(f, app);
+  writeFileSync(join(f.home('blackout'), 'silent'), '');
+  f.clock += 3 * HOUR; await settle(app);
+  assert.match(f.calls('blackout')[0].prompt, /background proactive wake/);
+  assert.deepEqual(app.store.db.prepare("SELECT state FROM conv_wakes WHERE companion_id=? AND kind='proactive'").all(f.ids[A]).map(row => row.state), ['silent']);
+  assert.equal(app.store.db.prepare("SELECT state FROM scheduler_proactive_occurrences WHERE companion_id=?").get(f.ids[A]).state, 'silent');
+  assert.deepEqual((await chat(app, { action: 'snapshot' })).body.messages, []);
+  assert.equal(settled.filter(event => event.proactive && event.companionId === f.ids[A]).length, 0);
 });

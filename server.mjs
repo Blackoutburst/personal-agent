@@ -290,7 +290,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     if (mode === 'account') {
       const profiles = new Profiles({ store });
       schedulerStore = new SchedulerStore({ store, timezoneFor: companionId => profiles.get(companionId)?.timezone ?? 'UTC',
-        log: message => console.error(message), ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
+        log: message => console.error(message), ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}),
+        ...(schedulerOptions.random ? { random: schedulerOptions.random } : {}),
+        ...(schedulerOptions.proactiveByDefault !== undefined ? { proactiveByDefault: schedulerOptions.proactiveByDefault } : {}) });
       const owners = loadRuntimeConfig(runtimeFile);
       const ownerProfiles = new OwnerProfiles({ store, nameFor: id => {
         const owner = owners.find(value => companionIdFor(store, value) === id);
@@ -309,7 +311,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
             if (!Array.isArray(additional) || !companionId || !server.address()) throw new TypeError('Invalid app tools');
             return [...additional, { name: 'scheduler', command: process.execPath, args: [join(ROOT, 'src', 'scheduler-mcp.mjs')],
               env: { COMPANION_SCHEDULER_URL: `http://127.0.0.1:${server.address().port}/internal/scheduler`,
-                COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'create_topic_watch', 'update_release_watch',
+                COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'schedule_followup', 'cancel_followup', 'create_release_watch', 'create_topic_watch', 'update_release_watch',
                   'list_calendar', 'create_event', 'update_event', 'delete_event',
                   'github_list_repos', 'github_repo', 'github_pulls', 'github_pull', 'github_create_repo', 'read_x_post', 'watch_x_video',
                   'mail_status', 'mail_inbox', 'mail_read', 'mail_send', 'mail_mark_handled', 'mail_opt_out'] }];
@@ -376,7 +378,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         const current = weather.current(companionId), place = current ? weather.snapshot(companionId).place : null;
         return instructions({ owner: workspace.owner, profile: profiles.get(companionId), dir: workspace.dir,
           files: workspace.owner.provider === 'claude' || fresh, recent, weather: current ? { place, current } : null }) +
-          '\n\nUse your scheduler tools for reminders the owner asks for. Check list_schedules for the current time and owner timezone, then resolve an explicit ISO timestamp. Never claim a reminder was saved without a successful tool result. Do not create unsolicited reminders or enable periodic checks for the owner.';
+          '\n\nUse your scheduler tools for reminders the owner asks for. Check list_schedules for the current time and owner timezone, then resolve an explicit ISO timestamp. Never claim a reminder was saved without a successful tool result. Do not create unsolicited reminders or enable periodic checks for the owner; for your own follow-ups use schedule_followup.';
       };
       // Each owner's own token, encrypted with a server key kept outside the database (made on first link).
       github = new GitHub({ store, keyFile: githubOptions.keyFile ?? process.env.COMPANION_SECRETS_KEY

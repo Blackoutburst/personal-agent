@@ -55,6 +55,14 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
   // #51 Board wake cap: sent only after the owner edits it; capEdited holds that edit's token.
   let capEdited = 0;
   const capOffered = () => Boolean(schedules?.settings && Object.hasOwn(schedules.settings, 'boardWakeCap') && $('schedule-board'));
+  // #54 the companion's own wakes: shown only when the server offers them, sent only after the owner edits them.
+  let proactiveEdited = 0;
+  const proactiveOffered = () => {
+    const value = schedules?.settings?.proactive;
+    return Boolean(value && typeof value.enabled === 'boolean' && [2, 4, 6, 8].includes(value.perDay)
+      && $('schedule-proactive') && $('schedule-proactive-enabled') && $('schedule-proactive-frequency'));
+  };
+  const followupsOffered = () => Array.isArray(schedules?.followups) && Boolean($('followups-block') && $('followup-list'));
   const supported = new Set(), routineEdits = new Map(routines.map(routine => [routine.key, new Map()]));
   function validRoutine(value, weekly) {
     return value && typeof value === 'object' && !Array.isArray(value) && typeof value.enabled === 'boolean'
@@ -104,7 +112,9 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
     $('schedule-list').replaceChildren(); $('upcoming-count').textContent = '';
     $('schedule-note').textContent = 'Sign in to see your reminders.';
     $('schedule-checkins').checked = false; $('schedule-quiet-start').value = ''; $('schedule-quiet-end').value = '';
-    capEdited = 0;
+    capEdited = 0; proactiveEdited = 0;
+    if ($('schedule-proactive')) { $('schedule-proactive').hidden = true; $('schedule-proactive-enabled').checked = false; $('schedule-proactive-frequency').value = ''; }
+    if ($('followups-block')) { $('followups-block').hidden = true; $('followup-list').replaceChildren(); }
     if ($('schedule-board')) { $('schedule-board').hidden = true; $('schedule-board-cap').value = ''; $('schedule-board-cap').disabled = false; $('schedule-board-unlimited').checked = false; }
     $('schedule-zone').textContent = ''; $('schedule-save').disabled = true; $('schedule-settings').hidden = true;
     routines.forEach(clearRoutine);
@@ -275,6 +285,20 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
       } else watchNotice = 'The watch change could not be confirmed. Retry only the same change, or reload to review its current state.';
     } finally { if (owner === ownerEpoch && current === generation) { busy = false; render(); } }
   }
+  function renderFollowups() {
+    if (!$('followups-block')) return;
+    const list = followupsOffered() ? schedules.followups.filter(item => item && WATCH_ID.test(item.id) && noteText(item.note, 500, 2000) && watchDate(item.dueAt)) : [];
+    $('followups-block').hidden = !list.length; $('followup-list').replaceChildren();
+    const owner = ownerEpoch;
+    for (const item of list) {
+      const row = node('li'), copy = node('div');
+      copy.append(node('strong', { textContent: item.note }), node('small', { textContent: watchTime(item.dueAt) }));
+      const cancel = node('button', { type: 'button', className: 'button', textContent: 'Cancel', disabled: busy });
+      cancel.setAttribute('aria-label', `Cancel follow-up: ${item.note}`);
+      cancel.addEventListener('click', () => { if (owner === ownerEpoch) return change({ action: 'cancelFollowup', input: { id: item.id } }); });
+      row.append(copy, cancel); $('followup-list').append(row);
+    }
+  }
   function render() {
     if (!schedules) return;
     const items = schedules.items.filter(item => item.canCancel || ['missed', 'interrupted', 'error'].includes(item.state));
@@ -306,6 +330,13 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
       $('schedule-quiet-start').value = schedules.settings.quietStart;
       $('schedule-quiet-end').value = schedules.settings.quietEnd;
     }
+    if ($('schedule-proactive')) $('schedule-proactive').hidden = !proactiveOffered();
+    if (proactiveOffered() && !proactiveEdited) {
+      $('schedule-proactive-enabled').checked = schedules.settings.proactive.enabled;
+      $('schedule-proactive-frequency').value = String(schedules.settings.proactive.perDay);
+    }
+    if (proactiveOffered()) $('schedule-proactive-frequency').disabled = !$('schedule-proactive-enabled').checked;
+    renderFollowups();
     if ($('schedule-board')) $('schedule-board').hidden = !capOffered();
     if (capOffered() && !capEdited) {
       const cap = schedules.settings.boardWakeCap;
@@ -315,7 +346,7 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
     }
     renderRoutines();
     renderWatches();
-    $('schedule-zone').textContent = `Your timezone: ${schedules.timezone}. Daily and weekly times use this zone. Quiet hours can delay delivery. Occasional check-ins run at most every six hours and stay silent without a useful update.${capOffered() ? ' Board wakes per day limits how often your companion wakes to answer Board mentions in any 24 hours.' : ''}`;
+    $('schedule-zone').textContent = `Your timezone: ${schedules.timezone}. Daily and weekly times use this zone. Quiet hours can delay delivery. Occasional check-ins run at most every six hours and stay silent without a useful update.${proactiveOffered() ? ' A proactive companion also wakes on its own a few times a day, at varied times, and writes only when it has something worth saying; at night it works quietly and its messages wait for the morning.' : ''}${capOffered() ? ' Board wakes per day limits how often your companion wakes to answer Board mentions in any 24 hours.' : ''}`;
     $('schedule-save').disabled = busy;
   }
   async function refresh(reviewWatches = false) {
@@ -334,7 +365,7 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
   async function change(body) {
     if (busy) return;
     busy = true; message = null;
-    const current = ++generation, edited = editVersion, sentCap = capEdited;
+    const current = ++generation, edited = editVersion, sentCap = capEdited, sentProactive = proactiveEdited;
     const sentRoutineEdits = routines.map(routine => [routine.key, new Map(Object.keys(body.input?.[routine.key] ?? {})
       .map(field => [field, routineEdits.get(routine.key).get(field)]))]);
     render();
@@ -345,11 +376,12 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
         if (body.action === 'configure') {
           if (edited === editVersion) dirty = false;
           if (sentCap && capEdited === sentCap) capEdited = 0;
+          if (sentProactive && proactiveEdited === sentProactive) proactiveEdited = 0;
           for (const [key, sent] of sentRoutineEdits) for (const [field, token] of sent) {
             if (routineEdits.get(key).get(field) === token) routineEdits.get(key).delete(field);
           }
         }
-        $('announce').textContent = body.action === 'cancel' ? 'Reminder cancelled.' : 'Reminder preferences saved.';
+        $('announce').textContent = body.action === 'cancel' ? 'Reminder cancelled.' : body.action === 'cancelFollowup' ? 'Follow-up cancelled.' : 'Reminder preferences saved.';
       }
     } catch {
       if (current === generation) message = 'I couldn’t confirm that change. Leave this tab and come back to check its current state.';
@@ -368,6 +400,11 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
   for (const id of ['schedule-board-cap', 'schedule-board-unlimited']) $(id)?.addEventListener('input', () => {
     capEdited = ++editVersion;
     $('schedule-board-cap').disabled = $('schedule-board-unlimited').checked;
+  });
+  for (const id of ['schedule-proactive-enabled', 'schedule-proactive-frequency']) $(id)?.addEventListener('input', () => {
+    if (!proactiveOffered()) return;
+    proactiveEdited = ++editVersion;
+    $('schedule-proactive-frequency').disabled = !$('schedule-proactive-enabled').checked;
   });
   for (const routine of routines) for (const [field, id] of Object.entries(routine.fields)) {
     $(id)?.addEventListener('input', () => {
@@ -390,6 +427,10 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
         message = 'Board wakes per day must be a whole number from 1 to 10000, or choose No limit.'; render(); return;
       }
       input.boardWakeCap = unlimited ? null : cap;
+    }
+    if (proactiveEdited && proactiveOffered()) {
+      const perDay = Number($('schedule-proactive-frequency').value);
+      input.proactive = { enabled: $('schedule-proactive-enabled').checked, ...([2, 4, 6, 8].includes(perDay) ? { perDay } : {}) };
     }
     return change({ action: 'configure', input });
   });

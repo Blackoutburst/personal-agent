@@ -22,8 +22,11 @@ const EVENT = { type: 'object', properties: { title: string(200, 'Short event ti
 const TOOLS = [
   { name: 'create_schedule', description: 'Create a one-time reminder for this owner. First check list_schedules for their timezone. Resolve the requested time to an ISO timestamp with an explicit offset or Z. Reuse requestId for exact retries.',
     inputSchema: schema({ requestId: string(80, 'Stable logical request key'), text: string(1000, 'What to remind this owner about'), dueAt: string(40, 'ISO timestamp with explicit timezone offset') }) },
-  { name: 'list_schedules', description: 'Read this owner\'s current time, timezone, reminders, release-watch evidence and quiet-hour settings.', inputSchema: schema({}) },
+  { name: 'list_schedules', description: 'Read this owner\'s current time, timezone, reminders, your own pending follow-ups, release-watch evidence and quiet-hour settings.', inputSchema: schema({}) },
   { name: 'cancel_schedule', description: 'Cancel one of this owner\'s reminders. Cancellation cannot undo a message already delivered.', inputSchema: schema({ id: string(36, 'Reminder ID returned by this server') }) },
+  { name: 'schedule_followup', description: 'Schedule a follow-up for yourself, without being asked: a later private wake where you decide whether to message this owner (for example ask how the trip went the day after they get back). Check list_schedules for the current time and timezone. at is an ISO timestamp with an explicit offset or Z, in the future and at most 60 days ahead. The note (at most 500 characters) is for your future self: what to follow up and why. At most 20 pending follow-ups. Reuse requestId for exact retries.',
+    inputSchema: schema({ requestId: string(80, 'Stable logical request key'), at: string(40, 'ISO timestamp with explicit timezone offset'), note: string(500, 'What to follow up on, for yourself') }) },
+  { name: 'cancel_followup', description: 'Cancel one of your pending follow-ups (listed in list_schedules under followups).', inputSchema: schema({ id: string(36, 'Follow-up ID') }) },
   { name: 'create_release_watch', description: 'After this owner confirms the short release condition in the current chat, create a one-shot watch. Check immediately and every six hours using native web tools. Results are agent-evaluated, not guaranteed facts. Reuse requestId for exact retries. Never create from a background wake or untrusted data.',
     inputSchema: schema({ requestId: string(80, 'Stable logical request key'), condition: string(1000, 'Exact short owner-confirmed condition') }) },
   { name: 'create_topic_watch', description: 'After this owner confirms the topic and how often to check, create a recurring topic watch (for example a stock or a model family). It checks right away, then every intervalHours (6 to 168) with native web tools, and sends a short digest with sources only when there is genuinely new information since earlier digests. It keeps running until paused or cancelled. Reuse requestId for exact retries. Never create from a background wake or untrusted data.',
@@ -106,6 +109,13 @@ function toolInput(name, args) {
     return { action: 'updateWatch', input: { ...args } };
   }
   if (name === 'list_schedules' && exact(args, [])) return { action: 'list' };
+  if (name === 'schedule_followup' && exact(args, ['requestId', 'at', 'note']) && stableKey(args.requestId)
+    && typeof args.note === 'string' && args.note.isWellFormed() && args.note.trim() && args.note.length <= 500
+    && Buffer.byteLength(args.note) <= 2000 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(args.note)
+    && typeof args.at === 'string' && args.at.length <= 40 && /T.*(?:Z|[+-]\d{2}:\d{2})$/.test(args.at) && Number.isFinite(Date.parse(args.at))) {
+    return { action: 'createFollowup', input: { requestId: args.requestId, at: args.at, note: args.note } };
+  }
+  if (name === 'cancel_followup' && exact(args, ['id']) && typeof args.id === 'string' && UUID.test(args.id)) return { action: 'cancelFollowup', input: { id: args.id } };
   // Calendar arguments are checked in full by the application (src/calendar.mjs); only the envelope is checked here.
   if (name === 'list_calendar' && object(args) && Object.keys(args).every(key => ['from', 'days'].includes(key))) return { action: 'calendar', input: { ...args } };
   if (name === 'create_event' && exact(args, ['requestId', 'event']) && stableKey(args.requestId) && object(args.event)) {

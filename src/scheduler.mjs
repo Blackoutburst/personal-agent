@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { latestRoutineSlot } from './routines.mjs';
 import { ReleaseWatches } from './release-watches.mjs';
+import { ProactiveWakes, PER_DAY } from './proactive.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/, HASH = /^[a-f0-9]{64}$/, CLOCK = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -69,20 +70,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS scheduler_routine_attempt ON scheduler_routine
  WHERE admitted_at IS NOT NULL;`;
 
 export class SchedulerStore {
-  #db; #timezone; #now; #spacing; #cap; #release; #boardSpacing; #log; #heldLogged = new Set();
+  #db; #timezone; #now; #spacing; #cap; #release; #proactive; #boardSpacing; #log; #heldLogged = new Set();
   // log(line) receives only kinds, reasons and id prefixes: never prompts or private content.
   constructor({ store, timezoneFor = () => 'UTC', now = Date.now, minSpacingMs = 300000, maxTurnsPerDay = 24,
-    boardSpacingMs = 30000, log = () => {} }) {
+    boardSpacingMs = 30000, log = () => {}, random = Math.random, proactiveByDefault = true }) {
     requireSchedule(store?.db && typeof timezoneFor === 'function' && typeof now === 'function'
       && integer(minSpacingMs) && integer(maxTurnsPerDay, 1, 1000) && integer(boardSpacingMs)
-      && typeof log === 'function');
+      && typeof log === 'function' && typeof random === 'function' && typeof proactiveByDefault === 'boolean');
     this.#db = store.db; this.#timezone = timezoneFor; this.#now = now; this.#spacing = minSpacingMs; this.#cap = maxTurnsPerDay;
     this.#boardSpacing = boardSpacingMs; this.#log = log;
     this.#tx(() => { this.#db.exec(SCHEMA);
       // #51: the owner's cap on Board wakes per rolling 24 h. A separate table keeps scheduler_settings unchanged for
       // older releases after a rollback. No row means the default; a NULL cap means no cap.
       this.#db.exec('CREATE TABLE IF NOT EXISTS scheduler_board_caps(companion_id TEXT PRIMARY KEY,wake_cap INTEGER)');
-      this.#release = new ReleaseWatches(this.#db, code => new SchedulerError(code)); });
+      this.#release = new ReleaseWatches(this.#db, code => new SchedulerError(code));
+      // #54: the companion's own wakes and follow-ups, in their own tables (older releases ignore them).
+      this.#proactive = new ProactiveWakes(this.#db, code => new SchedulerError(code), random, proactiveByDefault); });
   }
   #boardCap(companionId) {
     const row = this.#db.prepare('SELECT wake_cap FROM scheduler_board_caps WHERE companion_id=?').get(companionId);
@@ -134,6 +137,12 @@ export class SchedulerStore {
       year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
       .formatToParts(time).map(part => [part.type, part.value]));
     return { day: `${parts.year}-${parts.month}-${parts.day}`, minute: Number(parts.hour) * 60 + Number(parts.minute) };
+  }
+  // The owner's local date and time in words, for a private wake prompt.
+  #localText(companionId, time) {
+    const zone = this.#zone(companionId);
+    return new Intl.DateTimeFormat('en-GB', { timeZone: zone, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(time) + ` (${zone})`;
   }
   #quiet(companionId, settings, time) {
     const minute = this.#local(companionId, time).minute;
@@ -189,8 +198,8 @@ export class SchedulerStore {
   #lookup(companionId, id) {
     const prior = this.#db.prepare('SELECT * FROM scheduler_occurrences WHERE id=? AND companion_id=?').get(id, companionId);
     const routine = this.#routineRow(this.#db.prepare('SELECT * FROM scheduler_routine_occurrences WHERE id=? AND companion_id=?').get(id, companionId));
-    const release = this.#release.lookup(companionId, id);
-    requireSchedule([prior, routine, release].filter(Boolean).length <= 1, 'UNAVAILABLE'); return prior ?? routine ?? release;
+    const release = this.#release.lookup(companionId, id), own = this.#proactive.lookup(companionId, id);
+    requireSchedule([prior, routine, release, own].filter(Boolean).length <= 1, 'UNAVAILABLE'); return prior ?? routine ?? release ?? own;
   }
   #prepareRoutines(companionId, settings, now) {
     this.#configureRoutines(companionId, settings, {}, now);
@@ -227,8 +236,10 @@ export class SchedulerStore {
       quietStart: settings.quiet_start, quietEnd: settings.quiet_end, heartbeatEnabled: !!settings.heartbeat_enabled,
       boardWakeCap: this.#boardCap(companionId),
       dailyDigest: { enabled: !!routines.get('dailyDigest')?.enabled, localTime: routines.get('dailyDigest')?.local_time ?? '09:00' },
-      weeklyCheckin: { enabled: !!routines.get('weeklyCheckin')?.enabled, localTime: routines.get('weeklyCheckin')?.local_time ?? '09:00', weekday: routines.get('weeklyCheckin')?.weekday ?? 1 } },
-    items: jobs.map(reminder), releaseWatches: this.#release.list(companionId, settings.identity_key) };
+      weeklyCheckin: { enabled: !!routines.get('weeklyCheckin')?.enabled, localTime: routines.get('weeklyCheckin')?.local_time ?? '09:00', weekday: routines.get('weeklyCheckin')?.weekday ?? 1 },
+      proactive: this.#proactive.settings(companionId, settings.identity_key) },
+    items: jobs.map(reminder), releaseWatches: this.#release.list(companionId, settings.identity_key),
+    followups: this.#proactive.list(companionId, settings.identity_key) };
   }
   create(companionId, input) {
     const value = shape(input, ['requestId', 'text', 'dueAt']); requireSchedule(typeof value.requestId === 'string' && REQUEST.test(value.requestId));
@@ -261,6 +272,25 @@ export class SchedulerStore {
       return this.#snapshot(companionId);
     });
   }
+  // #54: a follow-up the companion schedules for itself (schedule_followup). Never from the owner's browser path.
+  createFollowup(companionId, input) {
+    const value = shape(input, ['requestId', 'at', 'note']);
+    requireSchedule(typeof value.requestId === 'string' && REQUEST.test(value.requestId));
+    const at = instant(value.at), note = text(value.note); requireSchedule(note.length <= 500);
+    return this.#tx(() => {
+      const settings = this.#owner(companionId);
+      const created = this.#proactive.createFollowup(companionId, settings.identity_key, { requestId: value.requestId, at, note }, this.#time());
+      return { ...this.#snapshot(companionId), createdFollowup: created };
+    });
+  }
+  cancelFollowup(companionId, input) {
+    const { id } = shape(input, ['id']);
+    return this.#tx(() => {
+      const settings = this.#owner(companionId);
+      this.#proactive.cancelFollowup(companionId, settings.identity_key, id);
+      return this.#snapshot(companionId);
+    });
+  }
   isReleaseOccurrence(companionId, id) { return !!this.#release.lookup(companionId, id); }
   releaseCompanions() { return this.#db.prepare("SELECT DISTINCT companion_id FROM scheduler_release_watches WHERE state='active'").all().map(row => row.companion_id); }
   // Both callbacks run inside Conversations' publication transaction, never nested.
@@ -288,7 +318,12 @@ export class SchedulerStore {
     });
   }
   configure(companionId, input) {
-    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', 'boardWakeCap', ...ROUTINES]);
+    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', 'boardWakeCap', 'proactive', ...ROUTINES]);
+    if (Object.hasOwn(value, 'proactive')) {
+      value.proactive = shape(value.proactive, [], ['enabled', 'perDay']);
+      if (Object.hasOwn(value.proactive, 'enabled')) requireSchedule(typeof value.proactive.enabled === 'boolean');
+      if (Object.hasOwn(value.proactive, 'perDay')) requireSchedule(PER_DAY.includes(value.proactive.perDay));
+    }
     if (Object.hasOwn(value, 'boardWakeCap')) requireSchedule(value.boardWakeCap === null || integer(value.boardWakeCap, 1, MAX_BOARD_WAKE_CAP));
     for (const key of ['enabled', 'heartbeatEnabled']) if (Object.hasOwn(value, key)) requireSchedule(typeof value[key] === 'boolean');
     for (const key of ['quietStart', 'quietEnd']) if (Object.hasOwn(value, key)) requireSchedule(typeof value[key] === 'string' && CLOCK.test(value[key]));
@@ -302,6 +337,7 @@ export class SchedulerStore {
     return this.#tx(() => {
       const settings = this.#owner(companionId), changed = value.heartbeatEnabled !== undefined && value.heartbeatEnabled !== !!settings.heartbeat_enabled;
       this.#configureRoutines(companionId, settings, value, this.#time());
+      if (value.proactive) this.#proactive.configure(companionId, settings.identity_key, value.proactive, this.#time());
       if (changed) this.#db.prepare("UPDATE scheduler_occurrences SET state='cancelled' WHERE companion_id=? AND kind='heartbeat' AND state='queued'").run(companionId);
       if (Object.hasOwn(value, 'boardWakeCap')) this.#db.prepare(`INSERT INTO scheduler_board_caps VALUES(?,?)
         ON CONFLICT(companion_id) DO UPDATE SET wake_cap=excluded.wake_cap`).run(companionId, value.boardWakeCap);
@@ -374,6 +410,8 @@ export class SchedulerStore {
       }
       this.#prepareRoutines(companionId, settings, now);
       this.#release.prepare(companionId, settings.identity_key, now);
+      this.#proactive.prepare(companionId, settings.identity_key, now, time => ({ localTime: this.#localText(companionId, time),
+        quiet: this.#quiet(companionId, settings, time) }));
       return this.#pending(companionId);
     });
   }
@@ -381,13 +419,15 @@ export class SchedulerStore {
     const legacy = this.#db.prepare("SELECT * FROM scheduler_occurrences WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250").all(companionId);
     const routines = this.#db.prepare("SELECT * FROM scheduler_routine_occurrences WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250")
       .all(companionId).map(row => this.#routineRow(row));
-    return [...legacy, ...routines, ...this.#release.pending(companionId)].sort((a, b) => a.due_at - b.due_at || a.id.localeCompare(b.id)).slice(0, 250).map(occurrence);
+    return [...legacy, ...routines, ...this.#release.pending(companionId), ...this.#proactive.pending(companionId)].sort((a, b) => a.due_at - b.due_at || a.id.localeCompare(b.id)).slice(0, 250).map(occurrence);
   }
   pending(companionId) { return this.#tx(() => { this.#owner(companionId); return this.#pending(companionId); }); }
   #eligible(companionId, row, settings, time, starting = false) {
     if (!row || !settings?.enabled || TERMINAL.has(row.state)
-      || !(starting && row.release_watch) && this.#quiet(companionId, settings, time)) return false;
+      || !(starting && (row.release_watch || row.proactive)) && this.#quiet(companionId, settings, time)) return false;
     if (row.release_watch) return this.#release.eligible(companionId, settings.identity_key, row, time);
+    // #54: own wakes and follow-ups may start in quiet hours (quiet work); their messages still wait for quiet to end.
+    if (row.proactive) return this.#proactive.eligible(companionId, settings.identity_key, row);
     if (row.routine) {
       const preference = this.#routines(companionId, settings).get(row.routine), zone = this.#zone(companionId);
       if (!preference?.enabled || preference.generation !== row.generation || preference.timezone !== zone || row.timezone !== zone
@@ -409,7 +449,7 @@ export class SchedulerStore {
     const settings = this.#owner(companionId, false), now = this.#time();
     const row = this.#lookup(companionId, id);
     if (!this.#eligible(companionId, row, settings, now, true)) {
-      if (row && settings?.enabled && !TERMINAL.has(row.state) && !row.release_watch && this.#quiet(companionId, settings, now)) this.#held(row, 'quiet_hours');
+      if (row && settings?.enabled && !TERMINAL.has(row.state) && !row.release_watch && !row.proactive && this.#quiet(companionId, settings, now)) this.#held(row, 'quiet_hours');
       return false;
     }
     if (row.admitted_at !== null) return true;
@@ -436,7 +476,8 @@ export class SchedulerStore {
     if (count >= this.#cap) return this.#held(row, 'daily_cap');
     this.#db.prepare(`INSERT INTO scheduler_days VALUES(?,?,1) ON CONFLICT(companion_id,local_day) DO UPDATE SET turns=turns+1`).run(companionId, day);
     this.#db.prepare('UPDATE scheduler_settings SET last_started_at=? WHERE companion_id=?').run(now, companionId);
-    this.#db.prepare("UPDATE " + (row.routine ? 'scheduler_routine_occurrences' : 'scheduler_occurrences') + " SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
+    if (row.proactive) this.#proactive.admit(id, now);
+    else this.#db.prepare("UPDATE " + (row.routine ? 'scheduler_routine_occurrences' : 'scheduler_occurrences') + " SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
     return true;
   }
   canDeliver(companionId, id) {
@@ -452,6 +493,7 @@ export class SchedulerStore {
       const row = this.#lookup(companionId, id);
       requireSchedule(row, 'NOT_FOUND');
       if (row.release_watch) this.#release.finish(companionId, this.#owner(companionId).identity_key, id, state, this.#time());
+      else if (row.proactive) this.#proactive.finish(companionId, row, state);
       else if (!TERMINAL.has(row.state)) {
         this.#db.prepare('UPDATE ' + (row.routine ? 'scheduler_routine_occurrences' : 'scheduler_occurrences') + ' SET state=? WHERE id=?').run(state, id);
         if (row.job_id) this.#db.prepare("UPDATE scheduler_jobs SET state=?,version=version+1 WHERE id=? AND state='active' AND generation=?")
@@ -466,6 +508,8 @@ export class SchedulerStore {
   }
   releaseCancellations(companionId) { this.#owner(companionId, false); return this.#release.cancellations(companionId); }
   acknowledgeReleaseCancellation(companionId, id) { this.#owner(companionId, false); this.#release.acknowledgeCancellation(companionId, id); }
+  proactiveCancellations(companionId) { this.#owner(companionId, false); return this.#proactive.cancellations(companionId); }
+  acknowledgeProactiveCancellation(companionId, id) { this.#owner(companionId, false); this.#proactive.acknowledgeCancellation(companionId, id); }
   routineCancellations(companionId) {
     this.#owner(companionId, false);
     return this.#db.prepare("SELECT id FROM scheduler_routine_occurrences WHERE companion_id=? AND state='cancelled' AND cancel_pending=1 ORDER BY due_at,id LIMIT 250")
@@ -506,6 +550,7 @@ export class SchedulerService {
         this.#scheduler.prepareDue(companionId);
         this.#cancelRoutineWakes(companionId);
         this.#cancelReleaseWakes(companionId);
+        this.#cancelProactiveWakes(companionId);
         for (const wake of this.#scheduler.pending(companionId)) {
           if (this.#stopped) break;
           let result = await this.#conversations.proactiveResult(companionId, wake.id);
@@ -540,6 +585,16 @@ export class SchedulerService {
       } catch { /* Keep the durable flag until cancellation is acknowledged. */ }
     }
   }
+  #cancelProactiveWakes(companionId) {
+    for (const id of this.#scheduler.proactiveCancellations?.(companionId) ?? []) {
+      try {
+        const result = this.#conversations.cancelProactive(companionId, id);
+        if (result && typeof result.then === 'function') Promise.resolve(result)
+          .then(() => this.#scheduler.acknowledgeProactiveCancellation(companionId, id)).catch(() => {});
+        else this.#scheduler.acknowledgeProactiveCancellation(companionId, id);
+      } catch { /* The durable cancellation flag remains for the next tick. */ }
+    }
+  }
   #cancelRoutineWakes(companionId) {
     for (const id of this.#scheduler.routineCancellations(companionId)) {
       try {
@@ -559,10 +614,10 @@ export class SchedulerService {
     this.#cancelReleaseWakes(companionId); this.#kick(); return result;
   }
   configure(companionId, input) {
-    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', 'boardWakeCap', ...ROUTINES]);
+    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', 'boardWakeCap', 'proactive', ...ROUTINES]);
     const prior = value.heartbeatEnabled === false ? this.#scheduler.pending(companionId).filter(wake => wake.kind === 'heartbeat') : [];
     const result = this.#scheduler.configure(companionId, value);
-    this.#cancelRoutineWakes(companionId);
+    this.#cancelRoutineWakes(companionId); this.#cancelProactiveWakes(companionId);
     for (const wake of prior) {
       try { Promise.resolve(this.#conversations.cancelProactive(companionId, wake.id)).catch(() => {}); }
       catch { /* The generation fence already prevents delivery; a later tick observes completion. */ }
@@ -574,6 +629,11 @@ export class SchedulerService {
       try { Promise.resolve(this.#conversations.cancelProactive(companionId, id)).catch(() => {}); }
       catch { /* The cancelled occurrence is no longer deliverable either way. */ }
     }
+  }
+  createFollowup(companionId, input) { const result = this.#scheduler.createFollowup(companionId, input); this.#kick(); return result; }
+  cancelFollowup(companionId, input) {
+    const result = this.#scheduler.cancelFollowup(companionId, input);
+    this.#cancelProactiveWakes(companionId); return result;
   }
   enqueueEvent(companionId, input) { const result = this.#scheduler.enqueueEvent(companionId, input); this.#kick(); return result; }
   async cancel(companionId, input) {

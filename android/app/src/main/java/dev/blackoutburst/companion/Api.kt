@@ -68,11 +68,17 @@ import kotlinx.serialization.json.put
 @Serializable data class Routine(val enabled: Boolean, val localTime: String, val weekday: Int? = null)
 /** boardWakeCap (#51): a number, JSON null for "no limit", or absent on an older server (then the empty object below). */
 @Serializable data class ScheduleSettings(val heartbeatEnabled: Boolean, val quietStart: String, val quietEnd: String,
-    val dailyDigest: Routine? = null, val weeklyCheckin: Routine? = null, val boardWakeCap: JsonElement = BOARD_CAP_ABSENT) {
+    val dailyDigest: Routine? = null, val weeklyCheckin: Routine? = null, val boardWakeCap: JsonElement = BOARD_CAP_ABSENT,
+    val proactive: Proactive? = null) {
     val boardCapOffered: Boolean get() = boardWakeCap !is JsonObject
     val boardCapLimit: Int? get() = (boardWakeCap as? JsonPrimitive)?.takeUnless { it is kotlinx.serialization.json.JsonNull }?.content?.toIntOrNull()
 }
 val BOARD_CAP_ABSENT = JsonObject(emptyMap())
+/** #54: the companion's own wakes (perDay 2, 4, 6 or 8); null on an older server, which then hides the setting. */
+@Serializable data class Proactive(val enabled: Boolean, val perDay: Int)
+val PROACTIVE_FREQUENCIES = listOf(2 to "Rarely", 4 to "Sometimes", 6 to "Often", 8 to "A lot")
+/** A follow-up the companion scheduled for itself (#54); shown read-only with a cancel button. */
+@Serializable data class Followup(val id: String, val note: String, val dueAt: String, val state: String = "active", val canCancel: Boolean = true)
 const val BOARD_CAP_DEFAULT = 200
 @Serializable data class Digest(val at: String, val evidence: String, val urls: List<String> = emptyList())
 @Serializable data class Watch(
@@ -82,7 +88,7 @@ const val BOARD_CAP_DEFAULT = 200
     val deliveryPending: Boolean = false, val intervalHours: Int? = null, val digests: List<Digest> = emptyList(),
 ) { val topic get() = kind == "topic_watch" }
 @Serializable data class Schedules(val timezone: String, val settings: ScheduleSettings, val items: List<Reminder> = emptyList(),
-    val releaseWatches: List<Watch> = emptyList())
+    val releaseWatches: List<Watch> = emptyList(), val followups: List<Followup> = emptyList())
 
 /** Calendar (#44, src/calendar.mjs). start is the owner's local time: "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" all day. */
 @Serializable data class CalEvent(val id: String, val version: Long, val title: String, val allDay: Boolean, val start: String,
@@ -215,6 +221,8 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
             put("requestId", requestId); put("id", watch.id); put("expectedVersion", watch.version); put("operation", operation)
             condition?.let { put("condition", it) }; intervalHours?.let { put("intervalHours", it) }
         }) })
+    suspend fun cancelFollowup(id: String): Schedules =
+        scheduleCall(buildJsonObject { put("action", "cancelFollowup"); put("input", buildJsonObject { put("id", id) }) })
     suspend fun configureSchedules(input: JsonObject): Schedules =
         scheduleCall(buildJsonObject { put("action", "configure"); put("input", input) })
     suspend fun calendar(from: String?, days: Int): CalendarView = call("api/schedules", buildJsonObject {
@@ -239,7 +247,7 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
         val raw = post(companion + "api/schedules", body)
         return verified {
             val value = decode<Schedules>(raw)
-            if (value.releaseWatches.size > 20 || value.items.size > 500) throw ApiException("INVALID_RESPONSE")
+            if (value.releaseWatches.size > 20 || value.items.size > 500 || value.followups.size > 50) throw ApiException("INVALID_RESPONSE")
             value.copy(releaseWatches = value.releaseWatches.map { watch ->
                 watch.copy(urls = watch.urls.filter(::safeLink), digests = watch.digests.map { it.copy(urls = it.urls.filter(::safeLink)) })
             })

@@ -28,7 +28,7 @@ function fixture(t, options = {}) {
   f.open = () => {
     const store = new BootstrapStore(dir, ROOT); stores.add(store);
     return { store, scheduler: new SchedulerStore({ store, now: f.now,
-      timezoneFor: owner => f.zones.get(owner) ?? 'UTC', ...options }) };
+      timezoneFor: owner => f.zones.get(owner) ?? 'UTC', proactiveByDefault: false, ...options }) };
   };
   t.after(async () => {
     await Promise.all([...f.services].map(service => service.stop()));
@@ -94,8 +94,8 @@ test('defaults create no spontaneous work and reminder writes are owner-scoped a
   const f = fixture(t), before = f.scheduler.list(f.a);
   assert.equal(before.timezone, 'UTC'); assert.equal(before.now, iso(f.now()));
   assert.deepEqual(before.settings, { enabled: true, quietStart: '22:00', quietEnd: '08:00', heartbeatEnabled: false, boardWakeCap: 200,
-    dailyDigest: { enabled: false, localTime: '09:00' }, weeklyCheckin: { enabled: false, localTime: '09:00', weekday: 1 } });
-  assert.deepEqual(before.items, []); assert.deepEqual(f.scheduler.prepareDue(f.a), []);
+    dailyDigest: { enabled: false, localTime: '09:00' }, weeklyCheckin: { enabled: false, localTime: '09:00', weekday: 1 }, proactive: { enabled: false, perDay: 4 } });
+  assert.deepEqual(before.items, []); assert.deepEqual(before.followups, []); assert.deepEqual(f.scheduler.prepareDue(f.a), []);
   const input = { requestId: 'same-create', text: 'PRIVATE-REMINDER-A', dueAt: '2026-11-02T13:01:00+01:00' };
   const created = f.scheduler.create(f.a, input);
   assert.equal(created.items.length, 1); assert.equal(created.items[0].dueAt, '2026-11-02T12:01:00.000Z');

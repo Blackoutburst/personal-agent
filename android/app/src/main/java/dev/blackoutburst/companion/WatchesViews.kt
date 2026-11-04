@@ -184,6 +184,23 @@ fun WatchesScreen(model: CompanionModel, state: UiState) {
                 }
             }
         }
+        val followups = schedules?.followups?.filter { it.canCancel } ?: emptyList()
+        if (followups.isNotEmpty()) item {
+            Spacer(Modifier.height(16.dp))
+            Text("${state.name}’s follow-ups", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = ink)
+            Text("Things ${state.name} plans to ask you about. It decides then whether to write.", color = soft, fontSize = 13.sp)
+        }
+        items(followups, key = { "followup-" + it.id }) { followup ->
+            WatchCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(followup.note, color = ink, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text(scheduleTime(followup.dueAt, timezone), color = soft, fontSize = 13.sp)
+                    }
+                    ActionButton(enabled = !state.schedulesBusy, onClick = { model.cancelFollowup(followup) }) { Text("Cancel") }
+                }
+            }
+        }
         item { Spacer(Modifier.height(24.dp)) }
     }
     editing?.let { watch -> WatchEditor(watch, onDismiss = { editing = null }) { condition, hours ->
@@ -249,6 +266,22 @@ fun ScheduleSettingsSection(model: CompanionModel, state: UiState) {
         TimeButton(settings.quietStart, !busy) { save { put("quietStart", it) } }
         Text("  until  ", color = soft)
         TimeButton(settings.quietEnd, !busy) { save { put("quietEnd", it) } }
+    }
+    settings.proactive?.let { proactive ->
+        ScheduleSwitch("Proactive companion", proactive.enabled, !busy) { value -> save { put("proactive", buildJsonObject { put("enabled", value) }) } }
+        if (proactive.enabled) FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            PROACTIVE_FREQUENCIES.forEach { (perDay, label) ->
+                val selected = proactive.perDay == perDay
+                Text("$label · $perDay a day", Modifier.clip(RoundedCornerShape(50))
+                    .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                    .clickable(enabled = !busy && !selected, role = Role.RadioButton) {
+                        save { put("proactive", buildJsonObject { put("perDay", perDay) }) }
+                    }.padding(horizontal = 10.dp, vertical = 6.dp),
+                    color = if (selected) ink else soft, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal, fontSize = 14.sp)
+            }
+        }
+        Text("${state.name} wakes on its own a few times a day and writes only when it has something worth saying. At night it works quietly; messages wait for the morning.",
+            color = soft, fontSize = 13.sp)
     }
     ScheduleSwitch("Occasional check-ins", settings.heartbeatEnabled, !busy) { value -> save { put("heartbeatEnabled", value) } }
     if (settings.boardCapOffered) BoardCapRow(settings.boardCapLimit, busy) { cap ->

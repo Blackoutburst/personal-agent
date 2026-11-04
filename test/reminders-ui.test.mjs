@@ -35,10 +35,11 @@ const routineData = (settings = {}, extra = {}) => data({ ...extra, settings: {
 } });
 const routineIds = ['schedule-daily', 'schedule-daily-enabled', 'schedule-daily-time', 'schedule-weekly',
   'schedule-weekly-enabled', 'schedule-weekly-time', 'schedule-weekly-day'];
-function fixture({ routineNodes = true, boardNodes = false } = {}) {
+function fixture({ routineNodes = true, boardNodes = false, proactiveNodes = false } = {}) {
   const nodes = new Map(['upcoming', 'schedule-list', 'upcoming-count', 'schedule-note', 'schedule-checkins',
     'schedule-quiet-start', 'schedule-quiet-end', 'schedule-zone', 'schedule-save', 'schedule-settings', 'announce',
-    ...(routineNodes ? routineIds : []), ...(boardNodes ? ['schedule-board', 'schedule-board-cap', 'schedule-board-unlimited'] : [])]
+    ...(routineNodes ? routineIds : []), ...(boardNodes ? ['schedule-board', 'schedule-board-cap', 'schedule-board-unlimited'] : []),
+    ...(proactiveNodes ? ['schedule-proactive', 'schedule-proactive-enabled', 'schedule-proactive-frequency', 'followups-block', 'followup-list'] : [])]
     .map(id => [id, new Element()]));
   nodes.get('schedule-save').disabled = true;
   nodes.get('upcoming').append(nodes.get('schedule-list'), nodes.get('schedule-settings'));
@@ -553,4 +554,52 @@ test('an older server without the Board cap keeps the cap controls hidden', asyn
   const f = fixture({ boardNodes: true });
   const shown = f.ui.show(); f.requests.at(-1).reply(data()); await shown;
   assert.equal(f.$('schedule-board').hidden, true);
+});
+
+// #54: the proactive companion setting and the companion's own follow-ups.
+const FOLLOWUP = '0b3a4c1e-2f6d-4a8b-9c0d-1e2f3a4b5c6d';
+const proactiveData = (proactive = { enabled: true, perDay: 4 }, followups = []) => data({ settings: { heartbeatEnabled: false, quietStart: '22:00', quietEnd: '08:00', proactive }, followups });
+test('the proactive companion toggle and frequency show when offered and are sent only after an edit', async t => {
+  const f = fixture({ proactiveNodes: true });
+  const shown = f.ui.show(); f.requests.at(-1).reply(proactiveData()); await shown;
+  assert.equal(f.$('schedule-proactive').hidden, false);
+  assert.equal(f.$('schedule-proactive-enabled').checked, true); assert.equal(f.$('schedule-proactive-frequency').value, '4');
+  assert.match(f.$('schedule-zone').textContent, /wakes on its own a few times a day/);
+  f.$('schedule-settings').emit('submit');
+  assert.equal(Object.hasOwn(f.requests.at(-1).body.input, 'proactive'), false, 'Untouched, the group is not sent');
+  f.requests.at(-1).reply(proactiveData()); await nextTick();
+  f.$('schedule-proactive-frequency').value = '8'; await f.$('schedule-proactive-frequency').emit('input');
+  f.$('schedule-settings').emit('submit');
+  assert.deepEqual(f.requests.at(-1).body.input.proactive, { enabled: true, perDay: 8 });
+  f.requests.at(-1).reply(proactiveData({ enabled: true, perDay: 8 })); await nextTick();
+  f.$('schedule-proactive-enabled').checked = false; await f.$('schedule-proactive-enabled').emit('input');
+  assert.equal(f.$('schedule-proactive-frequency').disabled, true, 'Off greys out the frequency');
+  f.$('schedule-settings').emit('submit');
+  assert.deepEqual(f.requests.at(-1).body.input.proactive, { enabled: false, perDay: 8 });
+  f.requests.at(-1).reply(proactiveData({ enabled: false, perDay: 8 })); await nextTick();
+  assert.equal(f.$('schedule-proactive-enabled').checked, false); assert.equal(f.$('schedule-proactive-frequency').value, '8');
+});
+
+test('an older server without proactive settings keeps the controls hidden and never sends the group', async t => {
+  const f = fixture({ proactiveNodes: true });
+  const shown = f.ui.show(); f.requests.at(-1).reply(data()); await shown;
+  assert.equal(f.$('schedule-proactive').hidden, true); assert.equal(f.$('followups-block').hidden, true);
+  await f.$('schedule-proactive-enabled').emit('input');
+  f.$('schedule-settings').emit('submit');
+  assert.equal(Object.hasOwn(f.requests.at(-1).body.input, 'proactive'), false);
+});
+
+test('pending follow-ups are listed read-only with a cancel button', async t => {
+  const f = fixture({ proactiveNodes: true });
+  const followup = { id: FOLLOWUP, note: 'Ask how the vacation went', dueAt: '2026-11-14T17:00:00.000Z', state: 'active', createdAt: '2026-11-02T12:00:00.000Z', canCancel: true };
+  const shown = f.ui.show(); f.requests.at(-1).reply(proactiveData(undefined, [followup, { ...followup, id: 'not-an-id' }])); await shown;
+  assert.equal(f.$('followups-block').hidden, false);
+  assert.equal(f.$('followup-list').children.length, 1, 'Malformed rows are skipped');
+  assert.match(f.$('followup-list').textContent, /Ask how the vacation went/);
+  const cancel = f.$('followup-list').children[0].children[1];
+  assert.equal(cancel.textContent, 'Cancel');
+  const done = cancel.emit('click');
+  assert.deepEqual(f.requests.at(-1).body, { action: 'cancelFollowup', input: { id: FOLLOWUP } });
+  f.requests.at(-1).reply(proactiveData()); await done;
+  assert.equal(f.$('announce').textContent, 'Follow-up cancelled.'); assert.equal(f.$('followups-block').hidden, true);
 });

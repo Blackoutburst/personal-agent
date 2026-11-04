@@ -49,7 +49,7 @@ function fixture(t, options = {}) {
       pythonPath: join(dir, 'python'), connectPath: join(dir, 'connect.py'),
       allowedTools: [...READ_ONLY_BOARD_TOOLS, 'create_ticket', 'post_message', 'list_activity', 'unknown_operation'] } }));
   f.apps = Object.fromEntries(['a', 'b'].map(label => [label, [
-    { name: 'scheduler', command: join(dir, 'scheduler'), env: { OWNER: label }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule'] },
+    { name: 'scheduler', command: join(dir, 'scheduler'), env: { OWNER: label }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'schedule_followup', 'mail_send'] },
     { name: 'board_docs', command: join(dir, 'docs'), allowedTools: ['post_message', 'read'] }
   ]]));
   options.beforeCreate?.(f);
@@ -458,7 +458,7 @@ test('wake and user turns share the owner queue, native persona and provider-ses
 
 test('every wake kind keeps inherited file/app tools, never web tools, and only the exact configured Board read names', async t => {
   const f = fixture(t), before = structuredClone(f.owners[0]);
-  for (const kind of ['reminder', 'heartbeat', 'watch', 'board']) {
+  for (const kind of ['reminder', 'heartbeat', 'watch', 'board', 'proactive', 'followup']) {
     f.conv.enqueueProactive(f.a, wake({ kind })); await f.conv.idle();
     const selected = f.calls.at(-1).allowedTools;
     const expected = kind === 'board' ? [...READ_ONLY_BOARD_TOOLS, 'create_ticket', 'post_message', 'list_activity', 'unknown_operation'] : READ_ONLY_BOARD_TOOLS;
@@ -466,9 +466,11 @@ test('every wake kind keeps inherited file/app tools, never web tools, and only 
       kind === 'board' ? 'Board-triggered wakes keep every configured Board tool' : 'Other wakes read the Board only');
     for (const name of ['WebSearch', 'WebFetch']) assert.ok(!selected.includes(name), 'Background wakes do not browse: ' + name);
     for (const name of ['Read', 'Write', 'mcp__scheduler__create_schedule', 'mcp__scheduler__list_schedules',
-      'mcp__scheduler__cancel_schedule', 'mcp__board_docs__post_message']) assert.ok(selected.includes(name), name);
+      'mcp__scheduler__cancel_schedule', 'mcp__scheduler__schedule_followup', 'mcp__board_docs__post_message']) assert.ok(selected.includes(name), name);
+    // #54: the companion's own wakes never send mail; mail stays with chats and mail/Board wakes.
+    assert.equal(selected.includes('mcp__scheduler__mail_send'), !['proactive', 'followup'].includes(kind), kind + ' mail');
   }
-  assert.deepEqual(f.owners[0], before); assert.equal(f.factoryCalls.length, 4);
+  assert.deepEqual(f.owners[0], before); assert.equal(f.factoryCalls.length, 6);
   f.owners[0].board.allowedTools = ['get_ticket', 'post_message', 'list_activity'];
   f.conv.enqueueProactive(f.a, wake()); await f.conv.idle();
   assert.deepEqual(f.calls.at(-1).allowedTools.filter(name => name.startsWith('mcp__board__')), ['mcp__board__get_ticket'],
@@ -480,7 +482,7 @@ test('only a board wake retains its own configured Board writes, and never anoth
   const f = fixture(t, { beforeCreate(f) {
     f.owners[0].board.allowedTools.push('resolve_human_request');
   } });
-  for (const kind of ['reminder', 'heartbeat', 'watch', 'board']) {
+  for (const kind of ['reminder', 'heartbeat', 'watch', 'board', 'proactive', 'followup']) {
     f.conv.enqueueProactive(f.a, wake({ kind })); await f.conv.idle();
     const call = f.calls.at(-1);
     assert.equal(call.companionId, f.a);

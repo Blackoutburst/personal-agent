@@ -108,3 +108,49 @@ Additive migration: `scheduler_release_watches` gains `mode` (default `release`)
 Claude/operator backs up the private database before deployment. This adds `scheduler_release_watches`, `scheduler_release_occurrences`, `scheduler_release_receipts`, and nullable `conv_wakes.release_result_json`; bootstrap user_version and all legacy row shapes, routine preferences and reminders remain intact. Publish the matching web modules and scheduler broker together. AGENTS version8 is refreshed through the existing native-file-preserving, session-reset-before-instructions path; USER/MEMORY/SOUL/diary bytes are not replaced. No nginx or archived bootstrap-installer update is required; `/internal/scheduler` remains loopback-only and unproxied.
 
 Old scheduler code ignores the new tables and does not admit their release occurrences; old web code ignores the additive watch list. Rollback therefore suspends watches, without deleting private definitions, evidence or receipts. Preserve the additive tables/column and compatible conversation readers; never silently contract/drop them or reinterpret release checks as legacy routines. Restore forward code to resume queued work, record already-running interrupted attempts stale, and publish buffered notices exactly once. Real CLI/native-web and owner's linked Discord qualification and deployment remain with the server reviewer; local tests use synthetic accounts/providers only.
+
+## Proactive wakes (#54)
+
+The companion also wakes on its own, so it can speak first without an owner reminder, calendar event, watch, Board
+ping or mail. Two kinds share the ordinary wake path and its strict `{"action":"message","text":…}` /
+`{"action":"silent"}` envelope:
+
+- `proactive`: the companion's own wakes. Owner setting `settings.proactive` = `{ enabled, perDay }`, `perDay` one of
+  2, 4, 6 or 8 (Me › Settings: "Proactive companion" with Rarely/Sometimes/Often/A lot). Owners who never chose are on
+  at four a day. The next wake is `now + (24 h / perDay) × factor`, with a uniform random factor in [0.5, 1.5), so the
+  times vary from day to day. After downtime there is at most one pending own wake (no backlog replay) and the next one
+  is drawn from the moment it was noticed. Any change of the setting bumps a generation, cancels queued/admitted own
+  wakes (including a message still held for quiet hours) and draws a fresh next wake. The private prompt says nobody
+  asked, gives the owner's local date/time and whether quiet hours are on, and asks the companion to review memory,
+  calendar, reminders/follow-ups, ongoing things and recent chat, then message only when genuinely worth it, do quiet
+  work (notes, `schedule_followup`) or stay silent. Silence is a normal outcome and publishes nothing.
+- `followup`: a follow-up the companion scheduled for itself with the scheduler tool `schedule_followup(requestId, at,
+  note)` (ISO time with offset/Z, in the future and at most 60 days ahead, note at most 500 characters, at most 20
+  active per companion). An exact retry returns the same follow-up; a changed payload under the same requestId is a
+  conflict. `cancel_followup(id)` cancels one; `list_schedules` returns active ones as `followups`. The owner sees
+  them read-only in Watches (web and Android) and can cancel them (`cancelFollowup` on the browser path); only the
+  companion can create them. At its time it becomes one `followup` wake carrying the note and the same
+  message/quiet/silent choice; any attempt completes it. Like reminders, one catch-up within 24 hours, otherwise it is
+  marked missed. While own wakes are switched off, follow-ups stay saved but do not run.
+
+Both kinds may start during quiet hours (quiet work); delivery of their message uses the existing deferral: the
+completed text waits privately in `waiting_delivery` until quiet hours end, and no push/Discord notification is sent
+before then. The five-minute spacing, the 24-turn local-day cap, provider cooldown and the global scheduler switch apply
+to them like other ordinary wakes. Their wakes keep the Board read-only tool set and never get web tools or `mail_send`;
+the ask-first rules for Board writes, mail and spending are unchanged (AGENTS version 23 says so explicitly).
+`configure` accepts a partial `proactive` group; older clients that omit it keep the stored values, and an older server
+that does not return the group hides the web/Android controls.
+
+Not in scope: after group chat (#53) lands, an own wake might also talk to the other companion. Today own wakes have no
+peer/contact tools.
+
+### Additive storage and rollback
+
+New tables only: `scheduler_proactive_settings` (per owner: enabled, per_day, generation, next_at),
+`scheduler_followups` (request receipts and state) and `scheduler_proactive_occurrences` (their own occurrence rows with
+cancel flags, like routines). Own wakes are never written to the legacy `scheduler_occurrences` table: older scheduler
+code admits any unknown kind there as a generic wake, so keeping them out means older code ignores them entirely. The
+legacy table shapes, positional writers and the v1 fixture are unchanged. `conv_wakes` stores the new kind strings in its
+existing `kind` column. On rollback, own wakes and follow-ups simply stop; a message still held for quiet hours stays
+undelivered (older code cannot find its occurrence) until forward code returns. Keep the tables; do not delete them.
+

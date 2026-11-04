@@ -174,6 +174,11 @@
             <p id="schedule-note" class="schedule-note" role="status"></p>
             <ul id="schedule-list" class="schedule-list"></ul>
           </section>
+          <section id="followups-block" class="reminders-block" aria-labelledby="followups-title" hidden>
+            <h2 id="followups-title">Your companion’s follow-ups</h2>
+            <p class="schedule-note">Things your companion plans to ask you about. It decides then whether to write.</p>
+            <ul id="followup-list" class="schedule-list"></ul>
+          </section>
         </div>
       </section>
       <section id="view-owner-profile" class="me-section" aria-labelledby="owner-profile-title" hidden>
@@ -206,6 +211,13 @@
               <option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="7">Sunday</option>
             </select></label>
             <label class="routine-field">At <input id="schedule-weekly-time" type="time" required disabled></label>
+          </div>
+          <div id="schedule-proactive" class="schedule-routine" hidden>
+            <label class="checkin-option"><input id="schedule-proactive-enabled" type="checkbox"> Proactive companion</label>
+            <label class="routine-field">How often <select id="schedule-proactive-frequency">
+              <option value="2">Rarely (2 a day)</option><option value="4">Sometimes (4 a day)</option>
+              <option value="6">Often (6 a day)</option><option value="8">A lot (8 a day)</option>
+            </select></label>
           </div>
           <label class="checkin-option"><input id="schedule-checkins" type="checkbox"> Occasional check-ins</label>
           <div id="schedule-board" class="quiet-times" hidden>

@@ -27,6 +27,9 @@ export async function schedulerOperation(scheduler, companionId, payload, { allo
     else if (exact(payload, ['action', 'input']) && payload.action === 'cancel') value = scheduler.cancel(companionId, payload.input);
     else if (!allowSettings && exact(payload, ['action', 'input']) && payload.action === 'createWatch') value = scheduler.createWatch(companionId, payload.input);
     else if (exact(payload, ['action', 'input']) && payload.action === 'updateWatch') value = scheduler.updateWatch(companionId, payload.input);
+    // #54: only the companion schedules its own follow-ups; the owner and the companion can cancel one.
+    else if (!allowSettings && exact(payload, ['action', 'input']) && payload.action === 'createFollowup') value = scheduler.createFollowup(companionId, payload.input);
+    else if (exact(payload, ['action', 'input']) && payload.action === 'cancelFollowup') value = scheduler.cancelFollowup(companionId, payload.input);
     else if (allowSettings && exact(payload, ['action', 'input']) && payload.action === 'configure') value = scheduler.configure(companionId, payload.input);
     else return failure(400, 'SCHEDULER_INVALID_REQUEST', 'Invalid reminder request.');
     return { status: 200, body: await value };

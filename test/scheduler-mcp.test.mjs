@@ -77,8 +77,9 @@ test('the tool catalogue keeps reminders and distinct release-watch tools in clo
   const result = await exchange([...handshake(), request('tools', 'tools/list', {})]);
   const tools = resultFor(result, 'tools').result.tools;
   assert.deepEqual(tools.map(tool => tool.name).sort(), ['cancel_schedule', 'create_event', 'create_release_watch', 'create_schedule', 'create_topic_watch',
-    'delete_event', 'github_create_repo', 'github_list_repos', 'github_pull', 'github_pulls', 'github_repo', 'list_calendar', 'list_schedules', 'mail_inbox', 'mail_mark_handled', 'mail_opt_out', 'mail_read', 'mail_send', 'mail_status', 'read_x_post', 'update_event', 'update_release_watch', 'watch_x_video']);
+    'delete_event', 'github_create_repo', 'github_list_repos', 'github_pull', 'github_pulls', 'github_repo', 'list_calendar', 'list_schedules', 'mail_inbox', 'mail_mark_handled', 'mail_opt_out', 'mail_read', 'mail_send', 'mail_status', 'read_x_post', 'schedule_followup', 'cancel_followup', 'update_event', 'update_release_watch', 'watch_x_video'].sort());
   const expected = { create_schedule: ['requestId', 'text', 'dueAt'], list_schedules: [], cancel_schedule: ['id'],
+    schedule_followup: ['requestId', 'at', 'note'], cancel_followup: ['id'],
     create_release_watch: ['requestId', 'condition'], create_topic_watch: ['requestId', 'topic', 'intervalHours'],
     update_release_watch: ['requestId', 'id', 'expectedVersion', 'operation', 'condition', 'intervalHours'] };
   // Calendar (#44) and GitHub (#45) tools are checked in their own tests.
@@ -318,7 +319,7 @@ test('tool calls accept the _meta field real clients attach (Claude Code sends a
     request('listed', 'tools/list', { _meta: { progressToken: 1 } }),
     request('called', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: meta }),
     request('bad-meta', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: 'nope' })]);
-  assert.equal(resultFor(result, 'listed').result.tools.length, 23);
+  assert.equal(resultFor(result, 'listed').result.tools.length, 25);
   assert.equal(resultFor(result, 'called').result.isError, false);
   assert.equal(resultFor(result, 'bad-meta').error.code, -32602);
   assert.equal(result.forwards.length, 1);
@@ -337,4 +338,18 @@ test('topic watch tools forward a recurring watch with its interval and refuse o
     { action: 'createWatch', input: { requestId: 'topic-1', condition: 'NVIDIA stock news', mode: 'topic', intervalHours: 24 } },
     { action: 'updateWatch', input: interval }]);
   for (const key of ['too-often', 'no-interval', 'empty-edit', 'pause-with-interval']) assert.ok(resultFor(result, key).error || resultFor(result, key).result.isError, key);
+});
+
+// #54: the companion's own follow-ups travel the owner-bound broker like reminders.
+test('follow-up tools forward exact requests and refuse malformed notes, times and ids', async () => {
+  const id = randomUUID(), create = { requestId: 'trip-followup', at: '2026-11-14T18:00:00+01:00', note: 'Ask how the vacation in Lisbon went.' };
+  const result = await exchange([...handshake(), call('create', 'schedule_followup', create), call('cancel', 'cancel_followup', { id }),
+    call('long', 'schedule_followup', { ...create, note: 'x'.repeat(501) }),
+    call('no-offset', 'schedule_followup', { ...create, at: '2026-11-14T18:00:00' }),
+    call('control', 'schedule_followup', { ...create, note: 'a\u0000b' }),
+    call('extra', 'schedule_followup', { ...create, owner: 'someone-else' }),
+    call('bad-id', 'cancel_followup', { id: 'not-a-uuid' })]);
+  assert.deepEqual(result.forwards.map(value => JSON.parse(value.spec.body)), [
+    { action: 'createFollowup', input: create }, { action: 'cancelFollowup', input: { id } }]);
+  for (const key of ['long', 'no-offset', 'control', 'extra', 'bad-id']) assert.ok(resultFor(result, key).error || resultFor(result, key).result.isError, key);
 });
