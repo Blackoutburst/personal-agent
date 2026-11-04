@@ -291,7 +291,7 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
         }
     }
     suspend fun upload(threadId: String, key: String, name: String, source: java.io.File,
-        cancel: TransferCancellation, progress: (Long) -> Unit): Attachment = transfers.upload(threadId, key, name, source, cancel, progress)
+        cancel: TransferCancellation, voice: Boolean = false, progress: (Long) -> Unit): Attachment = transfers.upload(threadId, key, name, source, cancel, voice, progress)
     suspend fun download(file: Attachment, destination: java.io.File, cancel: TransferCancellation,
         progress: (Long) -> Unit = {}): java.io.File = transfers.download(file, destination, cancel, progress)
     suspend fun removeFile(id: String) {

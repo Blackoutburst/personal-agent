@@ -37,6 +37,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import java.io.File
 
+private const val UUID_A = "4d317b44-1f1a-46f1-b515-822d93c8246c"
+
 /** adb shell am start -n dev.blackoutburst.companion/.UiGalleryActivity [--ez light true] */
 class UiGalleryActivity : ComponentActivity() {
     private val model: CompanionModel by viewModels()
@@ -84,6 +86,25 @@ class UiGalleryActivity : ComponentActivity() {
                     }
                     UploadCard(model, PendingUpload("k3", "t", "big-video.mp4", total = 99_000_000, state = "error", error = "The file exceeds the size limit."), false,
                         Modifier.padding(horizontal = 12.dp).width(260.dp))
+                    // Voice: a voice message bubble, and the mic → recording bar → result, testable without signing in.
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        Bubble(model, Message("m3", "t", "user", "", attachments = listOf(Attachment(UUID_A, "Voice message.m4a", "audio/mp4", 24_000, "0".repeat(64), "user",
+                            "/api/files/$UUID_A", voice = VoiceInfo(12_400, "salut, je rentre du travail, on joue ce soir ?")))), 0)
+                    }
+                    val recorder = remember { VoiceRecorder(this@UiGalleryActivity) }
+                    var since by remember { mutableStateOf<Long?>(null) }
+                    var recorded by remember { mutableStateOf("Nothing recorded") }
+                    if (since != null) RecordingBar(since!!, onCancel = { recorder.stop(false); since = null; recorded = "Cancelled" },
+                        onSend = { val r = recorder.stop(true); since = null; recorded = r?.let { "Recorded ${voiceClock(it.second)} · ${it.first.length()} B" } ?: "Too short" },
+                        Modifier.padding(12.dp, 6.dp))
+                    else Row(Modifier.fillMaxWidth().padding(12.dp, 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(recorded, Modifier.weight(1f), color = tones.ink)
+                        RoundButton("Stop", "■") {}
+                        Spacer(Modifier.size(8.dp))
+                        MicButton(enabled = true, onRecord = {
+                            if (recorder.start(java.io.File(cacheDir, "gallery-voice.m4a"))) since = recorder.startedAt else recorded = "Mic failed"
+                        }, onProblem = { recorded = it })
+                    }
                     Row(Modifier.fillMaxWidth().padding(12.dp, 6.dp), verticalAlignment = Alignment.Bottom) {
                         RoundButton("Attach files", "+") {}
                         Spacer(Modifier.size(8.dp))

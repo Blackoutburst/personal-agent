@@ -37,3 +37,20 @@ conv_files is an additive table; existing identity/conversation table shapes and
 ## Review checks
 
 Use Node24.22.1 for canonical tests. Storage/account/stdio/fake-provider cases cover owner isolation, auth/Origin, body bounds, magic types, quota reservations, Range, exact retries, workspace confinement, cancellation/deletion and source upgrades. Web browser QA uses synthetic intercepted account/media routes; Android builds/tests are unsigned and synthetic. Actual server runtime/image review, user-device media review, final backup/migration, merge and deployment belong to Claude; no live account, private file, pairing/grant or provider activation is performed on PC.
+
+## Voice messages
+
+The mic in the composer (web and Android) records a voice message: it stands where Send is while the message box is
+empty and turns into Send once the owner types, like Discord; during a reply Stop shows next to it. The web app records
+Opus/WebM (Chrome, Android) or AAC/MP4 (Safari, iPhone), the Android app AAC/MP4; both stop at 5 minutes.
+
+- Upload: `POST /api/files` with `X-File-Voice: 1`. Refused (`INVALID_FILE`) without speech to text (RUNTIME.md).
+  The bytes must sniff as audio, `video/webm|mp4` or unknown, and ffprobe must measure them (`FILE_NOT_VOICE`, 415);
+  over 10 minutes is `FILE_TOO_LARGE`. Columns `voice`, `duration_ms`, `transcript`, `transcript_language`.
+- The transcript is made once in the background after upload and kept; the turn waits for it if needed. The file DTO
+  carries `voice: { durationMs, transcript? }`, so the owner sees the voice message with a Transcript toggle.
+- The companion never gets the audio: in its prompt the message is `(voice message) <transcript>`, in order with the
+  owner's typed texts (a burst can mix both). No speech or a failed transcript get a short note instead.
+- `GET /api/files/<id>/voice`: an AAC/MP4 copy (made once with ffmpeg, stored next to the file, removed with it) that
+  every browser plays, with Range. Android plays the verified original from its private cache.
+- Android 0.20.0 and older reject the `voice` field: update to 0.21.0.

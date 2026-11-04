@@ -89,6 +89,29 @@ class AttachmentsTest {
         }
     } }
 
+    @Test fun voiceMessagesUploadWithTheVoiceHeaderAndCarryLengthAndTranscript() = temporary { folder -> runBlocking {
+        val bytes = "synthetic voice bytes".toByteArray()
+        val local = File(folder, "voice.m4a").apply { writeBytes(bytes) }
+        val file = attachment(bytes).copy(name = "Voice message.m4a", mime = "audio/mp4", voice = VoiceInfo(4200))
+        val calls = mutableListOf<FakeConnection>()
+        val api = FileTransfers({ owner() }) { url -> FakeConnection(url, Json.encodeToString(mapOf("file" to file)).toByteArray()).also { calls += it } }
+        val thread = UUID.randomUUID().toString()
+        assertEquals(file, api.upload(thread, "voice_key", file.name, local, TransferCancellation(), voice = true) {})
+        assertEquals("1", calls.single().getRequestProperty("X-File-Voice"))
+        // A plain upload answered as a voice message (or the reverse) is not trusted.
+        denied("INVALID_RESPONSE") { runBlocking { api.upload(thread, "plain_key", file.name, local, TransferCancellation()) {} } }
+        assertNull(calls.last().getRequestProperty("X-File-Voice"))
+        // Length and transcript are bounded; only the owner's own messages can be voice messages.
+        val json = Json { explicitNulls = false }
+        val parsed = json.decodeFromString<Attachment>(json.encodeToString(file.copy(voice = VoiceInfo(12_400, "salut ça va"))))
+        assertEquals("salut ça va", checkedAttachment(parsed).voice?.transcript)
+        denied("INVALID_RESPONSE") { checkedAttachment(file.copy(voice = VoiceInfo(-1))) }
+        denied("INVALID_RESPONSE") { checkedAttachment(file.copy(voice = VoiceInfo(4_000_000))) }
+        denied("INVALID_RESPONSE") { checkedAttachment(file.copy(direction = "companion", voice = VoiceInfo(10))) }
+        denied("INVALID_RESPONSE") { checkedAttachment(file.copy(voice = VoiceInfo(10, "x".repeat(20_001)))) }
+        assertEquals("0:05", voiceClock(4_600)); assertEquals("1:05", voiceClock(65_000))
+    } }
+
     @Test fun filesOnlyMessagesSurviveHistoryAndEventsWithoutAcceptingPartialInvalidPages() {
         val thread = UUID.randomUUID().toString()
         val upload = attachment()

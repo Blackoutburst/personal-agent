@@ -20,11 +20,11 @@ const STRANGER = { id: '333333333333333333', username: 'someone' };
 // A fake Discord: REST over fetch and a gateway socket the test drives.
 function fakeDiscord({ me = BOT } = {}) {
   const sent = [], sockets = [];
-  const PNG = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(64, 7)]);
+  const PNG = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(64, 7)]), OGG = Buffer.from('OggS\0\0\0\0OpusHead synthetic voice');
   const fetchImpl = async (url, spec) => {
     if (new URL(url).hostname === 'cdn.discordapp.com') {
       assert.equal(spec.headers.Authorization, undefined, 'The bot token never goes to the CDN');
-      return url.includes('missing') ? new Response('', { status: 404 }) : new Response(PNG);
+      return url.includes('missing') ? new Response('', { status: 404 }) : new Response(url.includes('voice-message') ? OGG : PNG);
     }
     const path = new URL(url).pathname.replace('/api/v10', '');
     assert.equal(spec.headers.Authorization, 'Bot ' + TOKEN);
@@ -44,18 +44,18 @@ function fakeDiscord({ me = BOT } = {}) {
     send(text) { this.out.push(JSON.parse(text)); if (JSON.parse(text).op === 2) queueMicrotask(() => this.emit({ op: 0, t: 'READY', s: 1, d: { user: BOT } })); }
     close(code = 1000) { queueMicrotask(() => this.dispatchEvent(Object.assign(new Event('close'), { code }))); }
     emit(packet) { this.dispatchEvent(Object.assign(new Event('message'), { data: JSON.stringify(packet) })); }
-    dm(author, content, id = String(Date.now()) + String(Math.floor(Math.random() * 1000)).padStart(3, '0'), attachments) {
+    dm(author, content, id = String(Date.now()) + String(Math.floor(Math.random() * 1000)).padStart(3, '0'), attachments, flags) {
       this.emit({ op: 0, t: 'MESSAGE_CREATE', s: 2, d: { id, channel_id: '444444444444444444', author, content,
-        ...(attachments ? { attachments } : {}) } });
+        ...(attachments ? { attachments } : {}), ...(flags ? { flags } : {}) } });
     }
   }
-  return { sent, sockets, fetchImpl, WebSocketImpl: Socket, PNG };
+  return { sent, sockets, fetchImpl, WebSocketImpl: Socket, PNG, OGG };
 }
 
-function fixture(t, { handler, me, withFiles = false, gatherMs = 0, texting = false } = {}) {
+function fixture(t, { handler, me, withFiles = false, gatherMs = 0, texting = false, asr = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'discord-')), store = new BootstrapStore(dir, ROOT);
   const discord = fakeDiscord({ me }), companionId = randomUUID();
-  const files = withFiles ? new FileStore({ store, dataDir: dir, workspaceFor: () => ({ dir }), limits: { normal: 1024 } }) : null;
+  const files = withFiles ? new FileStore({ store, dataDir: dir, workspaceFor: () => ({ dir }), limits: { normal: 1024 }, asr }) : null;
   let bridge;
   const conversations = new Conversations({ store, flushMs: 1, systemPrompt: () => 'persona', files, gatherMs, texting,
     runner: { turn: async (id, turn) => (handler ?? (() => ({ text: 'Hello from Pip!' })))(id, turn) },
@@ -241,6 +241,24 @@ test('files the companion attaches go to the DM after the text; app-only turns n
   assert.ok(upload.file.bytes.equals(png));
   assert.equal(upload.content, 'Weekly chart');
   assert.deepEqual(upload.allowed_mentions, { parse: [] });
+});
+
+test('a Discord voice message stays a voice message in the app and the companion reads its transcript', async t => {
+  const turns = [];
+  const asr = { durationMs: async () => 3100, transcribe: async () => ({ text: 'on joue ce soir ?', language: 'fr-FR' }) };
+  const f = await linked(t, { withFiles: true, asr, handler: (_id, turn) => { turns.push(turn); return { text: 'grave' }; } });
+  const clip = { id: '666666666666666670', filename: 'voice-message.ogg', size: f.discord.OGG.length,
+    url: 'https://cdn.discordapp.com/attachments/1/2/voice-message.ogg', content_type: 'audio/ogg', duration_secs: 3.1 };
+  f.socket.dm(OWNER, '', '777777777777777779', [clip], 1 << 13);
+  await f.conversations.idle(); await sleep(10);
+  assert.equal(turns.length, 1);
+  assert.match(turns[0].prompt, /^\(voice message\) on joue ce soir \?/);
+  assert.deepEqual({ ...f.store.db.prepare('SELECT voice, duration_ms, transcript FROM conv_files').get() }, { voice: 1, duration_ms: 3100, transcript: 'on joue ce soir ?' });
+  // The same sound sent as a plain file (no voice flag) is just a file.
+  f.socket.dm(OWNER, '', '777777777777777780', [{ ...clip, id: '666666666666666671', filename: 'song.ogg' }]);
+  await f.conversations.idle(); await sleep(10);
+  assert.equal(f.store.db.prepare("SELECT voice FROM conv_files WHERE name='song.ogg'").get().voice, 0);
+  assert.match(turns[1].prompt, /song\.ogg/);
 });
 
 test('without a file store, attachments get a short refusal and no turn', async t => {

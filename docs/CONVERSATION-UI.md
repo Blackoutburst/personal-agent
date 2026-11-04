@@ -55,7 +55,8 @@ The owner can keep texting while a reply is on its way; only a running backgroun
    punctuation, a trailing comma, "and", "so", "mais"…) or a file on its own (`quietWindow`, src/texting.mjs). While
    the owner is typing it keeps waiting, at most 60 s after their last text. Typing comes from the apps (`typing`
    action `{threadId, active}`, sent at most every 3 s while the message box has text, held 6 s; clearing the box
-   or sending ends it) and from Discord (`TYPING_START`, held 11 s). A text sent during the wait folds the waiting
+   or sending ends it, and while a voice message is being recorded) and from Discord (`TYPING_START`, held 11 s).
+   A voice message on its own waits half of `gatherMs` (FILES.md, Voice messages). A text sent during the wait folds the waiting
    turn into its own (DB state `merged`; clients see that turn `complete`).
 2. **Starting over while nothing is seen.** A running reply that has shown nothing yet and has not acted (no
    tool call: the providers report `acting` when one starts) is stopped and merged into the new text's turn, so

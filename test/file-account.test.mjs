@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '../server.mjs';
@@ -213,4 +213,26 @@ test('Range parser handles suffix/open ranges and rejects multiple, unsafe or em
   assert.deepEqual(byteRange('bytes=-3',10),{start:7,end:9});assert.deepEqual(byteRange('bytes=2-',10),{start:2,end:9});assert.deepEqual(byteRange('bytes=0-99',10),{start:0,end:9});
   for(const value of ['bytes=0-1,4-5','bytes=-0','bytes=9-2','bytes=999999999999999999999-','nope'])assert.throws(()=>byteRange(value,10),e=>e.status===416);
   assert.throws(()=>byteRange('bytes=0-',0),e=>e.status===416);
+});
+
+test('voice uploads: X-File-Voice marks one, the transcript shows on the message and /voice serves AAC to its owner only', { skip: spawnSync('ffmpeg', ['-version']).status !== 0 && 'no ffmpeg' }, async t => {
+  const tone = join(realpathSync(mkdtempSync(join(tmpdir(), 'pa-voice-'))), 'tone.webm');
+  t.after(() => rmSync(join(tone, '..'), { recursive: true, force: true }));
+  assert.equal(spawnSync('ffmpeg', ['-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-c:a', 'libopus', '-f', 'webm', '-y', tone]).status, 0);
+  const bytes = readFileSync(tone);
+  const asr = { durationMs: async () => 1000, transcribe: async () => ({ text: 'quick test', language: 'en-US' }), stop() {} };
+  const f = await setup(t, 'claude', { fileOptions: { asr } });
+  assert.equal((await f.upload(bytes, { name: 'Voice message.webm', headers: { 'X-File-Voice': 'yes' } })).status, 400);
+  const up = await f.upload(bytes, { name: 'Voice message.webm', headers: { 'X-File-Voice': '1' } });
+  assert.equal(up.status, 200); assert.deepEqual(up.body.file.voice, { durationMs: 1000 });
+  assert.equal((await f.rpc({ action: 'submit', requestId: randomUUID(), threadId: f.threadId, text: '', attachments: [up.body.file.id] })).status, 200);
+  const snapshot = await f.settled();
+  assert.equal(snapshot.messages.find(message => message.attachments?.length).attachments[0].voice.transcript, 'quick test');
+  assert.match(f.calls().at(-1).prompt ?? JSON.stringify(f.calls().at(-1)), /\(voice message\) quick test/);
+  const get = (token, range) => fetch(f.app.url + up.body.file.url + '/voice', { headers: { Cookie: '__Secure-blackout_session=' + token, ...(range ? { Range: range } : {}) } });
+  const audio = await get(A);
+  assert.equal(audio.status, 200); assert.equal(audio.headers.get('content-type'), 'audio/mp4');
+  const body = Buffer.from(await audio.arrayBuffer()); assert.equal(body.subarray(4, 8).toString(), 'ftyp');
+  assert.equal((await get(A, 'bytes=0-7')).status, 206);
+  assert.equal((await get(B)).status, 404);
 });

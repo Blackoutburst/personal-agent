@@ -70,7 +70,14 @@
             <button id="attach" class="round attach" type="button" aria-label="Attach files" title="Attach files (or drop or paste them here)" disabled><span aria-hidden="true">＋</span></button>
             <label class="sr-only" for="input">Your message</label>
             <textarea id="input" rows="1" maxlength="8000" placeholder="Write a message…" enterkeyhint="send"></textarea>
+            <div id="voice-bar" class="voice-bar" hidden>
+              <button class="voice-cancel round" type="button" aria-label="Cancel voice message"><span aria-hidden="true">✕</span></button>
+              <span class="voice-dot" aria-hidden="true"></span><span class="voice-time" aria-live="off">0:00</span>
+              <span class="voice-hint">Recording…</span>
+              <button class="voice-send round send" type="button" aria-label="Send voice message"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V6M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            </div>
             <button id="stop" class="round stop" type="button" aria-label="Stop" hidden><span aria-hidden="true">■</span></button>
+            <button id="mic" class="round mic" type="button" aria-label="Record a voice message" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
             <button id="send" class="round send" type="submit" aria-label="Send" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V6M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           </form>
         </div>

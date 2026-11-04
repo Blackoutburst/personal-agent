@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { Asr } from '../src/asr.mjs';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
@@ -137,11 +138,13 @@ test('watching a video saves key frames and a transcript, and falls back to the 
   const dir = mkdtempSync(join(tmpdir(), 'xvideo-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   try { execFileSync('ffmpeg', ['-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=duration=4:size=320x240:rate=10', '-f', 'lavfi', '-i', 'sine=duration=4',
     '-shortest', '-pix_fmt', 'yuv420p', join(dir, 'clip.mp4')]); } catch { t.skip('ffmpeg is not installed'); return; }
-  const clip = readFileSync(join(dir, 'clip.mp4')), script = join(dir, 'fake-asr.mjs');
-  writeFileSync(script, "console.log(JSON.stringify({ language: 'fr', text: ' Bonjour à tous ' }))");
+  const clip = readFileSync(join(dir, 'clip.mp4')), script = join(dir, 'fake-asr.cjs');
+  // A stand-in for ops/asr.py: one JSON line in, one out.
+  writeFileSync(script, "require('node:readline').createInterface({ input: process.stdin }).on('line', line => console.log(JSON.stringify({ id: JSON.parse(line).id, language: 'fr', text: ' Bonjour à tous ' })));");
   const db = new DatabaseSync(':memory:'), workspace = join(dir, 'ws'), data = join(dir, 'data'), A = randomUUID();
   mkdirSync(workspace); mkdirSync(data, { mode: 0o700 });
   const long = { id: '600000', duration: 3600 };
+  const asr = new Asr({ python: process.execPath, script, model: 'unused' }); t.after(() => asr.stop());
   const fetchImpl = async url => {
     const parsed = new URL(url);
     if (parsed.hostname === 'video.twimg.com') return new Response(clip, { headers: { 'content-type': 'video/mp4' } });
@@ -151,7 +154,7 @@ test('watching a video saves key frames and a transcript, and falls back to the 
       formats: [{ container: 'mp4', url: 'https://video.twimg.com/small.mp4', bitrate: 832000 }, { container: 'm3u8', url: 'https://video.twimg.com/x.m3u8' }] }] } }) });
   };
   const x = new XPosts({ store: { db }, files: new FileStore({ store: { db }, dataDir: data, workspaceFor: () => ({ dir: workspace }) }),
-    secrets: new SecretBox({ keyFile: join(dir, 'key') }), fetchImpl, transcriber: { python: process.execPath, script, model: 'unused' } });
+    secrets: new SecretBox({ keyFile: join(dir, 'key') }), fetchImpl, transcriber: asr });
   const watched = (await xOperation(x, A, { op: 'watch', url: 'https://x.com/alice/status/500000' })).body;
   assert.equal(watched.frames.length, 3);
   assert.ok(watched.frames.every(frame => frame.path.startsWith(join(workspace, 'inbox', 'x', '500000')) && readFileSync(frame.path).subarray(0, 2).toString('hex') === 'ffd8'));

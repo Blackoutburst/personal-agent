@@ -62,6 +62,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -209,6 +211,28 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
     var confirmNew by remember(state.scope) { mutableStateOf(false) }
     var showChats by remember(state.scope) { mutableStateOf(false) }
     var pickerScope by remember { mutableLongStateOf(state.scope) }
+    // Voice messages: one recording at a time; the bar replaces the composer while it runs.
+    val context = LocalContext.current
+    val recorder = remember { VoiceRecorder(context) }
+    var recordingSince by remember { mutableStateOf<Long?>(null) }
+    val stopRecording = { send: Boolean ->
+        val result = recorder.stop(send); recordingSince = null
+        model.recordingVoice(false)
+        if (result != null) model.sendVoice(result.first, state.scope)
+        else if (send) model.attachProblem("That was too short to send.")
+    }
+    DisposableEffect(state.scope) { onDispose { if (recorder.active) { recorder.stop(false); recordingSince = null } } }
+    LaunchedEffect(recordingSince) {
+        val since = recordingSince ?: return@LaunchedEffect
+        // While recording the owner counts as typing.
+        while (true) { model.recordingVoice(true); delay(3000) }
+    }
+    LaunchedEffect(recordingSince) {
+        val since = recordingSince ?: return@LaunchedEffect
+        // At the limit the message is sent as it is.
+        delay(VOICE_MAX_MS - (android.os.SystemClock.elapsedRealtime() - since))
+        if (recordingSince == since) stopRecording(true)
+    }
     var tick by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) { while (true) { delay(1000); tick = System.currentTimeMillis() } }
     val mood = remember(state, draft.isNotBlank(), tick) { model.mood(draft.isNotBlank()) }
@@ -245,6 +269,11 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
             Text(it, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), color = Soft, fontSize = 14.sp, textAlign = TextAlign.Center)
         }
         state.fileError?.let { Text(it, Modifier.fillMaxWidth().padding(horizontal = 16.dp), color = Danger, fontSize = 14.sp) }
+        if (state.voiceFailed) Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ActionButton(onClick = { model.retryVoice() }) { Text("Retry voice message") }
+            ActionButton(onClick = { model.discardVoice() }) { Text("Discard") }
+        }
+        if (state.voiceSending) Text("Sending voice message…", Modifier.padding(horizontal = 16.dp), color = Soft, fontSize = 14.sp)
         if (state.uploads.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             state.uploads.forEach { upload ->
@@ -257,7 +286,9 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
             verticalAlignment = Alignment.CenterVertically) {
             Text("Archived chat · ended ${chatDate(state.archivedAt)} · read-only", Modifier.weight(1f), color = Soft, fontSize = 14.sp)
             ActionButton(onClick = { model.backToCurrent() }) { Text("Back to chat") }
-        } else Row(Modifier.fillMaxWidth().padding(12.dp, 6.dp), verticalAlignment = Alignment.Bottom) {
+        } else if (recordingSince != null) RecordingBar(recordingSince!!, onCancel = { stopRecording(false) }, onSend = { stopRecording(true) },
+            Modifier.padding(12.dp, 6.dp))
+        else Row(Modifier.fillMaxWidth().padding(12.dp, 6.dp), verticalAlignment = Alignment.Bottom) {
             AttachMenu(enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.archiving && !state.archiveFailed && state.uploads.size < MAX_FILES,
                 onLaunch = { pickerScope = state.scope }, onPicked = { uris -> model.attachFiles(uris, pickerScope) }, onProblem = model::attachProblem)
             Spacer(Modifier.size(8.dp))
@@ -269,9 +300,18 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
                 colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Card, unfocusedContainerColor = Card,
                     focusedBorderColor = Line, unfocusedBorderColor = Line))
             Spacer(Modifier.size(8.dp))
-            // While a reply runs, Stop shows until the owner starts another message: they can keep texting,
-            // and messages sent close together get one reply.
-            if (state.replying && draft.isBlank() && state.uploads.isEmpty() && !state.sendFailed) RoundButton("Stop", "■") { model.stop(state.scope) }
+            // Like Discord: while the box is empty the mic stands where Send is; typing turns it into Send.
+            // While a reply runs, Stop shows next to the mic: they can keep texting or talking, and messages
+            // sent close together get one reply.
+            val empty = draft.isBlank() && state.uploads.isEmpty() && !state.sendFailed
+            if (empty) {
+                if (state.replying) { RoundButton("Stop", "■") { model.stop(state.scope) }; Spacer(Modifier.size(8.dp)) }
+                MicButton(enabled = !state.chatLoading && !state.sending && !state.voiceSending && !state.voiceFailed && !state.archiving && !state.archiveFailed,
+                    onRecord = {
+                        if (recorder.start(model.voiceRecordingFile())) recordingSince = recorder.startedAt
+                        else model.attachProblem("The microphone could not start. Try again.")
+                    }, onProblem = model::attachProblem)
+            }
             else RoundButton(if (state.sendFailed) "Retry send" else "Send", if (state.sendFailed) "↻" else "↑",
                 enabled = (draft.isNotBlank() || state.uploads.isNotEmpty() || state.sendFailed) && !state.chatLoading && !state.sending && !state.archiving && !state.archiveFailed && state.uploads.all { it.state == "ready" }) {
                 val submitted = draft

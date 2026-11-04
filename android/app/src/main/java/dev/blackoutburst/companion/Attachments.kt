@@ -16,7 +16,11 @@ val AUDIO_TYPES = setOf("audio/mpeg", "audio/wav", "audio/ogg", "audio/flac", "a
 
 @Serializable
 data class Attachment(val id: String, val name: String, val mime: String, val size: Long,
-    val sha256: String, val direction: String, val url: String, val caption: String? = null)
+    val sha256: String, val direction: String, val url: String, val caption: String? = null, val voice: VoiceInfo? = null)
+
+/** A recorded voice message: shown as one (play, length, transcript on demand); the companion reads the transcript. */
+@Serializable
+data class VoiceInfo(val durationMs: Long, val transcript: String? = null)
 
 internal fun validText(value: String, maximum: Int, bytes: Int): Boolean {
     if (value.length > maximum || value.toByteArray(Charsets.UTF_8).size > bytes ||
@@ -38,7 +42,9 @@ internal fun checkedAttachment(file: Attachment): Attachment {
     if (!fileId(file.id) || file.url != "/api/files/${file.id}" || !fileName(file.name) ||
         file.mime.length > 255 || !MIME.matches(file.mime) || file.size !in 0..MAX_FILE_BYTES ||
         !Regex("[a-f0-9]{64}").matches(file.sha256) || file.direction !in setOf("user", "companion") ||
-        file.caption?.let { !validText(it, 1000, 4000) } == true) throw ApiException("INVALID_RESPONSE")
+        file.caption?.let { !validText(it, 1000, 4000) } == true ||
+        file.voice?.let { it.durationMs !in 0..3_600_000 || file.direction != "user" || it.transcript?.let { text -> !validText(text, 20000, 80000) } == true } == true)
+        throw ApiException("INVALID_RESPONSE")
     return file
 }
 internal fun checkedFiles(files: List<Attachment>): List<Attachment> {

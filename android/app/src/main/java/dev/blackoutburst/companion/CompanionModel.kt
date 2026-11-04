@@ -48,6 +48,9 @@ data class UiState(
     val sendFailed: Boolean = false,
     val uploads: List<PendingUpload> = emptyList(),
     val fileError: String? = null,
+    /** A recorded voice message is being uploaded and sent / was not confirmed (retry or discard). */
+    val voiceSending: Boolean = false,
+    val voiceFailed: Boolean = false,
     val archiving: Boolean = false,
     val archiveFailed: Boolean = false,
     /** Set while an archived (read-only) chat is open. */
@@ -845,6 +848,9 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         uploadSources.clear(); mediaCache.clear()
         File(getApplication<Application>().cacheDir, "attachment-uploads").deleteRecursively()
         File(getApplication<Application>().cacheDir, "attachment-media").deleteRecursively()
+        // A voice message belongs to the owner who recorded it: a sign-out or switch drops it.
+        failedVoice = null; File(getApplication<Application>().cacheDir, "voice-recordings").deleteRecursively()
+        _state.update { it.copy(voiceSending = false, voiceFailed = false) }
         failedSend = null; pendingArchive = null; createKey = null
     }
 
@@ -1002,10 +1008,75 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { try { api.typing(threadId, active) } catch (_: ApiException) { } }
     }
 
+    // ---- Voice messages ----
+    private var failedVoice: PendingVoice? = null
+
+    /** Where the next recording goes (app cache, deleted once sent or discarded). */
+    fun voiceRecordingFile(): File =
+        File(getApplication<Application>().cacheDir, "voice-recordings").apply { mkdirs() }.let { File(it, Pkce.randomToken(16) + ".m4a") }
+
+    /** While recording, the companion sees the owner as typing, so a reply waiting for more texts keeps waiting. */
+    fun recordingVoice(active: Boolean) {
+        val state = _state.value
+        val threadId = state.threadId ?: return
+        if (state.gate != Gate.Ready || state.archivedAt != null || state.chatLoading) return
+        typingOn = active; typingSentAt = if (active) System.currentTimeMillis() else 0L
+        viewModelScope.launch { try { api.typing(threadId, active) } catch (_: ApiException) { } }
+    }
+
+    /** Uploads a recording as a voice message and sends it on its own. An unconfirmed send keeps the recording for Retry. */
+    fun sendVoice(local: File, expectedScope: Long = scope) {
+        val now = _state.value
+        if (!current(expectedScope) || now.gate != Gate.Ready || now.archivedAt != null || now.chatLoading || now.voiceSending ||
+            now.sending || failedSend != null || pendingArchive != null || failedVoice != null) { local.delete(); return }
+        failedVoice = PendingVoice(Pkce.randomToken(16), Pkce.randomToken(16), local)
+        deliverVoice(expectedScope)
+    }
+    fun retryVoice() { if (failedVoice != null && !_state.value.voiceSending) deliverVoice(scope) }
+    fun discardVoice() {
+        if (_state.value.voiceSending) return
+        failedVoice?.local?.delete(); failedVoice = null
+        _state.update { it.copy(voiceFailed = false, fileError = null) }
+    }
+    private fun deliverVoice(version: Long) {
+        typingOn = false; typingSentAt = 0L
+        _state.update { it.copy(voiceSending = true, voiceFailed = false, fileError = null) }
+        viewModelScope.launch {
+            var pending = failedVoice ?: return@launch
+            try {
+                val threadId = pending.threadId ?: ensureThread(version)
+                pending = pending.copy(threadId = threadId); failedVoice = pending
+                val file = pending.file ?: api.upload(threadId, pending.key, "Voice message.m4a", pending.local, TransferCancellation(), voice = true) { }
+                pending = pending.copy(file = file); failedVoice = pending
+                if (!current(version, threadId)) return@launch
+                val messageId = api.submit(pending.requestId, threadId, "", listOf(file.id))
+                if (!current(version, threadId)) return@launch
+                failedVoice = null; pending.local.delete()
+                _state.update { state ->
+                    val mine = Message(messageId, threadId, "user", "", pending.requestId, attachments = listOf(file))
+                    val finished = state.turn?.let { it.requestId == pending.requestId && it.state != "streaming" } == true
+                    state.copy(voiceSending = false, waitingFor = if (finished) state.waitingFor else pending.requestId,
+                        messages = if (state.messages.any { it.id == messageId }) state.messages else state.messages + mine)
+                }
+                startPolling()
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                if (!current(version)) return@launch
+                val failure = error as? ApiException ?: ApiException("NETWORK")
+                if (failure.signedOut) { signedOut(); return@launch }
+                val committed = _state.value.messages.any { it.role == "user" && it.requestId == pending.requestId }
+                if (committed) { failedVoice = null; pending.local.delete(); _state.update { it.copy(voiceSending = false) }; startPolling(); return@launch }
+                val retryable = failure.code == "NETWORK" || failure.status >= 500 || failure.code == "INVALID_RESPONSE"
+                if (!retryable) { failedVoice = null; pending.local.delete() }
+                _state.update { it.copy(voiceSending = false, voiceFailed = retryable, fileError = voiceProblem(failure.code, retryable)) }
+            }
+        }
+    }
+
     fun send(text: String, expectedScope: Long = scope, onSent: () -> Unit) {
         if (!current(expectedScope)) return
         val now = _state.value
-        if (now.archivedAt != null || now.chatLoading || now.sending || pendingArchive != null || now.uploads.any { it.state != "ready" }) return
+        if (now.archivedAt != null || now.chatLoading || now.sending || now.voiceSending || pendingArchive != null || now.uploads.any { it.state != "ready" }) return
         val files = now.uploads.mapNotNull { it.file }.toList()
         val retry = failedSend
         if (retry == null && (!validText(text, 8000, 32768) || text.isBlank() && files.isEmpty())) return
@@ -1293,6 +1364,16 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             false
         }
     }
+}
+
+internal data class PendingVoice(val key: String, val requestId: String, val local: File, val threadId: String? = null, val file: Attachment? = null)
+
+fun voiceProblem(code: String, retryable: Boolean): String = when {
+    retryable -> "Your voice message was not sent. Retry sends the same recording."
+    code == "FILE_NOT_VOICE" -> "That recording could not be read. Try recording again."
+    code == "FILE_TOO_LARGE" -> "Voice messages can be up to 5 minutes."
+    code == "INVALID_FILE" -> "Voice messages are not available right now."
+    else -> fileProblem(code)
 }
 
 fun fileProblem(code: String): String = when (code) {

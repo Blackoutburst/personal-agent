@@ -20,7 +20,7 @@ internal class FileTransfers(private val session: () -> Session?,
     private val base = BuildConfig.SITE + BuildConfig.COMPANION_PATH.trimEnd('/')
 
     suspend fun upload(threadId: String, key: String, name: String, source: File,
-        cancel: TransferCancellation, progress: (Long) -> Unit): Attachment {
+        cancel: TransferCancellation, voice: Boolean = false, progress: (Long) -> Unit): Attachment {
         if (!fileId(threadId) || !requestKey(key) || !fileName(name) || !source.isFile || source.length() > MAX_FILE_BYTES)
             throw ApiException("INVALID_REQUEST")
         val owner = owner()
@@ -34,6 +34,7 @@ internal class FileTransfers(private val session: () -> Session?,
                 connection.setRequestProperty("X-Thread-Id", threadId)
                 connection.setRequestProperty("X-Request-Id", key)
                 connection.setRequestProperty("X-File-Name", URLEncoder.encode(name, "UTF-8").replace("+", "%20"))
+                if (voice) connection.setRequestProperty("X-File-Voice", "1")
                 val digest = MessageDigest.getInstance("SHA-256")
                 source.inputStream().use { input -> connection.outputStream.use { output ->
                     val buffer = ByteArray(64 * 1024); var sent = 0L
@@ -46,7 +47,7 @@ internal class FileTransfers(private val session: () -> Session?,
                 val result = try { checkedAttachment(json.decodeFromJsonElement(Attachment.serializer(), response.getValue("file"))) }
                     catch (_: Exception) { throw ApiException("INVALID_RESPONSE") }
                 val hash = digest.digest().joinToString("") { "%02x".format(it) }
-                if (result.direction != "user" || result.size != source.length() || result.sha256 != hash) throw ApiException("INVALID_RESPONSE")
+                if (result.direction != "user" || result.size != source.length() || result.sha256 != hash || (result.voice != null) != voice) throw ApiException("INVALID_RESPONSE")
                 result
             } catch (error: ApiException) { throw error }
             catch (_: Exception) { cancel.check(); throw ApiException("NETWORK") }

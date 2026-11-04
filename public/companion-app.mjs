@@ -9,6 +9,7 @@ import { createContactUI, renderPeerCard } from './contact-ui.mjs';
 import { createWeatherUI } from './weather-ui.mjs';
 import { createWebPushUI, createPushPresence, registerServiceWorker } from './web-push-ui.mjs';
 import { splitBubbles } from './bubbles.mjs';
+import { createVoiceRecorder, voiceView } from './voice-ui.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
@@ -25,6 +26,8 @@ let profile = null, runtime = null, view = 'loading', chatOpened = false, state 
 let wearing = 'base', draftLook = null, pollTimer = null, polling = false, happyUntil = 0, lastTurnKey = null;
 const messageNodes = new Map();
 let uploads = [], uploadEpoch = 0, fileNotice = '', uploadsKey = '';
+// Voice messages (set up with the composer below): the recorder, a send in progress, the typing ping while recording.
+let voiceRecorder = null, voiceSending = false, recordingPing = null;
 let ownerEpoch = 0, startRequest = 0, lookRequest = 0, wearingRequest = 0, composerEpoch = 0, sessionDenied = false;
 let readTicket = null, readSequence = 0, readFailures = 0, initialThreadAttempted = false, heldDraft = null;
 const READ_BACKOFF = [1000, 2000, 5000, 10000, 30000];
@@ -339,7 +342,11 @@ function renderChat() {
   const typing = Boolean(input.value.trim()) || uploads.length > 0;
   $('stop').hidden = !streaming || typing;
   $('stop').disabled = Boolean(state.turn?.stopping);
-  $('send').hidden = streaming && !typing;
+  // Like Discord: the mic sits where Send is until there is something to send.
+  const mic = !typing && Boolean(voiceRecorder?.supported());
+  $('mic').hidden = !mic;
+  $('mic').disabled = !ready || submitting() || voiceSending || state.archivedAt !== null || state.synthetic;
+  $('send').hidden = mic;
   const waiting = uploads.some(item => item.status !== 'ready' || item.removing);
   $('send').disabled = !ready || submitting() || Boolean(heldDraft) || waiting || (!input.value.trim() && !completed.length) || input.value.length > USER_CHARS;
   $('attach').disabled = !ready || submitting() || uploads.length >= 8;
@@ -377,6 +384,7 @@ function fileView(file) {
   const box = el('div', { className: 'shared-file' });
   // DTO paths are validated /api/files/<id>; strip the leading slash to preserve the app's proxy mount.
   const url = file.url.slice(1);
+  if (file.voice) { box.append(voiceView(document, file, url + '/voice')); return box; }
   let media;
   if (['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.mime)) {
     const image = el('img', { src: url, alt: file.name, loading: 'lazy', decoding: 'async' });
@@ -638,6 +646,29 @@ client.subscribe(next => {
 });
 setInterval(() => { if (view === 'chat') renderAll(); }, 1000);
 
+// ---------- Voice messages ----------
+// Recording counts as typing, so a reply still waiting for more texts keeps waiting.
+voiceRecorder = createVoiceRecorder({ bar: $('voice-bar'),
+  onStart: () => { $('composer').classList.add('recording'); signal(true); recordingPing = setInterval(() => signal(true), 3000); renderChat(); },
+  onStop: () => { $('composer').classList.remove('recording'); clearInterval(recordingPing); renderChat(); },
+  onRecorded: file => { void sendVoice(file); },
+  onProblem: text => { fileNotice = text; signal(false); renderUploads(); } });
+$('mic').addEventListener('click', () => { if (!$('mic').disabled) { fileNotice = ''; renderUploads(); void voiceRecorder.start(); } });
+async function sendVoice(file) {
+  const threadId = state.threadId, owner = ownerEpoch;
+  if (!threadId || submitting() || state.connection !== 'ready') { fileNotice = 'The voice message was not sent: wait for the chat to be ready and record it again.'; renderUploads(); return; }
+  voiceSending = true; fileNotice = 'Sending voice message…'; renderUploads(); renderChat();
+  try {
+    const dto = await fileTransport.upload(file, { threadId, requestId: crypto.randomUUID(), voice: true });
+    if (owner !== ownerEpoch || state.threadId !== threadId) return;
+    client.setFiles([...uploads.filter(item => item.status === 'ready').map(item => item.dto), dto]);
+    const result = await client.send('', [dto.id]);
+    fileNotice = result?.status === 'accepted' ? '' : 'The voice message was not sent. Record it again.';
+  } catch (error) {
+    fileNotice = error?.code === 'TOO_LARGE' ? 'That voice message is too long.' : 'The voice message could not be sent. Check your connection and record it again.';
+  } finally { voiceSending = false; renderUploads(); renderChat(); schedulePoll(); }
+}
+
 $('composer').addEventListener('submit', async event => {
   event.preventDefault();
   const text = $('input').value;
@@ -712,9 +743,9 @@ $('input').addEventListener('input', () => { composerEpoch++; grow(); try { clie
 // Tells the server the owner is typing (at most every 3 s while they type), like the "typing…" a person sees,
 // so a reply still waiting for more texts keeps waiting. Clearing the box says they stopped.
 let typingSentAt = 0, typingOn = false;
+const signal = active => { try { Promise.resolve(client.typing?.(active)).catch(() => {}); } catch { /* only a hint */ } };
 function noteTyping() {
   const writing = Boolean($('input').value.trim());
-  const signal = active => { try { Promise.resolve(client.typing?.(active)).catch(() => {}); } catch { /* only a hint */ } };
   if (writing && Date.now() - typingSentAt > 3000) { typingSentAt = Date.now(); typingOn = true; signal(true); }
   else if (!writing && typingOn) { typingSentAt = 0; typingOn = false; signal(false); }
 }

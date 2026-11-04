@@ -77,7 +77,7 @@ function fromApi(body, id, depth = 0) {
 
 export class XPosts {
   #db; #box; #files; #fetch; #now; #ffmpeg; #transcriber;
-  // files: src/files.mjs (workspaceDir). transcriber: { python, script, model } for speech, or null.
+  // files: src/files.mjs (workspaceDir). transcriber: src/asr.mjs (Nemotron ASR) for speech, or null.
   constructor({ store, secrets, files, fetchImpl = fetch, now = Date.now, ffmpeg = 'ffmpeg', transcriber = null }) {
     this.#db = store.db; this.#box = secrets; this.#files = files; this.#fetch = fetchImpl; this.#now = now; this.#ffmpeg = ffmpeg; this.#transcriber = transcriber;
     this.#db.exec(`CREATE TABLE IF NOT EXISTS connector_x(companion_id TEXT PRIMARY KEY, key_enc TEXT, key_added_at INTEGER,
@@ -242,10 +242,8 @@ export class XPosts {
       else if (!this.#transcriber) result.notes.push('Speech transcription is not set up on this server.');
       else if (duration > LIMITS.transcriptSeconds) result.notes.push(`No transcript: the video is longer than ${LIMITS.transcriptSeconds / 60} minutes.`);
       else {
-        const audio = join(work, 'audio.wav');
         try {
-          await run(this.#ffmpeg, ['-nostdin', '-loglevel', 'error', '-i', file, '-vn', '-ac', '1', '-ar', '16000', '-y', audio], 60000);
-          const spoken = JSON.parse(await run(this.#transcriber.python, [this.#transcriber.script, this.#transcriber.model, audio], 240000));
+          const spoken = await this.#transcriber.transcribe(file);
           result.transcript = spoken.text?.trim() ? { language: spoken.language ?? null, text: clip(spoken.text.trim(), LIMITS.transcript) } : null;
           if (!result.transcript) result.notes.push('No speech heard.');
         } catch { result.notes.push('No transcript: the video has no sound, or it could not be transcribed.'); }

@@ -16,6 +16,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/;
 const DEFAULT_TITLE = 'New conversation';
 const FLUSH_MS = 400;
+// How a voice message reads to the companion.
+const VOICE_PREFIX = '(voice message) ', VOICE_SILENT = '(voice message with no speech in it)',
+  VOICE_UNREADABLE = '(a voice message that could not be transcribed: say you could not hear it)';
 // Texting (live): how long a typing signal holds a waiting reply, the longest a reply waits for the owner,
 // and how soon after a reply a new message counts as a follow-up to it.
 const TYPING_MS = { app: 6000, discord: 11000 }, MAX_HOLD_MS = 60_000, FOLLOW_UP_MS = 30_000;
@@ -638,8 +641,10 @@ export class Conversations {
       const turn = this.#db.prepare(`SELECT t.state, t.created_at, t.user_message_id, m.text FROM conv_turns t JOIN conv_messages m ON m.id=t.user_message_id
         WHERE t.thread_id=? AND t.request_id=?`).get(threadId, requestId);
       if (turn?.state !== 'queued') return;
-      const files = this.#files?.list(turn.user_message_id).length ?? 0;
-      const quiet = turn.created_at + quietWindow(turn.text, { files, base: this.#gatherMs });
+      const attached = this.#files?.list(turn.user_message_id) ?? [];
+      // A voice message is a whole thought, like a finished sentence; a lone file usually comes with text after it.
+      const quiet = turn.created_at + (attached.some(file => file.voice) && !turn.text.trim() ? Math.round(this.#gatherMs * 0.5)
+        : quietWindow(turn.text, { files: attached.length, base: this.#gatherMs }));
       const until = Math.min(turn.created_at + MAX_HOLD_MS, Math.max(quiet, this.#typing.get(threadId) ?? 0));
       const wait = until - this.#now();
       if (!(wait > 0)) return;
@@ -881,6 +886,7 @@ export class Conversations {
           AND rowid < (SELECT rowid FROM conv_turns WHERE thread_id=? AND request_id=?)), 0)
       ORDER BY t.rowid`).all(threadId, threadId, requestId, threadId, threadId, requestId),
       { request_id: requestId, user_message_id: turn.user_message_id, created_at: turn.created_at, text: this.#db.prepare('SELECT text FROM conv_messages WHERE id=?').get(turn.user_message_id).text }];
+    // Voice messages become their transcript (below); until then only typed text.
     const user = { text: burst.map(item => item.text).filter(Boolean).join('\n') };
     const burstIds = burst.map(item => item.user_message_id);
     // Texting: was this sent while the last reply ran, or right after it? Then it is a follow-up to that reply.
@@ -933,7 +939,15 @@ export class Conversations {
       .all(threadId, JSON.stringify(burstIds), this.#session.recentMessages)
       .map(row=>({role:row.role,text:row.text,...(row.role==='peer'?{peer:JSON.parse(row.peer_json)}:{})}));
     try {
-      const incoming = this.#files ? burstIds.flatMap(id => this.#files.incoming(companionId, id)) : [];
+      const received = this.#files ? burst.map(item => this.#files.incoming(companionId, item.user_message_id)) : burst.map(() => []);
+      // A voice message is read as what was said: its transcript takes its place in the owner's texts, in order.
+      // Clients are told the message changed so they can show the transcript under the voice message.
+      const spoken = await Promise.all(received.map(files => Promise.all(files.filter(file => file.voice).map(file =>
+        this.#files.transcript(companionId, file.id).then(result => result.text, () => null)))));
+      user.text = burst.map((item, index) => [item.text, ...spoken[index].map(text => text === null ? VOICE_UNREADABLE : text ? VOICE_PREFIX + text : VOICE_SILENT)]
+        .filter(Boolean).join('\n')).filter(Boolean).join('\n');
+      if (spoken.some(list => list.length)) this.#tx(() => burst.forEach((item, index) => { if (spoken[index].length) this.#append(threadId, { type: 'message', messageId: item.user_message_id }); }));
+      const incoming = received.flat().filter(file => !file.voice);
       fileTools = this.#fileToolsForTurn(companionId, { threadId, requestId, ownerText:user.text, current: live, attach: file => {
         if (!live()) throw new FileError('FILE_TURN_ENDED', 409);
         this.#tx(() => {

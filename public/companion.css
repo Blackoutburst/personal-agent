@@ -104,6 +104,27 @@ main { flex: 1; min-height: 0; display: flex; }
 .composer { display: flex; align-items: flex-end; gap: 8px; margin: 10px 14px 14px; padding: 6px 6px 6px 16px; background: var(--card); border-radius: 26px; box-shadow: 0 3px 14px rgba(120,80,90,.1); }
 .composer textarea { flex: 1; border: 0; outline: none; resize: none; background: transparent; padding: 10px 0; font-size: 16px; line-height: 1.4; max-height: 160px; }
 .composer textarea { min-width: 0; }
+/* Voice messages: the mic shows where Send is while the box is empty; recording replaces the text box with a bar. */
+.round.mic { background: var(--body); color: var(--on-body); }
+.round.mic svg { width: 22px; height: 22px; }
+.composer.recording > :not(.voice-bar):not(#stop) { display: none; }
+.voice-bar { flex: 1; display: flex; align-items: center; gap: 10px; min-height: 44px; }
+.voice-bar[hidden] { display: none; }
+.voice-bar .voice-cancel { background: var(--bg2); color: var(--ink); font-size: 16px; }
+.voice-bar .voice-send { margin-left: auto; }
+.voice-dot { width: 10px; height: 10px; border-radius: 50%; background: #e5484d; animation: voice-pulse 1s ease-in-out infinite alternate; }
+.voice-time { font-variant-numeric: tabular-nums; font-weight: 700; }
+.voice-hint { color: var(--soft); font-size: 14px; }
+@keyframes voice-pulse { from { opacity: .35; } to { opacity: 1; } }
+.voice-box { display: grid; gap: 4px; min-width: 220px; }
+.voice-message { display: flex; align-items: center; gap: 10px; }
+.voice-play { width: 38px; height: 38px; flex: none; border: 0; border-radius: 50%; background: var(--ink); color: var(--card); font-size: 14px; cursor: pointer; }
+.bubble.user .voice-play { background: var(--on-body); color: var(--body); }
+.voice-track { position: relative; flex: 1; height: 6px; min-width: 110px; border-radius: 3px; background: color-mix(in srgb, currentColor 22%, transparent); cursor: pointer; }
+.voice-fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 3px; background: currentColor; }
+.voice-length { font-variant-numeric: tabular-nums; font-size: 13px; opacity: .8; min-width: 34px; text-align: right; }
+.voice-toggle { justify-self: start; font-size: 13px; color: inherit; opacity: .8; }
+.voice-transcript { margin: 0; font-size: 14px; opacity: .85; white-space: pre-wrap; }
 .attach { background: var(--bg2); color: var(--ink); font-size: 28px; }
 .conversation-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin: 4px 20px 0; }
 .text-button { border: 0; background: transparent; color: var(--soft); padding: 7px 5px; font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }

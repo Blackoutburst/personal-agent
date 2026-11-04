@@ -287,11 +287,27 @@ entry shows the source in use and the last source that answered.
 
 Tools (scheduler MCP, chat turns only, never wakes): `read_x_post(url)` for links found later, and
 `watch_x_video(url)`: downloads the smallest mp4 of at least ~600 kbit/s (max 80 MB, 10 minutes, else only the
-thumbnail with a note), saves 3–6 key frames with ffmpeg and transcribes speech up to 5 minutes with faster-whisper
-(`ops/transcribe.py`, CPU int8). The model folder is downloaded once, outside the service sandbox:
-
-    python3 -c "from huggingface_hub import snapshot_download as s; s('Systran/faster-whisper-small', local_dir='$HOME/personal-agent-data/models/whisper-small')"
-
-Without `model.bin` there (or `COMPANION_WHISPER_MODEL`), videos get frames and a "transcription is not set up" note.
+thumbnail with a note), saves 3–6 key frames with ffmpeg and transcribes speech up to 5 minutes with the speech to
+text below. Without it, videos get frames and a "transcription is not set up" note.
 Only GET requests reach the two APIs and the `pbs.twimg.com` / `video.twimg.com` media hosts; there is no posting,
 liking, following or DM access.
+
+## Speech to text (voice messages, X videos)
+
+NVIDIA Nemotron 3.5 ASR (`nvidia/nemotron-3.5-asr-streaming-0.6b`, multilingual, punctuated, detects the language).
+`src/asr.mjs` starts one worker (`ops/asr.py`) on the first request and stops it after 10 idle minutes, so the model
+only holds memory while it is used. ffmpeg turns any audio or video into 16 kHz mono WAV first; long audio is cut at
+quiet points into pieces of at most 40 s. The worker uses the GPU when there is room (10 s of audio ≈ 0.3 s on the
+GTX 1060, model ≈ 2.4 GB next to llama-server's 2 GB) and falls back to the CPU (≈ 1.3 s) if CUDA runs out of memory.
+It runs offline (`HF_HUB_OFFLINE`), with `XDG_CACHE_HOME` inside its folder so the service sandbox can write it.
+
+Setup, once, outside the service sandbox (folder `~/personal-agent-data/asr`, or `COMPANION_ASR_DIR`):
+
+    cd ~/personal-agent-data/asr
+    uv venv --system-site-packages --python /usr/bin/python3 venv
+    uv pip install --python venv/bin/python 'transformers==5.20.2' librosa \
+      torch==2.7.1 torchaudio==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu126 --extra-index-url https://pypi.org/simple
+    venv/bin/python -c "from huggingface_hub import snapshot_download as s; s('nvidia/nemotron-3.5-asr-streaming-0.6b', local_dir='nemotron-3.5-asr-streaming-0.6b')"
+
+The server enables speech to text when `venv/bin/python` and `nemotron-3.5-asr-streaming-0.6b/model.safetensors`
+exist there; otherwise voice uploads are refused and X videos get no transcript.

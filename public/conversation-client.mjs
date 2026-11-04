@@ -69,7 +69,14 @@ function attachmentIds(value, code = 'INVALID_REQUEST') {
 }
 // The URL is derived from the authenticated file ID, never accepted as a remote media source.
 export function parseAttachment(value) {
-  const file = plain(value, ['id', 'name', 'mime', 'size', 'sha256', 'direction', 'url'], ['caption']);
+  const file = plain(value, ['id', 'name', 'mime', 'size', 'sha256', 'direction', 'url'], ['caption', 'voice']);
+  if (Object.hasOwn(file, 'voice')) {
+    // A voice message: its length and, once made, the transcript the companion read.
+    const voice = plain(file.voice, ['durationMs'], ['transcript']);
+    check(Number.isSafeInteger(voice.durationMs) && voice.durationMs >= 0 && voice.durationMs <= 3_600_000);
+    if (Object.hasOwn(voice, 'transcript')) text(voice.transcript, 20000, 80000, true);
+    file.voice = { ...voice };
+  }
   check(typeof file.id === 'string' && FILE_ID.test(file.id) && file.url === `/api/files/${file.id}`);
   text(file.name, 200, 800); check(!/[\\/\u0000-\u001f\u007f]/.test(file.name));
   check(typeof file.mime === 'string' && /^[a-z0-9][a-z0-9!#$&^_.+-]{0,99}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,99}$/.test(file.mime));
@@ -161,7 +168,8 @@ export class AttachmentError extends Error {
 // XHR supplies upload progress; cookies and Origin are browser-managed, never placed in a URL.
 export function createFileTransport({ xhrFactory = () => new XMLHttpRequest(), fetchImpl = globalThis.fetch } = {}) {
   return Object.freeze({
-    upload(file, { threadId, requestId, signal, onProgress = () => {} } = {}) {
+    // voice: a recorded voice message (the server transcribes it for the companion).
+    upload(file, { threadId, requestId, signal, onProgress = () => {}, voice = false } = {}) {
       return new Promise((resolve, reject) => {
         let xhr, finished = false;
         const finish = (error, value) => { if (finished) return; finished = true; signal?.removeEventListener('abort', abort); error ? reject(error) : resolve(value); };
@@ -175,6 +183,7 @@ export function createFileTransport({ xhrFactory = () => new XMLHttpRequest(), f
           xhr.setRequestHeader('Content-Type', 'application/octet-stream');
           xhr.setRequestHeader('X-Thread-Id', threadId); xhr.setRequestHeader('X-Request-Id', requestId);
           xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name)); xhr.setRequestHeader('Accept', 'application/json');
+          if (voice === true) xhr.setRequestHeader('X-File-Voice', '1');
           xhr.upload.onprogress = event => { if (!finished && event.lengthComputable) onProgress(Math.min(100, Math.round(event.loaded / Math.max(1, event.total) * 100))); };
           xhr.onerror = xhr.ontimeout = () => finish(new AttachmentError('NETWORK_ERROR'));
           xhr.onabort = () => finish(new AttachmentError('CANCELLED'));

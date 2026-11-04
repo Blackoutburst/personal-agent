@@ -70,6 +70,7 @@ import kotlin.math.roundToInt
 /** Network is owned by the authenticated API. Native decoders/players only see verified private files. */
 @Composable
 fun AttachmentView(model: CompanionModel, file: Attachment, scope: Long) {
+    if (file.voice != null) { VoiceMessageView(model, file, scope); return }
     val tones = LocalTones.current
     val image = file.mime in IMAGE_TYPES
     val playable = file.mime in VIDEO_TYPES || file.mime in AUDIO_TYPES

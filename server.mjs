@@ -26,6 +26,7 @@ import { XPosts } from './src/x-posts.mjs';
 import { SecretBox } from './src/secrets.mjs';
 import { DiscordLinks, DiscordBridge } from './src/discord.mjs';
 import { FileStore, FileError, FILE_LIMITS } from './src/files.mjs';
+import { Asr } from './src/asr.mjs';
 import { createFileHttp, fileFailure } from './src/file-http.mjs';
 import { PersonalityStore } from './src/personality.mjs';
 import { Contacts, ContactError } from './src/contacts.mjs';
@@ -58,6 +59,7 @@ const STATIC = new Map([
   ['/contact-ui.mjs', ['contact-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/web-push-ui.mjs', ['web-push-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/bubbles.mjs', ['bubbles.mjs', 'text/javascript; charset=utf-8']],
+  ['/voice-ui.mjs', ['voice-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/weather-ui.mjs', ['weather-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-character.mjs', ['companion-character.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-theme.js', ['companion-theme.js', 'text/javascript; charset=utf-8']],
@@ -114,7 +116,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let agentsConfigured = false;
   let companionHttp;
   let schedulerHttp, schedulerService, schedulerStore, calendar = null, github = null, x = null, discord = null;
-  let files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
+  let asr = null, files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
   const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
@@ -309,7 +311,16 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         }),
         deliver:(companionId,threadId,text,peer)=>conversations.peerInTransaction(companionId,threadId,text,peer)
       });
-      files = new FileStore({ store, dataDir, workspaceFor, ...fileOptions });
+      // Speech to text (Nemotron 3.5 ASR, docs/RUNTIME.md) for voice messages and X videos, when it is installed.
+      const asrDir = fileOptions.asrDir ?? process.env.COMPANION_ASR_DIR ?? join(dataDir, 'asr');
+      const asrModel = join(asrDir, 'nemotron-3.5-asr-streaming-0.6b');
+      if (fileOptions.asr !== undefined) asr = fileOptions.asr;
+      else if (existsSync(join(asrModel, 'model.safetensors')) && existsSync(join(asrDir, 'venv/bin/python'))) {
+        asr = new Asr({ python: join(asrDir, 'venv/bin/python'), script: join(ROOT, 'ops', 'asr.py'), model: asrModel,
+          env: { XDG_CACHE_HOME: join(asrDir, 'cache') } });
+      }
+      const { asr: _asr, asrDir: _asrDir, ...storeOptions } = fileOptions;
+      files = new FileStore({ store, dataDir, workspaceFor, asr, ...storeOptions });
       fileHttp = createFileHttp({ access, files });
       const fileToolsForTurn = (companionId, context) => {
         let available=[];
@@ -346,11 +357,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       github = new GitHub({ store, keyFile: githubOptions.keyFile ?? process.env.COMPANION_SECRETS_KEY
         ?? join(process.env.HOME ?? '', '.config/personal-agent/connector-secrets.key'), ...(githubOptions.fetchImpl ? { fetchImpl: githubOptions.fetchImpl } : {}),
         ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
-      // X posts (#46): FxTwitter, else the owner's own sealed X API key; video speech through faster-whisper when its model is present.
-      const whisper = xOptions.whisperModel ?? process.env.COMPANION_WHISPER_MODEL ?? join(process.env.HOME ?? '', 'personal-agent-data/models/whisper-small');
+      // X posts (#46): FxTwitter, else the owner's own sealed X API key; video speech through the ASR when it is installed.
       x = new XPosts({ store, files, secrets: new SecretBox({ keyFile: githubOptions.keyFile ?? process.env.COMPANION_SECRETS_KEY
         ?? join(process.env.HOME ?? '', '.config/personal-agent/connector-secrets.key') }), ...(xOptions.fetchImpl ? { fetchImpl: xOptions.fetchImpl } : {}),
-        transcriber: existsSync(join(whisper, 'model.bin')) ? { python: xOptions.python ?? 'python3', script: join(ROOT, 'ops', 'transcribe.py'), model: whisper } : null });
+        transcriber: xOptions.transcriber !== undefined ? xOptions.transcriber : asr });
       connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
       conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget: new WebBudget({ store }),
         linkContext: (companionId, text) => x.forTurn(companionId, text),
@@ -458,6 +468,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       // Running replies end as interrupted; nothing writes to a closed store.
       await conversations?.shutdown();
+      asr?.stop();
       store.close();
     }
   };

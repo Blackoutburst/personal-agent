@@ -1,12 +1,15 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, lstatSync, realpathSync, openSync, closeSync, fstatSync, readSync, writeSync,
-  renameSync, unlinkSync, readdirSync, constants } from 'node:fs';
+  renameSync, unlinkSync, readdirSync, rmSync, constants } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { join, resolve, relative, isAbsolute, sep, basename, dirname } from 'node:path';
 
 export const FILE_LIMITS = Object.freeze({ normal: 25 * 1024 ** 2, video: 100 * 1024 ** 2,
   quota: 1024 ** 3, count: 1000, attachments: 8, pendingMs: 24 * 3600_000 });
 export const FILE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const KEY = /^[A-Za-z0-9._-]{1,80}$/;
+// The longest voice message accepted (the apps stop recording at 5 minutes).
+const VOICE_MS = 10 * 60_000;
 export class FileError extends Error {
   constructor(code, status = 400) { super(code); this.name = 'FileError'; this.code = code; this.status = status; }
 }
@@ -44,7 +47,7 @@ export function sniffMime(bytes) {
   if (ascii.slice(4, 8) === 'ftyp') {
     const brand = ascii.slice(8, 12);
     if (['M4A ', 'M4B '].includes(brand)) return 'audio/mp4';
-    if (['isom','iso2','mp41','mp42','avc1','M4V ','qt  '].includes(brand)) return 'video/mp4';
+    if (['isom','iso2','iso4','iso5','iso6','mp41','mp42','avc1','M4V ','qt  ','dash'].includes(brand)) return 'video/mp4';
   }
   if (head.subarray(0, 4).equals(Buffer.from([26,69,223,163])) && ascii.includes('webm')) return 'video/webm';
   return 'application/octet-stream';
@@ -53,8 +56,10 @@ export const inlineMime = mime => /^(?:image\/(?:png|jpeg|gif|webp)|video\/(?:mp
 
 // No schema changes to the existing conversation/identity tables: old code ignores this expansion.
 export class FileStore {
-  constructor({ store, dataDir, workspaceFor = () => null, limits = {}, now = Date.now }) {
+  // asr: src/asr.mjs for voice messages (duration, transcript); without it voice uploads are refused.
+  constructor({ store, dataDir, workspaceFor = () => null, limits = {}, now = Date.now, asr = null, ffmpeg = 'ffmpeg' }) {
     this.db = store.db; this.root = realpathSync(dataDir); this.workspaceFor = workspaceFor; this.now = now;
+    this.asr = asr; this.ffmpeg = ffmpeg; this.transcribing = new Map(); this.rendering = new Map();
     this.limits = { ...FILE_LIMITS, ...limits };
     for (const key of Object.keys(FILE_LIMITS)) if (!Number.isSafeInteger(this.limits[key]) || this.limits[key] < 1) throw new TypeError('Invalid file limit');
     this.directory = directory(join(this.root, 'files'), this.root);
@@ -64,6 +69,11 @@ export class FileStore {
       workspace_path TEXT, created_at INTEGER NOT NULL, UNIQUE(companion_id, direction, request_id));
       CREATE INDEX IF NOT EXISTS conv_files_message ON conv_files(message_id);
       CREATE INDEX IF NOT EXISTS conv_files_thread ON conv_files(thread_id);`);
+    // Voice messages: an audio file the owner recorded. Shown as a voice message; the companion reads its transcript.
+    const columns = new Set(this.db.prepare('PRAGMA table_info(conv_files)').all().map(column => column.name));
+    for (const [name, type] of [['voice', 'INTEGER NOT NULL DEFAULT 0'], ['duration_ms', 'INTEGER'], ['transcript', 'TEXT'], ['transcript_language', 'TEXT']]) {
+      if (!columns.has(name)) this.db.exec(`ALTER TABLE conv_files ADD COLUMN ${name} ${type}`);
+    }
   }
   tx(fn) { this.db.exec('BEGIN IMMEDIATE'); try { const value = fn(); this.db.exec('COMMIT'); return value; }
     catch (error) { this.db.exec('ROLLBACK'); throw error; } }
@@ -76,7 +86,8 @@ export class FileStore {
     return join(directory(join(this.directory, row.companion_id), this.root), row.id + (partial ? '.part' : ''));
   }
   dto(row) { return { id: row.id, name: row.name, mime: row.mime, size: row.size, sha256: row.sha256,
-    direction: row.direction, url: '/api/files/' + row.id, ...(row.caption ? { caption: row.caption } : {}) }; }
+    direction: row.direction, url: '/api/files/' + row.id, ...(row.caption ? { caption: row.caption } : {}),
+    ...(row.voice ? { voice: { durationMs: row.duration_ms ?? 0, ...(row.transcript ? { transcript: row.transcript } : {}) } } : {}) }; }
   get(companionId, id) {
     if (typeof companionId !== 'string' || typeof id !== 'string' || !FILE_ID.test(companionId) || !FILE_ID.test(id)) refuse('NOT_FOUND', 404);
     const row = this.db.prepare("SELECT * FROM conv_files WHERE id=? AND companion_id=? AND state='ready'").get(id, companionId);
@@ -97,8 +108,9 @@ export class FileStore {
     }
     return realpathSync(root);
   }
-  #reserve(companionId, { threadId, requestId, name, size, direction, caption = null }) {
+  #reserve(companionId, { threadId, requestId, name, size, direction, caption = null, voice = false }) {
     this.thread(companionId, threadId); fileName(name);
+    if (typeof voice !== 'boolean' || voice && (direction !== 'user' || !this.asr)) refuse();
     if (typeof requestId !== 'string' || !KEY.test(requestId)) refuse();
     if (!Number.isSafeInteger(size) || size < 0 || size > this.limits.video) refuse('FILE_TOO_LARGE', 413);
     if (caption !== null && (typeof caption !== 'string' || !caption.isWellFormed() || caption.length > 1000
@@ -106,15 +118,16 @@ export class FileStore {
     return this.tx(() => {
       const prior = this.db.prepare('SELECT * FROM conv_files WHERE companion_id=? AND direction=? AND request_id=?').get(companionId, direction, requestId);
       if (prior) {
-        if (prior.state !== 'ready' || prior.thread_id !== threadId || prior.name !== name || prior.size !== size || prior.caption !== caption) refuse('CONFLICT', 409);
+        if (prior.state !== 'ready' || prior.thread_id !== threadId || prior.name !== name || prior.size !== size || prior.caption !== caption
+            || Boolean(prior.voice) !== voice) refuse('CONFLICT', 409);
         return { row: prior, replay: true };
       }
       const used = this.db.prepare('SELECT COALESCE(SUM(size),0) AS bytes,COUNT(*) AS count FROM conv_files WHERE companion_id=?').get(companionId);
       if (used.bytes + size > this.limits.quota || used.count >= this.limits.count) refuse('FILE_QUOTA', 413);
       const row = { id: randomUUID(), companion_id: companionId, thread_id: threadId, request_id: requestId, name, size, direction,
-        caption, state: 'uploading', created_at: this.now() };
-      this.db.prepare(`INSERT INTO conv_files(id,companion_id,thread_id,request_id,name,size,direction,caption,state,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?)`).run(row.id, companionId, threadId, requestId, name, size, direction, caption, row.state, row.created_at);
+        caption, state: 'uploading', created_at: this.now(), voice: voice ? 1 : 0 };
+      this.db.prepare(`INSERT INTO conv_files(id,companion_id,thread_id,request_id,name,size,direction,caption,state,created_at,voice)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(row.id, companionId, threadId, requestId, name, size, direction, caption, row.state, row.created_at, row.voice);
       return { row, replay: false };
     });
   }
@@ -136,6 +149,14 @@ export class FileStore {
       const sha256 = hash.digest('hex'), mime = sniffMime(prefix);
       if (!mime.startsWith('video/') && size > this.limits.normal) refuse('FILE_TOO_LARGE', 413);
       if (fd !== null) { closeSync(fd); fd = null; }
+      // A voice message must be sound ffprobe can measure; at most VOICE_MS long.
+      let durationMs = null;
+      if (row.voice && !replay) {
+        if (!/^(?:audio\/|video\/(?:webm|mp4)$)/.test(mime) && mime !== 'application/octet-stream') refuse('FILE_NOT_VOICE', 415);
+        durationMs = await this.asr.durationMs(temporary);
+        if (durationMs === null) refuse('FILE_NOT_VOICE', 415);
+        if (durationMs > VOICE_MS) refuse('FILE_TOO_LARGE', 413);
+      }
       this.thread(companionId, row.thread_id);
       if (!current()) refuse('FILE_TURN_ENDED', 409);
       if (replay) { if (row.sha256 !== sha256) refuse('CONFLICT', 409); return this.dto(this.get(companionId, row.id)); }
@@ -143,9 +164,11 @@ export class FileStore {
         this.thread(companionId, row.thread_id);
         if (!current() || !this.db.prepare("SELECT 1 FROM conv_files WHERE id=? AND state='uploading'").get(row.id)) refuse('FILE_TURN_ENDED', 409);
         renameSync(temporary, this.path(row));
-        this.db.prepare("UPDATE conv_files SET mime=?,sha256=?,state='ready' WHERE id=?").run(mime, sha256, row.id);
+        this.db.prepare("UPDATE conv_files SET mime=?,sha256=?,state='ready',duration_ms=? WHERE id=?").run(mime, sha256, durationMs, row.id);
         return this.dto(this.get(companionId, row.id));
       });
+      // Transcribe now, so the text is ready when the companion starts its reply.
+      if (row.voice && !replay) this.transcript(companionId, row.id).catch(() => {});
       return result;
     } catch (error) {
       if (fd !== null) closeSync(fd);
@@ -170,7 +193,7 @@ export class FileStore {
       // Refuse links in ancestors before unlinking a retained inbox copy.
       directory(expected, root);
     }
-    for (const path of [this.path(row), this.path(row, true), row.workspace_path].filter(Boolean)) {
+    for (const path of [this.path(row), this.path(row, true), row.voice ? this.path(row) + '.m4a' : null, row.workspace_path].filter(Boolean)) {
       try { unlinkSync(path); } catch (error) { if (error.code !== 'ENOENT') throw new FileError('FILE_UNAVAILABLE', 503); }
     }
     this.db.prepare('DELETE FROM conv_files WHERE id=?').run(row.id);
@@ -211,6 +234,44 @@ export class FileStore {
     }
     return fd;
   }
+  // A voice message's transcript: { text, language }, made once and kept. Concurrent callers share one run.
+  async transcript(companionId, id) {
+    const row = this.get(companionId, id);
+    if (!row.voice) refuse('FILE_NOT_VOICE', 415);
+    if (row.transcript !== null) return { text: row.transcript, language: row.transcript_language };
+    if (!this.asr) refuse('FILE_UNAVAILABLE', 503);
+    let job = this.transcribing.get(id);
+    if (!job) {
+      job = this.asr.transcribe(this.path(row)).then(result => {
+        this.db.prepare('UPDATE conv_files SET transcript=?, transcript_language=? WHERE id=?').run(result.text, result.language, id);
+        return result;
+      }).finally(() => this.transcribing.delete(id));
+      this.transcribing.set(id, job);
+    }
+    return job;
+  }
+
+  // A voice message as AAC in MP4, which every client can play (Discord's Ogg and Chrome's WebM do not play on an
+  // iPhone). Made on first play next to the original and removed with it.
+  async playable(companionId, id) {
+    const row = this.get(companionId, id);
+    if (!row.voice) refuse('FILE_NOT_VOICE', 415);
+    const target = this.path(row) + '.m4a';
+    try { const info = lstatSync(target); if (info.isFile() && !info.isSymbolicLink()) return { path: target, size: info.size }; } catch { /* not made yet */ }
+    let job = this.rendering.get(id);
+    if (!job) {
+      const partial = target + '.part';
+      job = new Promise((resolveJob, reject) => execFile(this.ffmpeg, ['-nostdin', '-loglevel', 'error', '-i', this.path(row), '-vn', '-ac', '1', '-c:a', 'aac', '-b:a', '64k',
+        '-movflags', '+faststart', '-f', 'mp4', '-y', partial], { timeout: 120_000 }, error => {
+        if (error) { rmSync(partial, { force: true }); reject(new FileError('FILE_UNAVAILABLE', 503)); return; }
+        renameSync(partial, target); resolveJob();
+      })).finally(() => this.rendering.delete(id));
+      this.rendering.set(id, job);
+    }
+    await job;
+    return { path: target, size: lstatSync(target).size };
+  }
+
   incoming(companionId, messageId) {
     const rows = this.db.prepare("SELECT * FROM conv_files WHERE companion_id=? AND message_id=? AND direction='user' AND state='ready' ORDER BY created_at,id").all(companionId, messageId);
     if (!rows.length) return [];

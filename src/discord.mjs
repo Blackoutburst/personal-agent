@@ -25,7 +25,7 @@ const CARRY_MS = 6 * 3600_000; // How long a failed file-only message's note wai
 const UPLOAD_BYTES = 10 * 1024 ** 2; // Discord's upload limit for a bot in a DM.
 const MB = bytes => `${Math.round(bytes / 1024 ** 2 * 10) / 10} MB`;
 // #48: why an attachment could not be taken, said briefly to the owner, the server log and the companion.
-const REASONS = { TOO_LARGE: limit => `too large, max ${MB(limit)}`, FILE_QUOTA: () => 'your file storage is full',
+const REASONS = { FILE_NOT_VOICE: () => 'the recording could not be read', TOO_LARGE: limit => `too large, max ${MB(limit)}`, FILE_QUOTA: () => 'your file storage is full',
   TIMEOUT: () => 'the download from Discord timed out', DOWNLOAD_FAILED: () => 'Discord’s download failed',
   INVALID_ATTACHMENT: () => 'not a Discord file', EMPTY: () => 'the file is empty' };
 // Close codes after which reconnecting with the same token can never work.
@@ -305,7 +305,9 @@ export class DiscordBridge {
       const typing = setInterval(() => this.#rest(link.token, 'POST', `/channels/${message.channel_id}/typing`).catch(() => {}), 8000);
       this.#pending.set(requestId, { id: message.channel_id, typing });
       this.#rest(link.token, 'POST', `/channels/${message.channel_id}/typing`).catch(() => {});
-      const { ids, skipped } = await this.#download(companionId, threadId, message.id, sent);
+      // Discord's own voice messages (flag IS_VOICE_MESSAGE) stay voice messages here too; the companion reads the transcript.
+      const voice = Boolean(Number(message.flags ?? 0) & (1 << 13)) && Boolean(this.#files.asr);
+      const { ids, skipped } = await this.#download(companionId, threadId, message.id, sent, voice);
       if (skipped.length) await this.#say(link, message.channel_id, `*I couldn’t receive ${skipped.map(item => `“${item.name}” (${item.reason})`).join(', ')}${
         ids.length || text ? '; answering the rest' : ''}.*`);
       if (!ids.length && !text) {
@@ -328,7 +330,7 @@ export class DiscordBridge {
 
   // Fetches each Discord attachment into the chat file store. Returns the stored ids and, for the others, why not.
   // The bytes actually received are stored: Discord's declared size can differ from what its CDN serves (#48).
-  async #download(companionId, threadId, messageId, attachments) {
+  async #download(companionId, threadId, messageId, attachments, voice = false) {
     const ids = [], skipped = [];
     for (const attachment of attachments) {
       const name = safeName(attachment?.filename), declared = Number.isSafeInteger(attachment?.size) ? attachment.size : 0;
@@ -356,7 +358,7 @@ export class DiscordBridge {
         if (!received) fail('EMPTY');
         if (received !== declared) this.#log(`Discord attachment size differs: declared ${declared} bytes, received ${received} (${type})`);
         const file = await this.#files.upload(companionId, { threadId, requestId: `dc-${messageId}-${attachment.id}`, name,
-          size: received }, [Buffer.concat(chunks)]).catch(error => fail(error.code === 'FILE_TOO_LARGE' ? 'TOO_LARGE' : error.code === 'FILE_QUOTA' ? 'FILE_QUOTA' : error.code ?? 'SAVE_FAILED'));
+          size: received, ...(voice && /^audio\//.test(type) ? { voice: true } : {}) }, [Buffer.concat(chunks)]).catch(error => fail(error.code === 'FILE_TOO_LARGE' ? 'TOO_LARGE' : error.code === 'FILE_QUOTA' ? 'FILE_QUOTA' : error.code ?? 'SAVE_FAILED'));
         ids.push(file.id);
       } catch (error) {
         const code = typeof error.code === 'string' ? error.code : error?.name === 'TimeoutError' ? 'TIMEOUT' : 'DOWNLOAD_FAILED';
