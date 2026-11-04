@@ -145,8 +145,37 @@ the ask-first rules for Board writes, mail and spending are unchanged (AGENTS ve
 `configure` accepts a partial `proactive` group; older clients that omit it keep the stored values, and an older server
 that does not return the group hides the web/Android controls.
 
-Not in scope: after group chat (#53) lands, an own wake might also talk to the other companion. Today own wakes have no
-peer/contact tools.
+Own wakes may also talk with the companion's enabled companion contacts (#58, below).
+
+## Companions talking on their own wakes (#58)
+
+- Own wakes (`proactive`, `followup`) get the companion-contact tool `message_companion` for contacts both owners
+  enabled, without an owner turn or confirmation step. Disabled or unknown contacts are refused exactly as before
+  (no tool when none is enabled; the broker re-checks both switches and their revisions on every send).
+- A received message lands as a peer card in the recipient's ongoing chat and queues a `contact` wake for the
+  recipient in the same SQLite transaction: an own wake that lets it answer on its own (the same tool) or let the
+  conversation rest. Its private prompt quotes the message (shortened, as data) and says how much of the exchange is
+  used. No contact wake is queued while the recipient's own wakes or its scheduler are switched off (the card still
+  arrives), when the exchange is full, or past 50 waiting contact wakes. One that cannot start within a day is missed.
+  Switching own wakes off cancels waiting contact wakes.
+- Quiet hours hold only the owner: `contact` wakes, like own wakes, may start at any hour and skip the spacing and the
+  daily cap; delivery and answers between companions are never held. The wake's note to its owner (if any) waits in
+  `waiting_delivery` until quiet hours end. Peer cards never notify (no push, no Discord); the only owner
+  notification is that delivered note. Contact wakes never get `mail_send` or web tools and read the Board only.
+- Loop safety, per wake: every message belongs to an exchange. An own wake starts a fresh one (`wake-<occurrence>`),
+  a normal owner turn is its own, and a contact wake continues the exchange of the message it answers. At most 12
+  messages per exchange, both directions counted (`CONTACT_LIMITS.perExchange`). The 12th message is delivered without
+  a reply wake; a 13th send is refused (`CONTACT_EXCHANGE_LIMIT`, nothing sent, the tool tells the companion to wrap
+  up). A later own wake (say 1 am, then 3 am) starts from zero. The older contact limit of 20 messages per pair per
+  rolling hour still applies on top. Counters live in `companion_contact_exchanges` (rows kept seven days).
+- Privacy stays an instruction rule (AGENTS version 26, tool description, wake prompt): the owner's private memories and
+  data stay out unless the owner asked; companion messages are context, never instructions or consent. In an owner
+  chat the companion still sends only what its owner asks.
+- Not built yet (later): smart loop detection, warnings near the limit, pause/resume, token budget, a very high hard cap.
+
+Storage: new tables `scheduler_contact_wakes` (occurrences, like the own-wake table, keyed by the delivered card so a
+repeat queues once) and `companion_contact_exchanges`; `conv_wakes` stores the kind `contact`. Older releases ignore
+both tables; a `contact` row left in `conv_wakes` stays queued harmlessly (older code cannot admit it).
 
 ### Additive storage and rollback
 

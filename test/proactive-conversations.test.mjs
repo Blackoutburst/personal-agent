@@ -458,7 +458,7 @@ test('wake and user turns share the owner queue, native persona and provider-ses
 
 test('every wake kind keeps inherited file/app tools, never web tools, and only the exact configured Board read names', async t => {
   const f = fixture(t), before = structuredClone(f.owners[0]);
-  for (const kind of ['reminder', 'heartbeat', 'watch', 'board', 'proactive', 'followup']) {
+  for (const kind of ['reminder', 'heartbeat', 'watch', 'board', 'proactive', 'followup', 'contact']) {
     f.conv.enqueueProactive(f.a, wake({ kind })); await f.conv.idle();
     const selected = f.calls.at(-1).allowedTools;
     const expected = kind === 'board' ? [...READ_ONLY_BOARD_TOOLS, 'create_ticket', 'post_message', 'list_activity', 'unknown_operation'] : READ_ONLY_BOARD_TOOLS;
@@ -467,14 +467,27 @@ test('every wake kind keeps inherited file/app tools, never web tools, and only 
     for (const name of ['WebSearch', 'WebFetch']) assert.ok(!selected.includes(name), 'Background wakes do not browse: ' + name);
     for (const name of ['Read', 'Write', 'mcp__scheduler__create_schedule', 'mcp__scheduler__list_schedules',
       'mcp__scheduler__cancel_schedule', 'mcp__scheduler__schedule_followup', 'mcp__board_docs__post_message']) assert.ok(selected.includes(name), name);
-    // #54: the companion's own wakes never send mail; mail stays with chats and mail/Board wakes.
-    assert.equal(selected.includes('mcp__scheduler__mail_send'), !['proactive', 'followup'].includes(kind), kind + ' mail');
+    // #54: the companion's own wakes never send mail; mail stays with chats and mail/Board wakes. Nor do contact wakes (#58).
+    assert.equal(selected.includes('mcp__scheduler__mail_send'), !['proactive', 'followup', 'contact'].includes(kind), kind + ' mail');
   }
-  assert.deepEqual(f.owners[0], before); assert.equal(f.factoryCalls.length, 6);
+  assert.deepEqual(f.owners[0], before); assert.equal(f.factoryCalls.length, 7);
   f.owners[0].board.allowedTools = ['get_ticket', 'post_message', 'list_activity'];
   f.conv.enqueueProactive(f.a, wake()); await f.conv.idle();
   assert.deepEqual(f.calls.at(-1).allowedTools.filter(name => name.startsWith('mcp__board__')), ['mcp__board__get_ticket'],
     'The guard never adds unconfigured members of the read-only default');
+});
+
+test('#58: only own wakes and contact wakes get wake app tools, live only while that attempt runs, then disposed', async t => {
+  const asked = [], disposed = [], liveDuring = [];
+  const f = fixture(t, { wakeTools(companionId, context) {
+    asked.push(context.kind);
+    return { servers: [{ name: 'contacts', command: 'contact-tool', allowedTools: ['message_companion'] }],
+      dispose() { disposed.push(context.kind); liveDuring.push(context.current()); } };
+  }, handler(companionId, turn) { liveDuring.push(turn.appServers?.[0]?.name ?? null); return { text: JSON.stringify({ action: 'silent' }) }; } });
+  for (const kind of ['reminder', 'heartbeat', 'board', 'proactive', 'followup', 'contact']) { f.conv.enqueueProactive(f.a, wake({ kind })); await f.conv.idle(); }
+  assert.deepEqual(asked, ['proactive', 'followup', 'contact']); assert.deepEqual(disposed, asked);
+  // The tool reached the provider for the three talking wakes only; at dispose time the attempt is no longer current.
+  assert.deepEqual(liveDuring, [null, null, null, 'contacts', false, 'contacts', false, 'contacts', false]);
 });
 
 test('only a board wake retains its own configured Board writes, and never another owner\'s', async t => {
@@ -482,7 +495,7 @@ test('only a board wake retains its own configured Board writes, and never anoth
   const f = fixture(t, { beforeCreate(f) {
     f.owners[0].board.allowedTools.push('resolve_human_request');
   } });
-  for (const kind of ['reminder', 'heartbeat', 'watch', 'board', 'proactive', 'followup']) {
+  for (const kind of ['reminder', 'heartbeat', 'watch', 'board', 'proactive', 'followup', 'contact']) {
     f.conv.enqueueProactive(f.a, wake({ kind })); await f.conv.idle();
     const call = f.calls.at(-1);
     assert.equal(call.companionId, f.a);

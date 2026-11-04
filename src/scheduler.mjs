@@ -483,6 +483,24 @@ export class SchedulerStore {
     this.#db.prepare("UPDATE " + (row.routine ? 'scheduler_routine_occurrences' : 'scheduler_occurrences') + " SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
     return true;
   }
+  // #58: inside Contacts' delivery transaction (never opens its own). A companion contact wrote to this companion: queue
+  // its reply wake, an own wake that may start at any hour (quiet hours hold only messages to the owner). body(context)
+  // returns the private prompt for the owner's local time and quiet state. Returns null when no wake was queued
+  // (own wakes off, scheduler off, too many waiting).
+  enqueueContactInTransaction(companionId, { messageKey, exchangeId, body }) {
+    const settings = this.#owner(companionId);
+    if (!settings.enabled) return null;
+    const now = this.#time(), quiet = this.#quiet(companionId, settings, now);
+    const when = `It is ${this.#localText(companionId, now)} for your owner${quiet ? ', inside their quiet hours: talking with the other companion is fine, but any message to your owner waits until their quiet hours end' : ''}.`;
+    const prompt = text(when + ' ' + body);
+    const row = this.#proactive.enqueueContact(companionId, settings.identity_key, { messageKey, exchangeId, prompt }, now);
+    return row ? occurrence(row) : null;
+  }
+  // #58: the companion-to-companion exchange a contact wake answers (its loop-safety counter), or null.
+  contactExchange(companionId, id) {
+    const row = this.#proactive.lookup(companionId, id);
+    return row?.kind === 'contact' ? row.exchange_id : null;
+  }
   // The owner's quiet hours are on now (#53: group pushes and own-initiative group posts). Owners who never saved
   // settings have the default 22:00–08:00.
   quietNow(companionId) {
@@ -532,7 +550,7 @@ export class SchedulerStore {
 }
 
 export class SchedulerService {
-  #scheduler; #conversations; #companions; #ready; #poll; #timer = null; #running = null; #stopped = false;
+  #scheduler; #conversations; #companions; #ready; #poll; #timer = null; #running = null; #stopped = false; #again = false;
   #prepare;
   // prepare(companionId) runs first on every tick for each owner (calendar reminders queue their event wakes there).
   constructor({ scheduler, conversations, companions = () => [], ready = () => true, pollMs = 30000, prepare = () => {} }) {
@@ -548,7 +566,12 @@ export class SchedulerService {
   async stop() { this.#stopped = true; clearInterval(this.#timer); this.#timer = null; await this.#running?.catch(() => {}); }
   tick() {
     if (this.#stopped) return Promise.resolve();
-    if (!this.#running) this.#running = this.#tick().finally(() => { this.#running = null; });
+    if (this.#running) { this.#again = true; return this.#running; }
+    this.#running = this.#tick().finally(() => {
+      this.#running = null;
+      // A tick asked for while one ran (a contact wake queued mid-tick) runs once more instead of waiting a poll.
+      if (this.#again) { this.#again = false; void this.tick().catch(() => {}); }
+    });
     return this.#running;
   }
   async #tick() {
@@ -616,6 +639,8 @@ export class SchedulerService {
     }
   }
   #kick() { if (this.#timer && !this.#stopped) void this.tick().catch(() => {}); }
+  // #58: something was queued from outside a tick (a companion contact's message): run a tick soon.
+  kick() { this.#kick(); }
   create(companionId, input) { const result = this.#scheduler.create(companionId, input); this.#kick(); return result; }
   list(companionId) { return this.#scheduler.list(companionId); }
   createWatch(companionId, input) { const result = this.#scheduler.createWatch(companionId, input); this.#kick(); return result; }

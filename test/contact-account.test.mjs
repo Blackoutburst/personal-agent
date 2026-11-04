@@ -35,7 +35,9 @@ async function fixture(t,provider='claude') {
  const dir=realpathSync(mkdtempSync(join(tmpdir(),'task30-contact-account-'))),binary=join(dir,'fake.cjs');writeFileSync(binary,FAKE);
  const subjects=[{issuer,subject:'a'},{issuer,subject:'b'}],runtimeFile=join(dir,'owners.json'),runtimeDir=join(dir,'runtime');
  writeFileSync(runtimeFile,JSON.stringify({owners:subjects.map((owner,i)=>({...owner,label:i?'bob':'alice',provider}))}));
- const app=await startServer({dataDir:join(dir,'data'),port:0,mode:'account',pilotSubjects:subjects,validateAccount:async token=>token===A?subjects[0]:token===B?subjects[1]:null,runtimeFile,runtimeDir,binaries:{claude:binary,codex:binary},runnerOptions:{spawnImpl:(bin,args,opts)=>spawn(process.execPath,[bin,...args],opts)},conversationOptions:{wakePolicy:{beforeStart:()=>true,canDeliver:()=>true}},discordOptions:{connect:false}});
+ const app=await startServer({dataDir:join(dir,'data'),port:0,mode:'account',pilotSubjects:subjects,validateAccount:async token=>token===A?subjects[0]:token===B?subjects[1]:null,runtimeFile,runtimeDir,binaries:{claude:binary,codex:binary},runnerOptions:{spawnImpl:(bin,args,opts)=>spawn(process.execPath,[bin,...args],opts)},conversationOptions:{wakePolicy:{beforeStart:()=>true,canDeliver:()=>true}},discordOptions:{connect:false},
+  // Own wakes off: a received card then queues no reply wake (#58 reply wakes are covered in contact-wakes.test.mjs).
+  schedulerOptions:{proactiveByDefault:false}});
  t.after(async()=>{await app.close();rmSync(dir,{recursive:true,force:true});});
  const json=async(path,body,token=A,headers={})=>{const response=await fetch(app.url+path,{method:'POST',headers:{Origin:app.url,'Content-Type':'application/json',...(token?{Cookie:'__Secure-blackout_session='+token}:{}),...headers},body:JSON.stringify(body)});return{status:response.status,body:await response.json()};};
  const companion=(body,token=A)=>json('/api/companion',body,token),rpc=(body,token=A)=>json('/api/conversation',body,token);
@@ -62,7 +64,7 @@ test('fresh owner settings are private, bilateral and CAS-bound; browser APIs ca
  assert.equal((await fetch(f.app.url+'/contact-ui.mjs')).status,200);
 });
 
-for(const provider of ['claude','codex'])test(provider+' owner-turn contact tool makes exactly two cards, no recipient reply, and token closes',async t=>{
+for(const provider of ['claude','codex'])test(provider+' owner-turn contact tool makes exactly two cards, no recipient reply while own wakes are off, and token closes',async t=>{
  const f=await fixture(t,provider);await f.enable();
  await f.rpc({action:'submit',threadId:f.aThread,requestId:'send-turn',text:'SEND the requested exact item'});await f.app.conversations.idle();
  const result=JSON.parse(readFileSync(join(f.home('alice'),'contact-result.json'),'utf8'));
@@ -136,7 +138,7 @@ for (const provider of ['claude', 'codex']) test(provider + ' contact reset relo
   }
 });
 
-test('contact tools never reach background wakes, and cancellation/off/on invalidates an active normal-turn capability',async t=>{
+test('contact tools never reach other background wakes (heartbeat), and cancellation/off/on invalidates an active normal-turn capability',async t=>{
  const f=await fixture(t);await f.enable();
  const owner=f.app.store.db.prepare('SELECT companion_id FROM conv_threads WHERE id=?').get(f.aThread).companion_id;
  f.app.conversations.enqueueProactive(owner,{id:randomUUID(),kind:'heartbeat',prompt:'A quiet wake'});await f.app.conversations.idle();

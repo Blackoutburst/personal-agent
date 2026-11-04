@@ -249,3 +249,33 @@ test('a follow-up stopped while running is complete, while one cancelled by the 
   assert.equal(f.store.db.prepare('SELECT state FROM scheduler_followups WHERE id=?').get(kept.id).state, 'active');
   assert.deepEqual(f.scheduler.pending(f.a).map(item => item.kind), ['followup'], 'Back on, it runs again once');
 });
+
+test('#58 contact wakes start at any hour, hold owner delivery at night, are idempotent, expire after a day and follow the own-wake switch', t => {
+  const f = fixture(t); f.clock = Date.UTC(2026, 10, 3, 2);
+  const enqueue = (messageKey = randomUUID(), owner = f.a) => {
+    f.store.db.exec('BEGIN IMMEDIATE');
+    try { const row = f.scheduler.enqueueContactInTransaction(owner, { messageKey, exchangeId: 'wake-x', body: 'Pip wrote to you.' }); f.store.db.exec('COMMIT'); return row; }
+    catch (error) { f.store.db.exec('ROLLBACK'); throw error; }
+  };
+  const key = randomUUID(), wake = enqueue(key);
+  assert.equal(wake.kind, 'contact'); assert.match(wake.prompt, /inside their quiet hours: talking with the other companion is fine, but any message to your owner waits/);
+  assert.match(wake.prompt, /Pip wrote to you\.$/);
+  assert.equal(enqueue(key).id, wake.id, 'the same delivered card queues one wake');
+  assert.equal(f.scheduler.contactExchange(f.a, wake.id), 'wake-x');
+  assert.ok(f.scheduler.pending(f.a).some(item => item.id === wake.id));
+  assert.equal(f.admit(f.a, wake.id), true, 'answering a companion is not held by quiet hours');
+  assert.equal(f.scheduler.canDeliver(f.a, wake.id), false, 'a note to the owner still waits for the morning');
+  f.clock = Date.UTC(2026, 10, 3, 8); assert.equal(f.scheduler.canDeliver(f.a, wake.id), true);
+  f.scheduler.finishOccurrence(f.a, wake.id, 'message');
+  assert.ok(!f.scheduler.pending(f.a).some(item => item.id === wake.id));
+  // A wake that could not start within a day is missed rather than answered days later.
+  const stale = enqueue(); f.clock += DAY + MINUTE; f.scheduler.prepareDue(f.a);
+  assert.ok(!f.scheduler.pending(f.a).some(item => item.id === stale.id));
+  // Switching own wakes off cancels a waiting contact wake and queues no new one.
+  const waiting = enqueue(); f.scheduler.configure(f.a, { proactive: { enabled: false } });
+  assert.ok(f.scheduler.proactiveCancellations(f.a).includes(waiting.id)); assert.equal(f.admit(f.a, waiting.id), false);
+  assert.equal(enqueue(), null);
+  // Another owner's wake is never visible here.
+  const other = enqueue(randomUUID(), f.b);
+  assert.equal(f.scheduler.contactExchange(f.a, other.id), null);
+});

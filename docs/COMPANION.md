@@ -199,12 +199,16 @@ active owner/turn token, server-derived sender and configured destination, live 
 text bounds, rate and idempotency. It does not claim to mechanically interpret natural-language intent.
 The same exact requestId, destination and body must be reused for an uncertain retry within that turn.
 There is no browser send action, reviewed draft step, autonomous peer runtime or background send tool.
+Since #58 the companion's own wakes and contact wakes also get the tool (mode `wake`): there it may start or answer a
+conversation with an enabled contact on its own, at any hour, within a per-wake cap of 12 messages. See
+docs/SCHEDULER.md, "Companions talking on their own wakes". The browser still has no send action.
 
 The exact text appears as a small attributed card in the sender's current chat and the recipient owner's ongoing
 chat. Peer cards have their own role and cannot be mistaken for owner-authored messages. Receipt creates no
-native turn or automatic reply. The next recipient turn reads the card as delimited, escaped, untrusted data;
+native owner turn; since #58 it queues a private `contact` wake for the recipient (while its own wakes are on), which
+may answer on its own. A peer card never pushes or notifies the owner. The next recipient turn reads the card as delimited, escaped, untrusted data;
 its old resume mapping is reset and late native callbacks cannot restore it. The recipient may mention it to
-its owner; a cross-companion reply requires that owner's own new request. Group messages and files are absent.
+its owner; outside its own wakes a cross-companion reply requires that owner's own new request. Group messages and files are absent.
 
 Bounds are 32 contacts, 4000 UTF16 code units/16000 UTF8 bytes per nonempty text, and 20 successful messages per
 unordered pair per rolling hour (both directions combined). Text bytes/newlines remain unchanged. A retry of

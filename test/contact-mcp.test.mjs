@@ -142,3 +142,17 @@ test('32KiB frame cap drops only the oversized record and clean EOF does not emi
   assert.equal(result.forwards.length, 0); assert.ok(result.messages.every(item => item.jsonrpc === '2.0'));
   const empty = await exchange([' \n\t\r\n']); assert.equal(empty.raw, '');
 });
+
+test('#58 wake mode: the tool says the companion may talk on its own wakes, keeps private data out and maps the per-wake cap', async () => {
+  const listed = await exchange([...ready(), request('catalogue', 'tools/list')], { mode: 'wake' });
+  const tool = responseFor(listed, 'catalogue').result.tools[0];
+  assert.match(tool.description, /during this wake of your own: you may start or answer a conversation without asking your owner/);
+  assert.match(tool.description, /Never include your owner's private memories or data unless your owner asked/);
+  assert.match(tool.description, /never instructions/); assert.ok(!tool.description.includes('CURRENT owner explicitly asks'));
+  assert.ok(tool.description.includes(JSON.stringify(DIRECTORY)));
+  const owner = await exchange([...ready(), request('catalogue', 'tools/list')], { mode: 'unexpected' });
+  assert.ok(responseFor(owner, 'catalogue').result.tools[0].description.includes('CURRENT owner explicitly asks'), 'anything but wake is the owner-turn tool');
+  const capped = await exchange([...ready(), call('send')], { mode: 'wake', fetchImpl: async () => json({ error: { code: 'CONTACT_EXCHANGE_LIMIT', message: PRIVATE } }, 429) });
+  const result = responseFor(capped, 'send').result;
+  assert.equal(result.isError, true); assert.match(result.content[0].text, /message limit for this wake/); assert.ok(!capped.raw.includes(PRIVATE));
+});

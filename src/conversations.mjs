@@ -24,14 +24,16 @@ const VOICE_PREFIX = '(voice message) ', VOICE_SILENT = '(voice message with no 
 // and how soon after a reply a new message counts as a follow-up to it.
 const TYPING_MS = { app: 6000, discord: 11000 }, MAX_HOLD_MS = 60_000, FOLLOW_UP_MS = 30_000;
 const BOARD_PREFIX = 'mcp__board__', OWN_WAKES = ['proactive', 'followup'];
+// #58: a companion contact wrote and the companion may answer on its own. It is treated like an own wake for tools.
+const CONTACT_WAKE = 'contact', TALKING_WAKES = [...OWN_WAKES, CONTACT_WAKE];
 // Background wakes read the Board only, except Board-triggered ("board") wakes: a Needs-you request or a mention needs
 // the companion to answer on the Board, so those keep every Board tool the owner configured.
 // Background wakes never browse: native web tools are for owner chat turns (#42) and the app's own watch checks.
 const wakeToolFilter = kind => name => !WEB_TOOLS.includes(name) && !['mcp__scheduler__create_release_watch', 'mcp__scheduler__create_topic_watch', 'mcp__scheduler__update_release_watch',
   'mcp__scheduler__create_event', 'mcp__scheduler__update_event', 'mcp__scheduler__delete_event', 'mcp__scheduler__github_create_repo',
   'mcp__scheduler__read_x_post', 'mcp__scheduler__watch_x_video'].includes(name)
-  // The companion's own wakes (#54) never send mail: mail stays with owner chats and Board/mail wakes.
-  && !(OWN_WAKES.includes(kind) && name === 'mcp__scheduler__mail_send')
+  // The companion's own wakes (#54) and contact wakes (#58) never send mail: mail stays with owner chats and Board/mail wakes.
+  && !(TALKING_WAKES.includes(kind) && name === 'mcp__scheduler__mail_send')
   && (!name.startsWith(BOARD_PREFIX) || kind === 'board' || READ_ONLY_BOARD_TOOLS.includes(name.slice(BOARD_PREFIX.length)));
 // Turns that arrive through the owner's Discord DM (requestId "discord-<message id>", src/discord.mjs).
 const DISCORD_NOTE = '\n\n(Channel note from the app, not from the owner: this message came from your owner\'s Discord DM with you, '
@@ -170,7 +172,7 @@ function titleFrom(text) {
 }
 
 export class Conversations {
-  #db; #runner; #now; #systemPrompt; #boardInbox; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote; #gatherMs; #texting; #groupWakes; #gathering = new Map(); #typing = new Map(); #runs = new Map();
+  #db; #runner; #now; #systemPrompt; #boardInbox; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote; #gatherMs; #texting; #groupWakes; #wakeTools; #gathering = new Map(); #typing = new Map(); #runs = new Map();
   // Both filters must keep a tool (connector switches, #43, on top of the wake or web-allowance filter).
   #filter(companionId, own) {
     const extra = this.#toolFilterFor(companionId);
@@ -186,7 +188,8 @@ export class Conversations {
   // Omitted tools inherit owner policy; [] is an explicit turn-level narrowing.
   constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools,
     session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 }, wakePolicy = {}, onSettled = () => {}, files = null,
-    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null, gatherMs = 0, texting = false, boardInbox = null, groupWakes = null }) {
+    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null, gatherMs = 0, texting = false, boardInbox = null, groupWakes = null,
+    wakeTools = () => null }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
     this.#session = session; this.#allowedTools = allowedTools; this.#onSettled = onSettled;
     this.#files = files; this.#fileToolsForTurn = fileToolsForTurn;
@@ -200,6 +203,9 @@ export class Conversations {
     // groupWakes (#53, docs/GROUP-CHAT.md): { note(companionId) -> prompt text, nudge(companionId, groupId, note) -> boolean }.
     // The companion's own wakes may choose to look in on a group chat it is in instead of messaging its owner.
     this.#groupWakes = groupWakes;
+    // wakeTools(companionId, { kind, wakeId, threadId, requestId, current }) -> { servers, dispose } or null (#58): app tools
+    // for the companion's own wakes and contact wakes (the companion-contact tool). Other wakes get none.
+    this.#wakeTools = wakeTools;
     // gatherMs: an owner message waits this long before the companion starts answering. Messages sent in the
     // meantime join the same turn, so a burst of short texts gets one reply, like talking to a person.
     this.#gatherMs = Number.isSafeInteger(gatherMs) && gatherMs > 0 ? gatherMs : 0;
@@ -272,7 +278,7 @@ export class Conversations {
     if (Reflect.ownKeys(descriptors).length !== fields.length || fields.some(key => !descriptors[key]?.enumerable
         || !Object.hasOwn(descriptors[key], 'value'))) throw invalid();
     const value = Object.fromEntries(fields.map(key => [key, descriptors[key].value]));
-    if (typeof value.id !== 'string' || !UUID.test(value.id) || !['reminder', 'heartbeat', 'watch', 'board', 'release_watch', 'calendar', 'connector', ...OWN_WAKES].includes(value.kind)
+    if (typeof value.id !== 'string' || !UUID.test(value.id) || !['reminder', 'heartbeat', 'watch', 'board', 'release_watch', 'calendar', 'connector', ...TALKING_WAKES].includes(value.kind)
         || !wellFormed(value.prompt, 4000, 16000)) throw invalid();
     const digest = createHash('sha256').update(JSON.stringify(value)).digest('hex');
     const wake = this.#tx(() => {
@@ -813,9 +819,17 @@ export class Conversations {
     const sessionEpoch = this.#sessionEpoch.get(companionId) ?? 0;
     const currentSession = () => !controller.signal.aborted && !this.#closing && sessionEpoch === (this.#sessionEpoch.get(companionId) ?? 0);
     this.#active.set(key, controller);
-    let nativeAttempted = false;
+    let nativeAttempted = false, wakeTools = null;
     try {
       const thread = this.#thread(companionId, wake.thread_id), resume = this.#resume(thread);
+      if (TALKING_WAKES.includes(wake.kind)) {
+        // The tool capability lives exactly as long as this attempt runs (same fence as delivery below).
+        const current = () => !controller.signal.aborted && !this.#closing && this.#db.prepare(
+          "SELECT 1 FROM conv_wakes WHERE companion_id=? AND id=? AND state='running' AND attempt_token=?").get(companionId, id, wake.attempt_token) !== undefined;
+        try { wakeTools = this.#wakeTools(companionId, { kind: wake.kind, wakeId: wake.id, threadId: wake.thread_id, requestId: wake.request_id, current }) ?? null; }
+        catch { wakeTools = null; }
+        if (wakeTools && !Array.isArray(wakeTools.servers)) { try { wakeTools.dispose?.(); } catch { /* ignore */ } wakeTools = null; }
+      }
       if (!resume) this.#db.prepare('UPDATE conv_threads SET provider_session=NULL,session_turns=0 WHERE id=?').run(thread.id);
       const recent = resume ? [] : this.#db.prepare(`SELECT role,text,peer_json FROM (SELECT rowid AS r,role,text,peer_json,created_at FROM conv_messages
         WHERE thread_id=? ORDER BY created_at DESC,r DESC LIMIT ?) ORDER BY created_at,r`).all(thread.id, this.#session.recentMessages)
@@ -829,6 +843,7 @@ export class Conversations {
           + 'or {"action":"silent"}' + (groups ? ' (or the group choice below)' : '') + '. Your native feeling tag may precede the JSON. Message text must be nonempty and at most 4000 characters. Respond naturally again on normal user turns.\n\n' + wake.prompt + groups,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }),
         allowedTools: this.#allowedTools, toolFilter: this.#filter(companionId, wakeToolFilter(wake.kind)), signal: controller.signal,
+        ...(wakeTools?.servers.length ? { appServers: wakeTools.servers } : {}),
         onEvent: event => {
           if (event.type === 'session' && currentSession()) this.#db.prepare(`UPDATE conv_threads SET provider_session=? WHERE id=? AND EXISTS(
             SELECT 1 FROM conv_wakes WHERE companion_id=? AND id=? AND state='running' AND attempt_token=?)`)
@@ -874,7 +889,10 @@ export class Conversations {
       this.#notifyWake(companionId, id);
     } catch (error) {
       this.#endWake(wake, this.#closing ? 'interrupted' : controller.signal.aborted ? 'cancelled' : 'error');
-    } finally { this.#active.delete(key); if (nativeAttempted) this.#nativeSettled(companionId); }
+    } finally {
+      try { wakeTools?.dispose?.(); } catch { /* the token map entry is app-owned */ }
+      this.#active.delete(key); if (nativeAttempted) this.#nativeSettled(companionId);
+    }
   }
 
   #releasePolicy(name, ...args) {

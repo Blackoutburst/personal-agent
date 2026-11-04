@@ -23,13 +23,22 @@ CREATE TABLE IF NOT EXISTS scheduler_followups(id TEXT PRIMARY KEY,companion_id 
 CREATE TABLE IF NOT EXISTS scheduler_proactive_occurrences(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,
  kind TEXT NOT NULL,slot_key TEXT NOT NULL,source_id TEXT,generation INTEGER NOT NULL,due_at INTEGER NOT NULL,
  prompt TEXT NOT NULL,fingerprint TEXT NOT NULL,state TEXT NOT NULL,admitted_at INTEGER,cancel_pending INTEGER NOT NULL,
- UNIQUE(companion_id,slot_key));`;
+ UNIQUE(companion_id,slot_key));
+CREATE TABLE IF NOT EXISTS scheduler_contact_wakes(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,identity_key TEXT NOT NULL,
+ message_key TEXT NOT NULL,exchange_id TEXT NOT NULL,due_at INTEGER NOT NULL,prompt TEXT NOT NULL,fingerprint TEXT NOT NULL,
+ state TEXT NOT NULL,admitted_at INTEGER,cancel_pending INTEGER NOT NULL,UNIQUE(companion_id,message_key));`;
+// #58: at most this many contact wakes wait per companion (the per-wake exchange cap and the contacts' hourly rate
+// already bound them; this only keeps a stuck runtime from piling up rows).
+const CONTACT_PENDING_CAP = 50;
 
 const CHOICES = 'Then choose one:\n'
   + '- Message your owner, only if it is genuinely worth saying: a follow-up on something they mentioned, a thought you had, '
   + 'something you noticed, or a kind check-in when it has been a while. Keep it natural and varied, like a friend texting; '
   + 'no filler, and nothing you said recently.\n'
   + '- Do something useful quietly: tidy your notes or memory, or use schedule_followup for something worth asking about later. Then stay silent.\n'
+  + '- Talk with one of your enabled companion contacts (message_companion, when you have it on this wake), only if you '
+  + 'genuinely have something to say; it works at any hour, their answer wakes you later, and your owner\'s private memories '
+  + 'and data stay out unless your owner asked. This can go with any other choice.\n'
   + '- Nothing. Silent is a normal, good outcome.\n'
   + 'Your ask-first rules still apply: no Board writes, mail or spending without your owner\'s yes in chat.';
 function prompt(kind, { localTime, quiet }, note = null, createdAt = null) {
@@ -65,7 +74,9 @@ export class ProactiveWakes {
     return row ? { enabled: !!row.enabled, perDay: row.per_day } : { ...this.#defaults };
   }
   #cancel(companionId, kind) {
-    this.#db.prepare(`UPDATE scheduler_proactive_occurrences SET state='cancelled',cancel_pending=1
+    if (kind === 'contact') this.#db.prepare(`UPDATE scheduler_contact_wakes SET state='cancelled',cancel_pending=1
+      WHERE companion_id=? AND state IN ('queued','admitted')`).run(companionId);
+    else this.#db.prepare(`UPDATE scheduler_proactive_occurrences SET state='cancelled',cancel_pending=1
       WHERE companion_id=? AND kind=? AND state IN ('queued','admitted')`).run(companionId, kind);
   }
   // A partial group: omitted members keep their stored values. Any change bumps the generation, cancels queued own
@@ -76,7 +87,7 @@ export class ProactiveWakes {
     if (enabled === current.enabled && perDay === current.perDay) return;
     const generation = (prior?.generation ?? 0) + 1;
     this.#cancel(companionId, 'proactive');
-    if (!enabled) this.#cancel(companionId, 'followup');
+    if (!enabled) { this.#cancel(companionId, 'followup'); this.#cancel(companionId, 'contact'); }
     this.#db.prepare(`INSERT INTO scheduler_proactive_settings(companion_id,identity_key,enabled,per_day,generation,next_at) VALUES(?,?,?,?,?,?)
       ON CONFLICT(companion_id) DO UPDATE SET enabled=excluded.enabled,per_day=excluded.per_day,generation=excluded.generation,next_at=excluded.next_at`)
       .run(companionId, identity, Number(enabled), perDay, generation, enabled ? now + this.#interval(perDay) : null);
@@ -105,6 +116,9 @@ export class ProactiveWakes {
       }
       this.#db.prepare('UPDATE scheduler_proactive_settings SET next_at=? WHERE companion_id=?').run(now + this.#interval(row.per_day), companionId);
     }
+    // #58: a contact wake that could not start within a day (runtime down) is missed rather than answered days late.
+    this.#db.prepare("UPDATE scheduler_contact_wakes SET state='missed' WHERE companion_id=? AND state='queued' AND admitted_at IS NULL AND due_at<?")
+      .run(companionId, now - GRACE);
     for (const followup of this.#db.prepare("SELECT * FROM scheduler_followups WHERE companion_id=? AND state='active' AND due_at<=? ORDER BY due_at,id").all(companionId, now)) {
       this.#need(followup.identity_key === identity, 'IDENTITY_CHANGED');
       const open = this.#db.prepare("SELECT admitted_at FROM scheduler_proactive_occurrences WHERE companion_id=? AND kind='followup' AND source_id=? AND state IN ('queued','admitted')")
@@ -157,33 +171,68 @@ export class ProactiveWakes {
     return { id: row.id, kind: row.kind, prompt: row.prompt, job_id: null, generation: row.generation, due_at: row.due_at,
       state: row.state, admitted_at: row.admitted_at, source_id: row.source_id, proactive: true };
   }
+  #contact(row) {
+    if (!row) return null;
+    this.#need(UUID.test(row.id) && Number.isSafeInteger(row.due_at) && ['queued', 'admitted', ...TERMINAL].includes(row.state)
+      && (row.admitted_at === null || Number.isSafeInteger(row.admitted_at))
+      && row.fingerprint === hash({ messageKey: row.message_key, exchangeId: row.exchange_id, dueAt: row.due_at, prompt: row.prompt }), 'UNAVAILABLE');
+    return { id: row.id, kind: 'contact', prompt: row.prompt, job_id: null, generation: 0, due_at: row.due_at,
+      state: row.state, admitted_at: row.admitted_at, source_id: null, exchange_id: row.exchange_id, proactive: true };
+  }
   lookup(companionId, id) {
-    return this.#occurrence(this.#db.prepare('SELECT * FROM scheduler_proactive_occurrences WHERE companion_id=? AND id=?').get(companionId, id));
+    return this.#occurrence(this.#db.prepare('SELECT * FROM scheduler_proactive_occurrences WHERE companion_id=? AND id=?').get(companionId, id))
+      ?? this.#contact(this.#db.prepare('SELECT * FROM scheduler_contact_wakes WHERE companion_id=? AND id=?').get(companionId, id));
   }
   pending(companionId) {
-    return this.#db.prepare("SELECT * FROM scheduler_proactive_occurrences WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250")
-      .all(companionId).map(row => this.#occurrence(row));
+    return [...this.#db.prepare("SELECT * FROM scheduler_proactive_occurrences WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250")
+      .all(companionId).map(row => this.#occurrence(row)),
+    ...this.#db.prepare("SELECT * FROM scheduler_contact_wakes WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250")
+      .all(companionId).map(row => this.#contact(row))];
+  }
+  // #58: a companion contact wrote to this companion. Its reply wake is one of its own wakes: it runs only while own
+  // wakes are switched on (otherwise the card simply waits in the chat) and returns null when no wake was queued.
+  // messageKey (the delivered card's id) makes a repeated call idempotent.
+  enqueueContact(companionId, identity, { messageKey, exchangeId, prompt }, now) {
+    this.#need(typeof messageKey === 'string' && UUID.test(messageKey) && typeof exchangeId === 'string' && exchangeId.length <= 200
+      && typeof prompt === 'string' && prompt.length <= 4000);
+    if (!this.settings(companionId, identity).enabled) return null;
+    const prior = this.#db.prepare('SELECT * FROM scheduler_contact_wakes WHERE companion_id=? AND message_key=?').get(companionId, messageKey);
+    if (prior) return this.#contact(prior);
+    if (this.#db.prepare("SELECT COUNT(*) AS n FROM scheduler_contact_wakes WHERE companion_id=? AND state IN ('queued','admitted')").get(companionId).n
+      >= CONTACT_PENDING_CAP) return null;
+    const id = randomUUID();
+    this.#db.prepare(`INSERT INTO scheduler_contact_wakes(id,companion_id,identity_key,message_key,exchange_id,due_at,prompt,fingerprint,
+      state,admitted_at,cancel_pending) VALUES(?,?,?,?,?,?,?,?,'queued',NULL,0)`)
+      .run(id, companionId, identity, messageKey, exchangeId, now, prompt, hash({ messageKey, exchangeId, dueAt: now, prompt }));
+    return this.lookup(companionId, id);
   }
   // The owner's switch and generation, and for follow-ups the saved follow-up, are checked before start and delivery.
   eligible(companionId, identity, row) {
+    // A contact wake follows the own-wake switch, including its default for owners who never chose (#58).
+    if (row.kind === 'contact') return this.settings(companionId, identity).enabled;
     const settings = this.#row(companionId, identity);
     if (!settings?.enabled) return false;
     if (row.kind === 'proactive') return row.generation === settings.generation;
     return this.#db.prepare("SELECT state FROM scheduler_followups WHERE companion_id=? AND id=?").get(companionId, row.source_id)?.state === 'active';
   }
-  admit(id, now) { this.#db.prepare("UPDATE scheduler_proactive_occurrences SET state='admitted',admitted_at=? WHERE id=?").run(now, id); }
+  admit(id, now) {
+    for (const table of ['scheduler_proactive_occurrences', 'scheduler_contact_wakes'])
+      this.#db.prepare(`UPDATE ${table} SET state='admitted',admitted_at=? WHERE id=?`).run(now, id);
+  }
   finish(companionId, row, state) {
-    if (!TERMINAL.includes(row.state)) this.#db.prepare('UPDATE scheduler_proactive_occurrences SET state=? WHERE id=?').run(state, row.id);
+    if (!TERMINAL.includes(row.state)) this.#db.prepare(`UPDATE ${row.kind === 'contact' ? 'scheduler_contact_wakes' : 'scheduler_proactive_occurrences'} SET state=? WHERE id=?`)
+      .run(state, row.id);
     // A follow-up runs once: any ending completes it, except when the scheduler itself cancelled the occurrence
     // first (off switch, owner cancel): then the saved follow-up keeps its own state.
     if (row.kind === 'followup' && row.state !== 'cancelled') this.#db.prepare("UPDATE scheduler_followups SET state='done' WHERE companion_id=? AND id=? AND state='active'")
       .run(companionId, row.source_id);
   }
   cancellations(companionId) {
-    return this.#db.prepare("SELECT id FROM scheduler_proactive_occurrences WHERE companion_id=? AND state='cancelled' AND cancel_pending=1 ORDER BY due_at,id LIMIT 250")
-      .all(companionId).map(row => row.id);
+    return ['scheduler_proactive_occurrences', 'scheduler_contact_wakes'].flatMap(table => this.#db.prepare(`SELECT id FROM ${table}
+      WHERE companion_id=? AND state='cancelled' AND cancel_pending=1 ORDER BY due_at,id LIMIT 250`).all(companionId).map(row => row.id));
   }
   acknowledgeCancellation(companionId, id) {
-    this.#db.prepare("UPDATE scheduler_proactive_occurrences SET cancel_pending=0 WHERE companion_id=? AND id=? AND state='cancelled'").run(companionId, id);
+    for (const table of ['scheduler_proactive_occurrences', 'scheduler_contact_wakes'])
+      this.#db.prepare(`UPDATE ${table} SET cancel_pending=0 WHERE companion_id=? AND id=? AND state='cancelled'`).run(companionId, id);
   }
 }

@@ -34,7 +34,7 @@ import { FileStore, FileError, FILE_LIMITS } from './src/files.mjs';
 import { Asr } from './src/asr.mjs';
 import { createFileHttp, fileFailure } from './src/file-http.mjs';
 import { PersonalityStore } from './src/personality.mjs';
-import { Contacts, ContactError } from './src/contacts.mjs';
+import { Contacts, ContactError, contactWakePrompt } from './src/contacts.mjs';
 import { Weather } from './src/weather.mjs';
 import { BoardCompanion } from './src/board-companion.mjs';
 import { BoardInbox } from './src/board-inbox.mjs';
@@ -347,7 +347,19 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           const id=companionIdFor(store,owner), profile=id&&profiles.get(id);
           return id?[{id,name:displayLabel(profile?.name,'Companion'),ownerLabel:displayLabel(owner.name??owner.label,'Owner')}]:[];
         }),
-        deliver:(companionId,threadId,text,peer)=>conversations.peerInTransaction(companionId,threadId,text,peer)
+        deliver:(companionId,threadId,text,peer,exchange)=>{
+          const card=conversations.peerInTransaction(companionId,threadId,text,peer);
+          // #58: the recipient may answer on its own: a contact wake, at any hour, while the exchange has room left.
+          // Inside the same transaction as the card; a refusal only means no wake (the card still arrives).
+          if(peer.direction==='received'&&exchange&&exchange.used<exchange.cap) {
+            try {
+              if(schedulerStore.enqueueContactInTransaction(companionId,{messageKey:card.messageId,exchangeId:exchange.exchangeId,
+                body:contactWakePrompt({companionId:peer.companionId,name:peer.name,ownerLabel:peer.ownerLabel,text,used:exchange.used,cap:exchange.cap})}))
+                setImmediate(()=>schedulerService?.kick());
+            } catch { console.error('Contact wake unavailable; the card was delivered.'); }
+          }
+          return card;
+        }
       });
       // Speech to text (Nemotron 3.5 ASR, docs/RUNTIME.md) for voice messages and X videos, when it is installed.
       const asrDir = fileOptions.asrDir ?? process.env.COMPANION_ASR_DIR ?? join(dataDir, 'asr');
@@ -379,6 +391,22 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           },allowedTools:['message_companion']});
         }
         return {servers,dispose:()=>{fileTurns.delete(token);if(contactToken)contactTurns.delete(contactToken);}};
+      };
+      // #58: the companion's own wakes and contact wakes get the companion-contact tool (enabled contacts only), without
+      // an owner turn. Each own wake is a fresh loop-safety exchange; a contact wake continues the exchange it answers.
+      const wakeTools = (companionId, context) => {
+        const available = contacts.forTurn(companionId);
+        if (!available.length) return null;
+        const exchangeId = context.kind === 'contact' ? schedulerStore.contactExchange(companionId, context.wakeId) : 'wake-' + context.wakeId;
+        if (!exchangeId) return null;
+        const contactToken = randomBytes(32).toString('hex');
+        contactTurns.set(contactToken, { companionId, threadId: context.threadId, requestId: context.requestId, current: context.current,
+          contacts: available, exchangeId });
+        return { servers: [{ name: 'contacts', command: process.execPath, args: [join(ROOT, 'src', 'contact-mcp.mjs')], env: {
+          COMPANION_CONTACT_URL: `http://127.0.0.1:${server.address().port}/internal/contacts`, COMPANION_CONTACT_TOKEN: contactToken,
+          COMPANION_CONTACT_DIRECTORY: JSON.stringify(available.map(({ id, name, ownerLabel }) => ({ id, name, ownerLabel }))),
+          COMPANION_CONTACT_MODE: 'wake' }, allowedTools: ['message_companion'] }],
+          dispose: () => contactTurns.delete(contactToken) };
       };
       // Claude gets the companion's files in every turn's system prompt (not kept in its history);
       // Codex only when a new session starts, since its instructions become part of the conversation.
@@ -415,7 +443,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         ...(pushOptions.holdMs ? { holdMs: pushOptions.holdMs } : {}), log: message => console.error(message) });
       const boardInbox = new BoardInbox({ store, ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
       const webBudget = new WebBudget({ store });
-      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget, boardInbox,
+      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, wakeTools, webBudget, boardInbox,
         // #53: the companion's own wakes may choose to look in on a group chat it is in.
         groupWakes: { note: companionId => groupChat?.wakeNote(companionId) ?? '', nudge: (companionId, groupId, note) => groupChat?.nudge(companionId, groupId, note) ?? false },
         linkContext: (companionId, text) => x.forTurn(companionId, text),

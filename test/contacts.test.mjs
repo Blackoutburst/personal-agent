@@ -105,3 +105,24 @@ test('delivery resets recipient resume mappings and fences late native callbacks
   assert.equal(f.db.prepare('SELECT provider_session FROM conv_threads WHERE id=?').get(receiverThread).provider_session,null);assert.equal(calls,1);
   assert.equal((await f.conv.handle(f.b,{action:'snapshot',threadId:receiverThread})).messages.filter(m=>m.role==='peer').length,1);
 });
+
+test('#58 per-exchange cap: 12 messages in both directions, the 13th refuses without effects, and a new wake starts fresh', t => {
+  const meta = [];
+  const f = fixture(t); f.enable();
+  // Record what the recipient copy carries (the app wakes the recipient while the exchange has room).
+  const contacts = new Contacts({ store: { db: f.db }, directory: () => f.directory, now: () => Date.parse('2026-11-03T04:00:00Z'),
+    deliver: (owner, thread, text, peer, exchange) => { if (peer.direction === 'received') meta.push(exchange); return f.conv.peerInTransaction(owner, thread, text, peer); } });
+  const wake = (owner, exchangeId, requestId) => ({ threadId: f.thread(owner), requestId, current: () => true, contacts: contacts.forTurn(owner), exchangeId });
+  for (let i = 0; i < 12; i++) {
+    const [from, to] = i % 2 ? [f.b, f.a] : [f.a, f.b];
+    assert.equal(contacts.send(from, { to, requestId: 'm-' + i, text: 'hi ' + i }, wake(from, 'wake-1', 'wake-' + from + '-' + i)).sent, true);
+  }
+  assert.deepEqual(meta.map(item => item.used), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.ok(meta.every(item => item.exchangeId === 'wake-1' && item.cap === 12));
+  const before = f.db.prepare('SELECT COUNT(*) AS n FROM conv_messages').get().n;
+  assert.throws(() => contacts.send(f.a, { to: f.b, requestId: 'm-12', text: 'one more' }, wake(f.a, 'wake-1', 'late')), failure('CONTACT_EXCHANGE_LIMIT'));
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM conv_messages').get().n, before, 'a refused send leaves no card');
+  assert.equal(contacts.send(f.a, { to: f.b, requestId: 'm-0', text: 'hi 0' }, wake(f.a, 'wake-1', 'wake-' + f.a + '-0')).duplicate, true, 'an exact retry is still answered');
+  assert.equal(contacts.send(f.a, { to: f.b, requestId: 'fresh', text: 'new wake' }, wake(f.a, 'wake-2', 'next')).sent, true);
+  assert.equal(meta.at(-1).used, 1);
+});
