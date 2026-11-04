@@ -71,6 +71,7 @@ const STATIC = new Map([
   ['/web-push-ui.mjs', ['web-push-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/active-client.mjs', ['active-client.mjs', 'text/javascript; charset=utf-8']],
   ['/idle.mjs', ['idle.mjs', 'text/javascript; charset=utf-8']],
+  ['/unread-mark.mjs', ['unread-mark.mjs', 'text/javascript; charset=utf-8']],
   ['/bubbles.mjs', ['bubbles.mjs', 'text/javascript; charset=utf-8']],
   ['/voice-ui.mjs', ['voice-ui.mjs', 'text/javascript; charset=utf-8']],
   // The character handbook zip (Look page; built by ops/build-character-kit.py from character-kit/).

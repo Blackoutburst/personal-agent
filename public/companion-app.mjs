@@ -16,6 +16,7 @@ import { createVoiceRecorder, voiceView } from './voice-ui.mjs';
 import { createBoardUI } from './board-ui.mjs';
 import { createGroupUI } from './group-ui.mjs';
 import { idleDelay, createActivity, createMotion } from './idle.mjs';
+import { createUnreadMark } from './unread-mark.mjs';
 
 const $ = id => document.getElementById(id);
 // Idle performance (#60): when the owner last used the page; reads back off while nothing happens.
@@ -74,8 +75,10 @@ const companionName = () => profile?.name ?? 'Your companion';
 registerServiceWorker();
 const webPushUI = createWebPushUI({ document, api });
 const pushPresence = createPushPresence({ api, onChat: () => view === 'chat' });
-// #59: this tab in active use holds pushes to the owner's other devices; the conversation on screen counts as read.
-const activeClient = createActiveClient({ api, threadOnScreen: () => profile && view === 'chat' && state.opened && state.connection === 'ready' ? state.threadId : null });
+// #59: this tab, open, holds pushes to the owner's other devices for a while; in active use, the conversation on
+// screen counts as read.
+const activeClient = createActiveClient({ api, signedIn: () => Boolean(profile) && !sessionDenied,
+  threadOnScreen: () => profile && view === 'chat' && state.opened && state.connection === 'ready' ? state.threadId : null });
 // The companion moves for a while after something happens, then rests (#60). busy: a reply is running.
 const chatBusy = () => view === 'chat' && (state.turn?.state === 'streaming' || Boolean(state.pending));
 const motion = createMotion({ root: document.documentElement, win: window, activity, busy: chatBusy });
@@ -87,6 +90,13 @@ function dataArrived(source, detail = null) {
   motion.wake();
   for (const listener of arrivalListeners) { try { listener({ source, detail, hidden: document.visibilityState === 'hidden' }); } catch { /* one listener cannot stop the others */ } }
 }
+// #59 follow-up: a red dot on the favicon and "(•) " in the title for a message that arrived while the owner was not
+// looking at its conversation; cleared when they look (visible, focused, that conversation on screen).
+const unreadMark = createUnreadMark({ document, window, baseTitle: () => profile ? companionName() : 'Your companion',
+  seeing: (source, detail) => document.visibilityState === 'visible' && document.hasFocus() && (source === 'group'
+    ? view === 'group' && groupThread === detail
+    : view === 'chat' && state.opened && state.threadId === detail) });
+onDataArrived(event => unreadMark.arrived(event));
 const providerName = () => ({ claude: 'Claude', codex: 'ChatGPT' })[runtime?.provider] ?? 'AI';
 function applyColors(look) {
   const colors = COLORS[look?.color] ?? COLORS.peach, root = document.documentElement.style;
@@ -169,7 +179,7 @@ function show(next) {
   if (next === 'calendar') void calendarUI.show();
   if (next === 'studio') void studioUI.show();
   if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); void webPushUI.show(); }
-  pushPresence.update(); activeClient.update();
+  pushPresence.update(); activeClient.update(); unreadMark.check();
   renderAll();
 }
 
@@ -497,7 +507,7 @@ function resetShell(denied) {
   for (const id of ['discord-pick', 'android-pick']) $(id).hidden = true;
   connectors = null; connectorsBusy = false; githubForm = false; xForm = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
   kept.hidden = true; keptText.textContent = ''; reconnect.hidden = true;
-  selectedBoard = null; boardReadMarked = null; boardUI.clear(); groupUI.clear();
+  selectedBoard = null; boardReadMarked = null; boardUI.clear(); groupUI.clear(); unreadMark.clear();
   memoryUI.clear(); personalityUI.clear(); contactUI.clear(); ownerProfileUI.clear(); weatherUI.clear(); remindersUI.clear(); calendarUI.clear(); studioUI.clear(); client.clear(); clearUploads(); clearFullImage();
 }
 function clearUploads() {
@@ -692,7 +702,7 @@ function renderAll() {
   setText($('top-name'), companionName());
   setText($('top-mood'), view === 'chat' ? MOOD_TEXT[current] : '');
   draw($('mini-avatar'), look ?? { character: 'pip', color: 'peach' }, current === 'talking' ? 'talking' : current === 'thinking' ? 'thinking' : 'idle');
-  const title = profile ? companionName() : 'Your companion';
+  const title = unreadMark.title(profile ? companionName() : 'Your companion');
   if (document.title !== title) document.title = title;
   if (view === 'chat') {
     draw($('stage-character'), profile, current, feeling());
@@ -734,7 +744,7 @@ client.subscribe(next => {
     if (arrived) dataArrived('chat', next.threadId); else motion.update();
   }
   if (next.opened) { arrivalThread = next.threadId; arrivalLast = last?.id ?? null; }
-  activeClient.update();
+  activeClient.update(); unreadMark.check();
   renderAll();
   if (!polling) schedulePoll();
 });

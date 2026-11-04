@@ -158,10 +158,11 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
           if (!only(['action', 'endpoint', 'present']) || !webPush) break;
           return { status: 200, body: webPush.subscriptions.presence(companionId, payload.endpoint, payload.present) };
         }
-        // #59: a client in active use (visible, focused, recent input) holds pushes to the owner's other devices.
+        // #59: an open client (state 'open') holds pushes for a while; one in active use (visible, focused, recent input;
+        // state 'active' or the older boolean active: true) also counts the conversation on screen as seen.
         case 'clientActive': {
-          if (!only(['action', 'client', 'active', 'threadId']) || !activeClients) break;
-          return { status: 200, body: activeClients.report(companionId, { client: payload.client, active: payload.active, threadId: payload.threadId ?? null }) };
+          if (!only(['action', 'client', 'active', 'state', 'threadId']) || !activeClients) break;
+          return { status: 200, body: activeClients.report(companionId, { client: payload.client, active: payload.active, state: payload.state, threadId: payload.threadId ?? null }) };
         }
         case 'webPushUnsubscribe': {
           if (!only(['action', 'endpoint']) || !webPush) break;
