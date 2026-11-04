@@ -330,6 +330,71 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
             put("action", "boardArchive"); put("threadId", threadId); put("archived", archived)
         }), threadId)
     }
+    // ---- Group chat (#53, src/group-chat.mjs): POST api/groups. An older server answers 404 (the tab then stays hidden). ----
+    private suspend fun group(body: JsonObject): JsonElement = post(companion + "api/groups", body)
+    private fun checkGroupId(groupId: String) { if (!fileId(groupId)) throw ApiException("INVALID_REQUEST") }
+    suspend fun groups(): GroupList = parseGroupList(group(buildJsonObject { put("action", "list") }))
+    suspend fun createGroup(requestId: String, members: List<String>, name: String?): GroupSnapshot {
+        if (!requestKey(requestId) || members.isEmpty() || members.size > 16 || members.any { !groupLabel(it) } || name?.let(::groupNameOk) == false)
+            throw ApiException("INVALID_REQUEST")
+        return parseGroupSnapshot(group(buildJsonObject {
+            put("action", "create"); put("requestId", requestId)
+            put("members", buildJsonArray { members.forEach { add(it) } }); name?.let { put("name", it.trim()) }
+        }))
+    }
+    suspend fun groupSnapshot(groupId: String): GroupSnapshot {
+        checkGroupId(groupId)
+        return parseGroupSnapshot(group(buildJsonObject { put("action", "snapshot"); put("groupId", groupId) }), groupId)
+    }
+    suspend fun groupEvents(groupId: String, cursor: String): GroupEvents {
+        checkGroupId(groupId); if (groupCursorOf(cursor) == null) throw ApiException("INVALID_REQUEST")
+        return parseGroupEvents(group(buildJsonObject { put("action", "events"); put("groupId", groupId); put("cursor", cursor) }), groupId, cursor)
+    }
+    suspend fun groupPost(groupId: String, requestId: String, text: String, replyTo: String?, attachments: List<String>): GroupPosted {
+        checkGroupId(groupId); checkedFileIds(attachments)
+        if (!requestKey(requestId) || !validText(text, GROUP_TEXT_CHARS, 32768) || text.isBlank() && attachments.isEmpty() ||
+            replyTo?.let(::fileId) == false) throw ApiException("INVALID_REQUEST")
+        return parseGroupPosted(group(buildJsonObject {
+            put("action", "post"); put("groupId", groupId); put("requestId", requestId); put("text", text)
+            replyTo?.let { put("replyTo", it) }
+            if (attachments.isNotEmpty()) put("attachments", buildJsonArray { attachments.forEach { add(it) } })
+        }), groupId)
+    }
+    suspend fun groupTyping(groupId: String, active: Boolean) {
+        checkGroupId(groupId)
+        group(buildJsonObject { put("action", "typing"); put("groupId", groupId); put("active", active) })
+    }
+    suspend fun groupRead(groupId: String, seq: Long): GroupRead {
+        checkGroupId(groupId); if (seq < 0) throw ApiException("INVALID_REQUEST")
+        return parseGroupRead(group(buildJsonObject { put("action", "read"); put("groupId", groupId); put("seq", seq) }), groupId)
+    }
+    suspend fun renameGroup(groupId: String, name: String): GroupSnapshot {
+        checkGroupId(groupId); if (!groupNameOk(name)) throw ApiException("INVALID_REQUEST")
+        return parseGroupSnapshot(group(buildJsonObject { put("action", "rename"); put("groupId", groupId); put("name", name.trim()) }), groupId)
+    }
+    suspend fun addGroupMembers(groupId: String, members: List<String>): GroupSnapshot {
+        checkGroupId(groupId); if (members.isEmpty() || members.size > 16 || members.any { !groupLabel(it) }) throw ApiException("INVALID_REQUEST")
+        return parseGroupSnapshot(group(buildJsonObject {
+            put("action", "addMembers"); put("groupId", groupId); put("members", buildJsonArray { members.forEach { add(it) } })
+        }), groupId)
+    }
+    suspend fun leaveGroup(groupId: String): GroupLeft {
+        checkGroupId(groupId)
+        return parseGroupLeft(group(buildJsonObject { put("action", "leave"); put("groupId", groupId) }), groupId)
+    }
+    suspend fun groupNotify(groupId: String, notify: String): GroupSettings {
+        checkGroupId(groupId); if (notify !in setOf("all", "mentions")) throw ApiException("INVALID_REQUEST")
+        return parseGroupSettings(group(buildJsonObject { put("action", "settings"); put("groupId", groupId); put("notify", notify) }), groupId)
+    }
+    suspend fun groupPhoto(member: String): OwnerPhoto? {
+        if (!groupMemberId(member) || !member.startsWith("owner:")) throw ApiException("INVALID_REQUEST")
+        return parseGroupPhoto(group(buildJsonObject { put("action", "photo"); put("member", member) }), member)
+    }
+    suspend fun groupUpload(groupId: String, key: String, name: String, source: java.io.File, cancel: TransferCancellation,
+        progress: (Long) -> Unit): GroupFile = transfers.groupUpload(groupId, key, name, source, cancel, progress)
+    suspend fun groupDownload(file: GroupFile, destination: java.io.File, cancel: TransferCancellation): java.io.File =
+        transfers.groupDownload(file, destination, cancel)
+
     suspend fun upload(threadId: String, key: String, name: String, source: java.io.File,
         cancel: TransferCancellation, voice: Boolean = false, progress: (Long) -> Unit): Attachment = transfers.upload(threadId, key, name, source, cancel, voice, progress)
     suspend fun download(file: Attachment, destination: java.io.File, cancel: TransferCancellation,

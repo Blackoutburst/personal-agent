@@ -87,6 +87,68 @@ internal class FileTransfers(private val session: () -> Session?,
         }
     }
 
+    /** Group chat (#53): the same raw upload, to /api/groups/files with the group's id. The reply carries no hash. */
+    suspend fun groupUpload(groupId: String, key: String, name: String, source: File, cancel: TransferCancellation,
+        progress: (Long) -> Unit): GroupFile {
+        if (source.isFile && source.length() > GROUP_FILE_BYTES) throw ApiException("FILE_TOO_LARGE")
+        if (!fileId(groupId) || !requestKey(key) || !fileName(name) || !source.isFile || source.length() < 1) throw ApiException("INVALID_REQUEST")
+        val owner = owner()
+        return withContext(Dispatchers.IO) {
+            val connection = connection("/api/groups/files", owner, cancel)
+            try {
+                connection.requestMethod = "POST"
+                connection.doOutput = true
+                connection.setFixedLengthStreamingMode(source.length())
+                connection.setRequestProperty("Content-Type", "application/octet-stream")
+                connection.setRequestProperty("X-Group-Id", groupId)
+                connection.setRequestProperty("X-Request-Id", key)
+                connection.setRequestProperty("X-File-Name", URLEncoder.encode(name, "UTF-8").replace("+", "%20"))
+                source.inputStream().use { input -> connection.outputStream.use { output ->
+                    val buffer = ByteArray(64 * 1024); var sent = 0L
+                    while (true) { cancel.check(); val count = input.read(buffer); if (count < 0) break
+                        output.write(buffer, 0, count); sent += count; progress(sent) }
+                } }
+                cancel.check()
+                val result = parseGroupUpload(response(connection))
+                if (result.size != source.length()) throw ApiException("INVALID_RESPONSE")
+                result
+            } catch (error: ApiException) { throw error }
+            catch (_: Exception) { cancel.check(); throw ApiException("NETWORK") }
+            finally { connection.disconnect(); cancel.release() }
+        }
+    }
+
+    /** A group file for display or saving: GET /api/groups/files/<id>, its length checked against the message. */
+    suspend fun groupDownload(file: GroupFile, destination: File, cancel: TransferCancellation): File {
+        checkGroupFile(file)
+        val owner = owner()
+        return withContext(Dispatchers.IO) {
+            val connection = connection("/api/groups/files/${file.id}", owner, cancel)
+            var success = false
+            try {
+                connection.requestMethod = "GET"
+                val status = connection.responseCode
+                if (status != 200) { response(connection); throw ApiException("INVALID_RESPONSE") }
+                val length = connection.getHeaderField("Content-Length")
+                if (length != null && length.toLongOrNull() != file.size) throw ApiException("INVALID_RESPONSE")
+                var received = 0L
+                connection.inputStream.use { input -> destination.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) { cancel.check(); val count = input.read(buffer); if (count < 0) break
+                        received += count
+                        if (received > file.size || received > GROUP_FILE_BYTES) throw ApiException("INVALID_RESPONSE")
+                        output.write(buffer, 0, count)
+                    }
+                } }
+                cancel.check()
+                if (received != file.size) throw ApiException("INVALID_RESPONSE")
+                success = true; destination
+            } catch (error: ApiException) { throw error }
+            catch (_: Exception) { cancel.check(); throw ApiException("NETWORK") }
+            finally { connection.disconnect(); cancel.release(); if (!success) destination.delete() }
+        }
+    }
+
     private fun owner(): Session = session()?.takeUnless { it.expired } ?: throw ApiException("AUTHENTICATION_REQUIRED", 401)
     private fun connection(path: String, owner: Session, cancel: TransferCancellation): HttpURLConnection {
         cancel.check()

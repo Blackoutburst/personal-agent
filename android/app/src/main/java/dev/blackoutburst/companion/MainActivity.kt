@@ -57,6 +57,10 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra(Push.EXTRA_THREAD); intent.removeExtra(Push.EXTRA_BOARD)
             model.openThread(threadId, board)
         }
+        intent?.getStringExtra(Push.EXTRA_GROUP)?.let { groupId ->
+            intent.removeExtra(Push.EXTRA_GROUP)
+            model.openGroup(groupId)
+        }
         val data = intent?.data ?: return
         if (intent.action == Intent.ACTION_VIEW && data.scheme == "blackoutburst-companion") {
             awaitingBrowser = false

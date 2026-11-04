@@ -202,7 +202,7 @@ private fun rememberAttachmentSave(model: CompanionModel, file: Attachment, scop
         state = { Triple(saving, "${fileSize(progress)} / ${fileSize(file.size)}", result) })
 }
 
-private fun decodeImage(file: File, maximumEdge: Int): Drawable =
+internal fun decodeImage(file: File, maximumEdge: Int): Drawable =
     ImageDecoder.decodeDrawable(ImageDecoder.createSource(file)) { decoder, info, _ ->
         val width = info.size.width; val height = info.size.height
         if (width <= 0 || height <= 0 || width.toLong() * height > 100_000_000) throw IOException()

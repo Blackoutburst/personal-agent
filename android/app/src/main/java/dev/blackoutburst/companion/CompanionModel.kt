@@ -179,6 +179,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private var boardAt = 0L
     private var boardReadKey: String? = null
     private val boardTopics = mutableMapOf<String, BoardTopic>()
+    /** Group chat (#53): its own state and polling; reset with every sign-out or account switch. */
+    val groups = GroupChat(application, viewModelScope, api) { signedOut() }
 
     init {
         // An interrupted prior process must not leave an unbounded or reusable private media cache.
@@ -215,7 +217,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             try {
                 val session = api.exchange(code, pending.verifier)
                 if (!current(version)) return@launch
-                invalidateFiles()
+                invalidateFiles(); groups.reset()
                 store.session = Session(session.token, session.cookie, session.expiresAt, session.user?.username)
                 _state.update { UiState(scope = scope, gate = Gate.Loading) }
                 load()
@@ -234,7 +236,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         // Stop this phone's notifications for that account before the session goes away.
         viewModelScope.launch { Push.unregister(Api { previousSession }) }
         // Fence the display immediately, even while logout is in flight.
-        invalidateFiles()
+        invalidateFiles(); groups.reset()
         store.session = null
         _state.value = UiState(scope = scope, gate = Gate.SignedOut)
         val version = scope
@@ -245,7 +247,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun signedOut() {
-        invalidateFiles()
+        invalidateFiles(); groups.reset()
         store.session = null
         poller?.cancel()
         cursor = "0"
@@ -272,10 +274,11 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 resync()
                 refreshBoard(version)
                 startPolling()
+                groups.start()
             } catch (error: ApiException) {
                 if (!current(version)) return@launch
                 if (error.signedOut) signedOut()
-                else { _state.update { it.copy(gate = Gate.Ready, username = session.username, offline = true) }; startPolling() }
+                else { _state.update { it.copy(gate = Gate.Ready, username = session.username, offline = true) }; startPolling(); groups.start() }
             }
         }
     }
@@ -297,6 +300,9 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(threadId = threadId, boardThread = null, messages = emptyList(), turn = null) }
         viewModelScope.launch { guarded { resync() } }
     }
+
+    /** A group notification was tapped (#53): the Group tab on that group. */
+    fun openGroup(groupId: String) = groups.openFromPush(groupId, _state.value.gate == Gate.Ready)
 
     // ---- Board inbox (#55, docs/BOARD-INBOX.md) ----
 
@@ -413,6 +419,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     fun setVisible(value: Boolean) {
         visible = value
+        groups.setVisible(value)
         if (value && _state.value.gate == Gate.Ready) { viewModelScope.launch { guarded { resync() }; refreshWearing() }; startPolling() }
     }
 

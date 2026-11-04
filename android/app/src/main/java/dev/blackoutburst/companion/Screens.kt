@@ -130,7 +130,7 @@ fun tonesFor(choice: ThemeChoice): Tones = when (choice) {
     ThemeChoice.Dark -> DarkTones
 }
 
-private enum class Tab(val label: String) { Chat("Chat"), Board("Board"), Calendar("Calendar"), Me("Me") }
+private enum class Tab(val label: String) { Chat("Chat"), Group("Groups"), Board("Board"), Calendar("Calendar"), Me("Me") }
 /** Sections of the Me tab; memories come first. */
 private enum class MeSection(val label: String) { Memories("Memories"), Profile("Your profile"), Companion("Companion"), Watches("Watches"), Connectors("Connectors"), Settings("Settings") }
 
@@ -184,6 +184,11 @@ private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExpo
     // Board tab (#55): a notification for a Board sub-conversation opens it there; leaving the tab returns to the main chat.
     LaunchedEffect(state.boardRequest) { if (state.boardRequest > 0) tab = Tab.Board }
     LaunchedEffect(tab) { if (tab == Tab.Board) model.loadBoard() else model.leaveBoardTopic() }
+    // Group tab (#53): a group notification opens that group there; the tab shows once the server has group chat.
+    val groups by model.groups.state.collectAsStateWithLifecycle()
+    LaunchedEffect(groups.request) { if (groups.request > 0) tab = Tab.Group }
+    LaunchedEffect(tab) { model.groups.setShown(tab == Tab.Group) }
+    DisposableEffect(Unit) { onDispose { model.groups.setShown(false) } }
     // Notifications (docs/PUSH.md): asked once, right after the first message the owner sends.
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { model.notificationsAsked() }
     LaunchedEffect(state.askNotifications) { if (state.askNotifications) askPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
@@ -191,6 +196,7 @@ private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExpo
         Box(Modifier.weight(1f)) {
             when (tab) {
                 Tab.Chat -> ChatScreen(model, state)
+                Tab.Group -> GroupsTab(model)
                 Tab.Board -> if (state.boardThread != null && state.threadId == state.boardThread) ChatScreen(model, state) else BoardScreen(model, state)
                 Tab.Calendar -> CalendarScreen(model, state)
                 Tab.Me -> MeScreen(model, state, memoryExport) { tab = Tab.Chat }
@@ -198,13 +204,20 @@ private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExpo
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
             // The Board tab shows once the owner has a Board conversation (an older server never reports one).
-            for (item in Tab.entries.filter { it != Tab.Board || state.boardAny || state.boardThread != null || tab == Tab.Board }) {
+            val shownTabs = Tab.entries.filter {
+                (it != Tab.Board || state.boardAny || state.boardThread != null || tab == Tab.Board) &&
+                    (it != Tab.Group || tab == Tab.Group || groups.openId != null ||
+                        groups.available && (!groups.groups.isNullOrEmpty() || groups.canCreate))
+            }
+            for (item in shownTabs) {
                 val selected = item == tab
                 Row(Modifier.clip(RoundedCornerShape(50)).background(if (selected) Card else Color.Transparent)
                     .clickable(role = Role.Tab) { if (item == Tab.Board && tab == Tab.Board) model.leaveBoardTopic(); tab = item }
-                    .padding(horizontal = if (state.boardAny) 16.dp else 22.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    .padding(horizontal = when { shownTabs.size >= 5 -> 10.dp; shownTabs.size == 4 -> 16.dp; else -> 22.dp }, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
                     Text(item.label, color = if (selected) Ink else Soft, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 16.sp)
                     if (item == Tab.Board && state.boardUnread > 0) { Spacer(Modifier.size(6.dp)); UnreadDot(state.boardUnread) }
+                    if (item == Tab.Group && groups.unread > 0) { Spacer(Modifier.size(6.dp)); UnreadDot(groups.unread) }
                 }
             }
         }

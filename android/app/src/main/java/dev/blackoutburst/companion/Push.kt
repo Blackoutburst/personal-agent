@@ -26,11 +26,15 @@ object Push {
     const val EXTRA_THREAD = "dev.blackoutburst.companion.THREAD"
     /** Set for a Board sub-conversation's message (#55): the tap opens it in the Board tab. */
     const val EXTRA_BOARD = "dev.blackoutburst.companion.BOARD"
+    /** A group chat message (#53): the tap opens that group in the Group tab. */
+    const val EXTRA_GROUP = "dev.blackoutburst.companion.GROUP"
     private const val PREFS = "push"
     private const val SEEN_MAX = 100
 
     /** True while any app screen is visible; set by MainActivity. */
     @Volatile var foreground = false
+    /** The group conversation on screen right now (#53), if any: its pushes are not shown. */
+    @Volatile var openGroup: String? = null
 
     val configured: Boolean get() = BuildConfig.FIREBASE_APP_ID.isNotEmpty()
 
@@ -104,6 +108,24 @@ object Push {
             .build()
         context.getSystemService(NotificationManager::class.java).notify(messageId.hashCode(), notification)
     }
+
+    fun showGroup(context: Context, groupId: String, messageId: String, title: String, text: String) {
+        val open = Intent(context, MainActivity::class.java).putExtra(EXTRA_GROUP, groupId)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val tap = PendingIntent.getActivity(context, messageId.hashCode(), open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val notification = Notification.Builder(context, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(tap)
+            .setSubText("Group")
+            .setAutoCancel(true)
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setColor(0xFFEE8F64.toInt())
+            .build()
+        context.getSystemService(NotificationManager::class.java).notify(messageId.hashCode(), notification)
+    }
 }
 
 /** Plain one-paragraph text for a notification: markdown markers and URLs reduced to their readable form. */
@@ -136,6 +158,7 @@ class PushService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         val data = message.data
+        if (data["type"] == "group") { onGroupMessage(data); return }
         if (data["type"] != "message") return
         val threadId = data["threadId"] ?: return
         val messageId = data["messageId"] ?: return
@@ -152,5 +175,22 @@ class PushService : FirebaseMessagingService() {
             notificationText(found.text).ifBlank { if (found.attachments.isNotEmpty()) "Sent you a file" else "" }
         }?.ifBlank { null } ?: "New message"
         Push.show(this, threadId, messageId, title, text, boardPush(data))
+    }
+
+    /** A group message (#53): titled with the group's name; not shown while that group is open on screen. */
+    private fun onGroupMessage(data: Map<String, String>) {
+        if (!groupPush(data)) return
+        val groupId = data.getValue("groupId"); val messageId = data.getValue("messageId")
+        if (Push.foreground && Push.openGroup == groupId || !Push.enabled(this) || !Push.permitted(this)) return
+        val store = SessionStore(this)
+        if (store.session == null) return
+        if (!Push.firstTime(this, messageId)) return
+        val title = data["name"]?.takeIf { it.isNotBlank() } ?: "Group"
+        val found = if (!Push.preview(this)) null else runBlocking {
+            withTimeoutOrNull(8_000) {
+                runCatching { Api { store.session }.groupSnapshot(groupId).messages.firstOrNull { it.id == messageId } }.getOrNull()
+            }
+        }
+        Push.showGroup(this, groupId, messageId, title, groupNotificationText(data, found))
     }
 }
