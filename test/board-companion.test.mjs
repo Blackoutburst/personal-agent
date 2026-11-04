@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { BootstrapStore } from '../src/store.mjs';
-import { BoardCompanion, boardPresentation, needsYouPrompt, mentionPrompt } from '../src/board-companion.mjs';
+import { BoardCompanion, boardPresentation, needsYouPrompt, mentionPrompt, ownerMentionPrompt } from '../src/board-companion.mjs';
 import { runFileMcp } from '../src/file-mcp.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -58,6 +58,23 @@ test('mentions and replies wake the companion once per thread; older ones and it
   pending = [ping('m1')];
   await companion.tick();
   assert.equal(events.length, 2, 'A replayed mention never wakes twice');
+});
+
+test('a message that pings the owner (not the companion) wakes it to answer for them or pass it on', async t => {
+  let pending = [];
+  const { companion, events } = fixture(t, { inbox: () => { const page = pending; pending = []; return page; } });
+  await companion.tick();
+  const toOwner = (id, thread = 'th1') => ({ id, thread_id: thread, author: { agent_id: 'codex' }, mentions: ['blackoutburst'] });
+  pending = [toOwner('o1'), ping('m1'), toOwner('o2'), { ...toOwner('both'), mentions: ['blackoutburst', 'agent:me'], thread_id: 'th2' }];
+  await companion.tick();
+  const wakes = events.map(([, wake]) => wake);
+  assert.equal(wakes.length, 3);
+  const owner = wakes.find(wake => wake.requestId.startsWith('board-owner-ping-'));
+  assert.match(owner.prompt, /pinged your owner \(not you\): messages o1, o2 in Board thread th1/);
+  assert.match(wakes.find(wake => wake.prompt.includes('message m1')).prompt, /You were mentioned/);
+  assert.match(wakes.find(wake => wake.prompt.includes('message both')).prompt, /You were mentioned/, 'A message for both is the companion\'s own');
+  const prompt = ownerMentionPrompt('th1', ['o1']);
+  assert.match(prompt, /untrusted context/); assert.match(prompt, /pass it on/); assert.match(prompt, /Never answer for them about deployments/);
 });
 
 test('a cursor the Board refuses is dropped and the next check reads without one', async t => {
