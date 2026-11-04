@@ -470,14 +470,17 @@ export class SchedulerStore {
       this.#db.prepare("UPDATE scheduler_occurrences SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
       return true;
     }
+    // The companion's own wakes and follow-ups (#54): owner decision 2026-11-04, no 5-minute spacing and no daily cap.
+    // They run as often as the owner set (wakes per day, at most one pending at a time) and do not spend the budget
+    // other wakes share. Quiet hours (delivery) and the provider cooldown still apply.
+    if (row.proactive) { this.#proactive.admit(id, now); return true; }
     if (settings.last_started_at !== null && now - settings.last_started_at < this.#spacing) return this.#held(row, 'spacing');
     const day = this.#local(companionId, now).day;
     const count = this.#db.prepare('SELECT turns FROM scheduler_days WHERE companion_id=? AND local_day=?').get(companionId, day)?.turns ?? 0;
     if (count >= this.#cap) return this.#held(row, 'daily_cap');
     this.#db.prepare(`INSERT INTO scheduler_days VALUES(?,?,1) ON CONFLICT(companion_id,local_day) DO UPDATE SET turns=turns+1`).run(companionId, day);
     this.#db.prepare('UPDATE scheduler_settings SET last_started_at=? WHERE companion_id=?').run(now, companionId);
-    if (row.proactive) this.#proactive.admit(id, now);
-    else this.#db.prepare("UPDATE " + (row.routine ? 'scheduler_routine_occurrences' : 'scheduler_occurrences') + " SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
+    this.#db.prepare("UPDATE " + (row.routine ? 'scheduler_routine_occurrences' : 'scheduler_occurrences') + " SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
     return true;
   }
   // The owner's quiet hours are on now (#53: group pushes and own-initiative group posts). Owners who never saved

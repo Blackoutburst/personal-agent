@@ -117,8 +117,9 @@ ping or mail. Two kinds share the ordinary wake path and its strict `{"action":"
 
 - `proactive`: the companion's own wakes. Owner setting `settings.proactive` = `{ enabled, perDay }`, `perDay` any whole
   number from 1 to 1440, typed freely (Me › Settings: "Proactive companion", Wakes per day; owner decision 2026-11-04,
-  whatever the cost). The interval floor is one minute. The 5-minute spacing and the 24 turns/day cap still apply to
-  own wakes, so above about 20 a day some wakes are held. Rollback: releases before this change only accept 2/4/6/8 and
+  whatever the cost). The interval floor is one minute. Own wakes and follow-ups skip the 5-minute spacing and the
+  24 turns/day cap (owner decision 2026-11-04) and do not spend that budget for other wakes; at most one own wake is
+  pending at a time, and quiet hours and the provider cooldown still apply. Rollback: releases before this change only accept 2/4/6/8 and
   report the scheduler UNAVAILABLE for any other stored value; set it back to 2/4/6/8 before rolling back. Owners who never chose are on
   at four a day. The next wake is `now + (24 h / perDay) × factor`, with a uniform random factor in [0.5, 1.5), so the
   times vary from day to day. After downtime there is at most one pending own wake (no backlog replay) and the next one

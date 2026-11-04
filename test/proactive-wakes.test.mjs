@@ -151,17 +151,29 @@ test('own wakes and follow-ups may start in quiet hours, but their delivery wait
   f.clock = Date.UTC(2026, 10, 3, 8); assert.equal(f.scheduler.canDeliver(f.a, own.id), false);
 });
 
-test('own wakes share the five-minute spacing and the daily cap with other wakes', t => {
+test('own wakes skip the five-minute spacing and the daily cap, and do not spend them for other wakes', t => {
   const f = fixture(t, { maxTurnsPerDay: 2 });
   f.scheduler.create(f.a, { requestId: 'r1', text: 'One', dueAt: iso(f.clock + MINUTE) });
   f.scheduler.prepareDue(f.a); f.clock = f.nextAt();
   f.scheduler.create(f.a, { requestId: 'r2', text: 'Two', dueAt: iso(f.clock) });
-  const pending = f.scheduler.prepareDue(f.a), reminder = pending.find(item => item.kind === 'reminder' && item.prompt === 'One');
-  const own = pending.find(item => item.kind === 'proactive'), second = pending.find(item => item.prompt === 'Two');
+  f.scheduler.create(f.a, { requestId: 'r3', text: 'Three', dueAt: iso(f.clock) });
+  const pending = f.scheduler.prepareDue(f.a), reminder = pending.find(item => item.prompt === 'One');
+  const own = pending.find(item => item.kind === 'proactive'), second = pending.find(item => item.prompt === 'Two'),
+    third = pending.find(item => item.prompt === 'Three');
   assert.equal(f.admit(f.a, reminder.id), true);
-  assert.equal(f.admit(f.a, own.id), false, 'Spacing holds it');
-  f.clock += 5 * MINUTE; assert.equal(f.admit(f.a, own.id), true);
-  f.clock += 5 * MINUTE; assert.equal(f.admit(f.a, second.id), false, 'The own wake used the last turn of the day');
+  assert.equal(f.admit(f.a, own.id), true, 'No spacing for own wakes');
+  assert.equal(f.admit(f.a, second.id), false, 'Other wakes keep their spacing');
+  f.clock += 5 * MINUTE; assert.equal(f.admit(f.a, second.id), true, 'The own wake did not take a turn of the day');
+  f.clock += 5 * MINUTE; assert.equal(f.admit(f.a, third.id), false, 'Other wakes keep the daily cap');
+  // Past the cap, own wakes still start, as often as the owner set.
+  f.scheduler.finishOccurrence(f.a, own.id, 'silent');
+  f.scheduler.configure(f.a, { proactive: { perDay: 1440 } });
+  for (let index = 0; index < 5; index++) {
+    f.clock = f.nextAt(); const next = f.scheduler.prepareDue(f.a).find(item => item.kind === 'proactive' && item.state !== 'admitted');
+    assert.ok(next, 'a new own wake is due');
+    assert.equal(f.admit(f.a, next.id), true, 'own wake ' + index + ' starts past the cap');
+    f.scheduler.finishOccurrence(f.a, next.id, 'silent');
+  }
 });
 
 test('follow-ups are idempotent, conflict on a changed payload, are bounded, cancellable and owner-private', async t => {
