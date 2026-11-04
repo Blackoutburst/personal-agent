@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { RunnerError } from './runner.mjs';
-import { splitFeeling } from './wardrobe.mjs';
+import { splitFeeling, stripFeelingTags } from './wardrobe.mjs';
 import { READ_ONLY_BOARD_TOOLS, WEB_TOOLS } from './tool-policy.mjs';
 import { FileError } from './files.mjs';
 import { finishedBubbles } from '../public/bubbles.mjs';
@@ -433,7 +433,9 @@ export class Conversations {
   #message(row) {
     if(row.role==='peer') return {id:row.id,threadId:row.thread_id,role:'peer',text:row.text,peer:JSON.parse(row.peer_json)};
     const attachments = this.#files?.list(row.id) ?? [];
-    return { id: row.id, threadId: row.thread_id, role: row.role, text: row.text, ...(row.request_id ? { requestId: row.request_id } : {}),
+    // #57: replies stored before stray tags were stripped are cleaned when shown.
+    const text = row.role === 'assistant' ? stripFeelingTags(row.text).text : row.text;
+    return { id: row.id, threadId: row.thread_id, role: row.role, text, ...(row.request_id ? { requestId: row.request_id } : {}),
       ...(row.feeling ? { feeling: row.feeling } : {}), ...(attachments.length ? { attachments } : {}) };
   }
 
@@ -909,7 +911,7 @@ export class Conversations {
       timer = null;
       if (!live()) return;
       if (text === written && !(this.#texting && final)) return;
-      const split = splitFeeling(text);
+      const split = splitFeeling(text, { streaming: !final });
       if (split.pending && !final) return;
       let value = split.pending ? text : split.text;
       // Texting: only finished bubbles show while writing, and a reply that may be NO_REPLY shows nothing.

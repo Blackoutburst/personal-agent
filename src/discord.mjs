@@ -6,6 +6,7 @@ import { randomInt } from 'node:crypto';
 import { readFileSync, closeSync } from 'node:fs';
 import { ConversationError } from './conversations.mjs';
 import { splitBubbles } from '../public/bubbles.mjs';
+import { stripFeelingTags } from './wardrobe.mjs';
 
 const API = 'https://discord.com/api/v10';
 const GATEWAY = 'wss://gateway.discord.gg/?v=10&encoding=json';
@@ -372,7 +373,7 @@ export class DiscordBridge {
 
   // Like a person texting: each paragraph is its own Discord message, with a short typing pause in between.
   async #burst(link, channelId, text) {
-    const bubbles = splitBubbles(text);
+    const bubbles = splitBubbles(stripFeelingTags(text).text);
     for (const [index, bubble] of bubbles.entries()) {
       if (index) {
         this.#rest(link.token, 'POST', `/channels/${channelId}/typing`).catch(() => {});

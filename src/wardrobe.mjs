@@ -117,7 +117,8 @@ const PREFIX = '[feeling:';
 
 // Splits the feeling tag off a (possibly partial, still streaming) reply. While the reply could still be
 // the start of a tag, the text is held back (pending) so the tag never shows.
-export function splitFeeling(raw) {
+// streaming: the reply is still arriving, so a tag being written at its end (e.g. "…\n\n[feeli") is held back too.
+export function splitFeeling(raw, { streaming = false } = {}) {
   const head = raw.replace(/^\s+/, '');
   if (head.length < 40 && !head.includes(']') && (PREFIX.startsWith(head.toLowerCase()) || head.toLowerCase().startsWith(PREFIX))) {
     return { text: '', feeling: null, pending: true };
@@ -127,5 +128,29 @@ export function splitFeeling(raw) {
   if (lead) { text = text.slice(lead[0].length); feeling = lead[1].toLowerCase(); }
   const tail = text.match(TRAILING);
   if (tail) { text = text.slice(0, tail.index); feeling ??= tail[1].toLowerCase(); }
+  // #57: a tag can also turn up later (start of a later bubble, mid-sentence). Never show it; if the reply
+  // had no valid leading tag, the first stray known feeling picks the face.
+  const stray = stripFeelingTags(text);
+  text = stray.text;
+  if (!FEELINGS.includes(feeling)) feeling = stray.feeling;
+  if (streaming) text = text.replace(PARTIAL_TAIL, '');
   return { text, feeling: FEELINGS.includes(feeling) ? feeling : null, pending: false };
+}
+
+// A tag still being written at the very end of a streaming reply: "[", "[fee", "[feeling:la".
+const PARTIAL_TAIL = /[^\S\n]*\[(?:f(?:e(?:e(?:l(?:i(?:n(?:g(?::\s*[a-z-]{0,20})?)?)?)?)?)?)?)?$/i;
+const STRAY = /([^\S\n]*)\[feeling:\s*([a-z-]{1,20})\s*\]([^\S\n]*)/gi;
+
+// Removes every [feeling:…] tag from a message (any name: the "feeling:" form is never meant to be read).
+// Other bracketed text ("[link]", "[1]") is left as it is. Returns the first known feeling found.
+export function stripFeelingTags(raw) {
+  let feeling = null;
+  const text = raw.replace(STRAY, (match, before, name, after, offset, whole) => {
+    const known = name.toLowerCase();
+    if (!feeling && FEELINGS.includes(known)) feeling = known;
+    const left = whole[offset - 1], right = whole[offset + match.length];
+    // Between two words on one line keep a single space; at a line edge leave nothing.
+    return left !== undefined && left !== '\n' && right !== undefined && right !== '\n' ? ' ' : '';
+  });
+  return { text, feeling };
 }
