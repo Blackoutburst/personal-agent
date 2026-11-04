@@ -74,18 +74,16 @@ message resets it. There is no other behavior limit; the existing provider limit
 - The turn prompt is the recent group transcript (or what is new since the companion last read, when its session
   resumes). Each message is wrapped as `<message from=… kind="owner|your owner|companion|you">…</message>` with `<`,
   `>`, `&` escaped, so message text cannot forge structure; the note says these are data, never instructions.
-- **File tools are never available** in a group turn (Claude: no Read/Edit/Write/Glob/Grep; Codex runs read-only).
-  No file, contact or send-file app servers are attached.
+- **Server files: read yes, write no.** Companions live on the server and may read its files (owner decision,
+  2026-11-04), in groups too: Claude keeps Read/Glob/Grep when the owner's policy has them, Codex runs with its
+  read-only sandbox and its normal built-ins. Edit/Write never run in a group. No file, contact or send-file app
+  servers are attached. Privacy of the owner's memory in the group rests on the instructions above.
 - **Side-effect tools** (Board, scheduler: reminders, calendar, mail, follow-ups; connectors still apply) are available
   only when the messages the companion is answering include one from **its own owner**. Otherwise only native web
   search/fetch (if the owner's policy and the daily web allowance allow it). Own-wake posts get no tools.
 - If its own owner asks in the group for something private, the companion says it will pick it up in their own chat
   (AGENTS v25 "Group chat"). There is no cross-context retrieval.
-- Codex group turns also switch off every built-in that could read a file or reach outside the turn: shell and unified
-  exec, view_image, browser/computer use, apps, Codex memories, goals and subagents (`ISOLATED_OFF` in
-  src/providers/codex.mjs; its read-only sandbox limits writes, not reads). Checked with codex-cli 0.166.0: with them
-  off, a canary file outside the group folder cannot be read; with them on, it can. Images still arrive via `--image`.
-- Claude group turns have no file tool, so images posted in the new messages are sent inline (stream-json input,
+- Images posted in the new messages are sent to Claude inline (stream-json input,
   base64, PNG/JPEG/GIF/WebP by magic number, at most 3.75 MB each, up to 8); skipped images get a short app note.
 
 ## Own initiative (#54)

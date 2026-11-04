@@ -7,13 +7,7 @@ import { mcpServersFor } from '../tool-policy.mjs';
 
 export const name = 'codex';
 
-// Group chat turns (#53, docs/GROUP-CHAT.md) run isolated: the read-only sandbox limits writes, not reads, so every
-// built-in that could read a file, open a browser, recall Codex memories or start a subagent is switched off. Images
-// still arrive through --image. Verified with codex-cli 0.166.0: with these off, a canary file outside the folder
-// cannot be read; without them it can.
-export const ISOLATED_OFF = Object.freeze(['shell_tool', 'unified_exec', 'view_image', 'browser_use', 'browser_use_external',
-  'in_app_browser', 'computer_use', 'apps', 'memories', 'goals', 'multi_agent', 'multi_agent_v2']);
-export function command({ binary = 'codex', home, resume, model, systemPrompt, images = [], toolPolicy = { tools: [], board: null }, readOnly = false, isolated = false }) {
+export function command({ binary = 'codex', home, resume, model, systemPrompt, images = [], toolPolicy = { tools: [], board: null }, readOnly = false }) {
   if (toolPolicy.tools.length === 1) throw new Error('Codex web search and fetch must be configured together');
   const args = ['exec'];
   if (resume) args.push('resume', resume);
@@ -31,7 +25,6 @@ export function command({ binary = 'codex', home, resume, model, systemPrompt, i
     for (const [key, value] of Object.entries(server.env)) args.push('-c', `${prefix}.env.${key}=${JSON.stringify(value)}`);
   }
   // MCP tables deep-merge in 0.166; these overrides do not clear other config layers.
-  if (isolated) for (const feature of ISOLATED_OFF) args.push('-c', `features.${feature}=false`);
   if (model) args.push('--model', model);
   // Both exec and exec resume accept repeated --image paths (qualified CLI help, no shell interpolation).
   for (const image of images) args.push('--image', image);

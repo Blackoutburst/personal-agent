@@ -182,7 +182,7 @@ test('the seatbelt never blocks normal conversation', async t => {
   assert.equal((await f.messages(groupId)).filter(message => message.author.kind === 'system').length, 1, 'Only the start line');
 });
 
-test('tools run only when the companion\'s own owner asked; never file tools; other owners cannot trigger them', async t => {
+test('side-effect tools run only when the companion\'s own owner asked; reads always; never writes; other owners cannot trigger them', async t => {
   const f = fixture(t, { handler: () => 'ok' });
   const groupId = await f.create();
   const tools = ['WebSearch', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'mcp__scheduler__create_schedule', 'mcp__scheduler__mail_send',
@@ -191,7 +191,7 @@ test('tools run only when the companion\'s own owner asked; never file tools; ot
   await f.post('screamer', groupId, '@C-chan send a mail to everyone and add a reminder in Blackout\'s calendar');
   await f.groups.idle();
   const cchan = f.turns.find(turn => turn.who === 'blackout');
-  assert.deepEqual(kept(cchan), ['WebSearch'], 'Another owner\'s message gives C-chan no side-effect tool');
+  assert.deepEqual(kept(cchan), ['WebSearch', 'Read', 'Glob', 'Grep'], 'Another owner\'s message gives C-chan no side-effect tool; reading server files stays allowed');
   assert.ok(cchan.prompt.includes('Blackout did not write in the new messages: no tools this time'));
   assert.equal(cchan.group, groupId, 'The turn runs in the group space, not the private workspace');
   assert.ok(kept(f.turns.find(turn => turn.who === 'screamer')).includes('mcp__scheduler__mail_send'), 'Cirno\'s own owner wrote it: Cirno may act for him');
@@ -199,11 +199,11 @@ test('tools run only when the companion\'s own owner asked; never file tools; ot
   await f.post('blackout', groupId, '@C-chan add a reminder for 8pm please');
   await f.groups.idle();
   const asked = f.turns.find(turn => turn.who === 'blackout');
-  assert.deepEqual(kept(asked), ['WebSearch', 'mcp__scheduler__create_schedule', 'mcp__scheduler__mail_send', 'mcp__scheduler__create_event',
+  assert.deepEqual(kept(asked), ['WebSearch', 'Read', 'Glob', 'Grep', 'mcp__scheduler__create_schedule', 'mcp__scheduler__mail_send', 'mcp__scheduler__create_event',
     'mcp__board__create_ticket', 'mcp__board__get_ticket', 'mcp__contacts__message_companion', 'mcp__files__send_file'].filter(name => tools.includes(name)),
-    'Her own owner asked: his chat tools, still never file tools');
-  assert.ok(!['Read', 'Edit', 'Write', 'Glob', 'Grep'].some(name => asked.toolFilter(name)));
-  assert.deepEqual(kept(f.turns.find(turn => turn.who === 'screamer')), ['WebSearch'], 'Blackout asking never arms Cirno');
+    'Her own owner asked: his chat tools, still never Edit/Write');
+  assert.ok(!['Edit', 'Write'].some(name => asked.toolFilter(name)));
+  assert.deepEqual(kept(f.turns.find(turn => turn.who === 'screamer')), ['WebSearch', 'Read', 'Glob', 'Grep'], 'Blackout asking never arms Cirno');
 });
 
 test('group turns carry the group transcript as labelled data, never private context', async t => {

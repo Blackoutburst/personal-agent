@@ -85,7 +85,7 @@ for (const provider of ['claude', 'codex']) test(provider + ': a group turn sees
   assert.ok(everything.includes(markers.soul), 'Her personality comes along');
   for (const secret of [markers.user, markers.memory, markers.diary, 'ONE_TO_ONE_PRIVATE', 'PRIVATE_CHAT_REPLY']) assert.ok(!everything.includes(secret), secret + ' never reaches a group turn');
   if (provider === 'claude') {
-    assert.equal(turn.args[turn.args.indexOf('--tools') + 1], 'WebSearch,WebFetch', 'No file tools');
+    assert.equal(turn.args[turn.args.indexOf('--tools') + 1], 'WebSearch,WebFetch,Read,Glob,Grep', 'Reads allowed, never Edit/Write');
     const servers = JSON.parse(turn.args[turn.args.indexOf('--mcp-config') + 1]).mcpServers;
     assert.deepEqual(Object.keys(servers), [], 'No Board, scheduler, mail or file tools from another owner\'s message');
   } else {
@@ -104,7 +104,7 @@ for (const provider of ['claude', 'codex']) test(provider + ': a group turn sees
   await f.app.groupChat.idle();
   const asked = f.calls('alice').slice(mark).find(item => item.prompt.includes('this is the group chat'));
   if (provider === 'claude') {
-    assert.equal(asked.args[asked.args.indexOf('--tools') + 1], 'WebSearch,WebFetch');
+    assert.equal(asked.args[asked.args.indexOf('--tools') + 1], 'WebSearch,WebFetch,Read,Glob,Grep');
     const servers = JSON.parse(asked.args[asked.args.indexOf('--mcp-config') + 1]).mcpServers;
     assert.deepEqual(Object.keys(servers).sort(), ['board', 'scheduler']);
   } else assert.ok(asked.args.some(arg => arg.startsWith('mcp_servers.scheduler.')) && asked.args.some(arg => arg.startsWith('mcp_servers.board.')));
