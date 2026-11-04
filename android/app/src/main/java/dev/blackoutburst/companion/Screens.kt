@@ -132,7 +132,7 @@ fun tonesFor(choice: ThemeChoice): Tones = when (choice) {
 
 private enum class Tab(val label: String) { Chat("Chat"), Calendar("Calendar"), Me("Me") }
 /** Sections of the Me tab; memories come first. */
-private enum class MeSection(val label: String) { Memories("Memories"), Companion("Companion"), Watches("Watches"), Connectors("Connectors"), Settings("Settings") }
+private enum class MeSection(val label: String) { Memories("Memories"), Profile("Your profile"), Companion("Companion"), Watches("Watches"), Connectors("Connectors"), Settings("Settings") }
 
 @Composable
 fun CompanionApp(model: CompanionModel, tones: Tones, openBrowser: (android.net.Uri) -> Unit) {
@@ -480,6 +480,7 @@ private fun MeScreen(model: CompanionModel, state: UiState, memoryExport: Memory
         Box(Modifier.weight(1f)) {
             when (section) {
                 MeSection.Memories -> MemoryPanel(model, state, memoryExport)
+                MeSection.Profile -> OwnerProfilePanel(model, state)
                 MeSection.Companion -> LookScreen(model, state, first = false, done = done)
                 MeSection.Watches -> WatchesScreen(model, state)
                 MeSection.Connectors -> ConnectorsScreen(model, state)

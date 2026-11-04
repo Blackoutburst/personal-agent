@@ -54,6 +54,14 @@ a { color: var(--shade); }
 
 main { flex: 1; min-height: 0; display: flex; }
 .view { flex: 1; min-height: 0; }
+.owner-profile-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; width: 100%; min-width: 0; max-width: 480px; margin-top: 24px; }
+.owner-profile-form label { display: grid; gap: 8px; min-width: 0; }
+.owner-profile-form input[type=text] { width: 100%; min-width: 0; max-width: 100%; padding: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.owner-profile-form input[type=file] { width: 100%; min-width: 0; max-width: 100%; }
+.owner-profile-form > .text-button { justify-self: start; }
+.owner-profile-form .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.owner-profile-photo, .owner-profile-placeholder { width: 96px; height: 96px; border-radius: 50%; object-fit: cover; background: var(--card); }
+.owner-profile-placeholder { display: grid; place-items: center; font-weight: 700; }
 
 /* Studio: a contact book and readable correspondence, in the host app's theme. */
 .studio-controls { display: flex; gap: 12px; align-items: center; margin: 20px 0; }

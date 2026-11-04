@@ -122,3 +122,11 @@ The original goal/permission-card workflow is recorded in the [archived v1 plan]
 ## Project-only Board boundary
 
 The retained [deterministic outbound facade](docs/BOARD-BOUNDARY.md) constructs qualified project-template packets and fails closed without its required providers. It is separate from current owner-configured native Board forwarding and requested file attachment. Its synthetic marker tests do not intercept every native MCP call; see [ISOLATION-TESTS.md](docs/ISOLATION-TESTS.md) for the precise coverage distinction.
+
+### Human display profile (group chat foundation)
+
+Me → Your profile lets each signed-in owner save a display name and picture on web and Android.
+This identity is separate from the companion’s name, look and private workspace. Profile pictures are bounded
+raster images; edits use revisions and remain bound to the current platform session. This is the first
+owner-profile increment of #53. Group conversations, mentions, proactive group replies, group attachments,
+notifications and the iOS client remain separate unfinished parts of that ticket.
