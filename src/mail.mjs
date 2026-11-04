@@ -25,10 +25,26 @@ const MAX_FILE = 1_048_576, MAX_TEXT = 20_000, MAX_SCAN = 2000;
 // Personal mail providers: there the "company" is the address itself, not the domain.
 const FREE_MAIL = new Set(['gmail.com', 'googlemail.com', 'hotmail.com', 'hotmail.fr', 'outlook.com', 'outlook.fr', 'live.com', 'live.fr',
   'msn.com', 'yahoo.com', 'yahoo.fr', 'icloud.com', 'me.com', 'mac.com', 'aol.com', 'orange.fr', 'wanadoo.fr', 'free.fr', 'sfr.fr',
-  'neuf.fr', 'laposte.net', 'bbox.fr', 'gmx.fr', 'gmx.com', 'gmx.de', 'proton.me', 'protonmail.com', 'yandex.com', 'mail.com']);
+  'neuf.fr', 'laposte.net', 'bbox.fr', 'gmx.fr', 'gmx.com', 'gmx.de', 'proton.me', 'protonmail.com', 'pm.me', 'yandex.com', 'mail.com',
+  // Address-masking services: every alias is its own person.
+  'passmail.com', 'passmail.net', 'passinbox.com', 'simplelogin.com', 'simplelogin.fr', 'simplelogin.co', 'aleeas.com', 'slmails.com', 'slmail.me',
+  'silomails.com', 'duck.com', 'mozmail.com', 'relay.firefox.com', 'anonaddy.com', 'anonaddy.me', 'addy.io', 'privaterelay.appleid.com']);
 // An inbound mail that asks to stop puts its sender (and company) on the opt-out list at once.
 const OPT_OUT = /(?:^|[^\p{L}])(?:stop|unsubscribe|d[ée]sinscri|d[ée]sabonn|plus (?:me |nous )?(?:recevoir|contacter|solliciter|écrire|ecrire)|retirez[- ](?:moi|nous)|supprimez[- ](?:moi|nous)|plus de (?:mails?|messages?))(?:$|[^\p{L}])/iu;
 const FOLLOW_UP_WAIT_DAYS = 3;
+// Where a reply starts quoting earlier mail: everything from there on is not the sender's own words.
+const QUOTE_START = /^(?:>|-{2,}\s*(?:original message|message d'origine|message original|forwarded message|message transféré)|(?:de|from)\s*:\s.+@)/i;
+const QUOTE_INTRO = /(?:a\s+[ée]crit|wrote|schrieb|escribió)\s*:\s*$/i, QUOTE_INTRO_FIRST = /^(?:le|on|am|el)\s/i;
+// The sender's own new text: quoted mail and our own opt-out line removed, so quoting our mail never reads as "stop".
+export function ownWords(text, ownLines = []) {
+  const lines = text.split('\n').map(line => line.trim());
+  let start = lines.findIndex((line, i) => QUOTE_START.test(line) || QUOTE_INTRO.test(line));
+  // "Le mer. 4 nov. 2026 à 13:31, X <x@y>" + "a écrit :" can be wrapped over two lines.
+  if (start > 0 && QUOTE_INTRO.test(lines[start]) && !QUOTE_INTRO_FIRST.test(lines[start]) && QUOTE_INTRO_FIRST.test(lines[start - 1])) start--;
+  let own = (start < 0 ? lines : lines.slice(0, start)).join('\n');
+  for (const line of ownLines) if (line) own = own.split(line).join(' ');
+  return own;
+}
 const DEFAULT_OPT_OUT_LINE = 'Si vous ne souhaitez plus recevoir de message de notre part, répondez simplement « STOP » : nous ne vous écrirons plus.';
 
 export class MailError extends Error {
@@ -273,7 +289,8 @@ export class Mail {
       try { stat = statSync(entry.path); if (!stat.isFile() || stat.size > MAX_FILE * 8) continue; parsed = parseMail(readFileSync(entry.path).subarray(0, MAX_FILE)); }
       catch { continue; }
       const sender = parsed.replyTo ?? parsed.from;
-      const optOut = !parsed.autoReply && sender !== null && OPT_OUT.test(`${parsed.subject}\n${parsed.text.slice(0, 600)}`);
+      const optOut = !parsed.autoReply && sender !== null
+        && OPT_OUT.test(`${parsed.subject.replace(/^(?:(?:re|tr|fwd?|aw)\s*:\s*)+/i, '')}\n${ownWords(parsed.text, [config.optOutLine, config.signature]).slice(0, 600)}`);
       const id = createHash('sha256').update(`${companionId}:${entry.base}`).digest('hex').slice(0, 24);
       insert.run(companionId, id, entry.base, sender, parsed.fromName, parsed.subject || '(no subject)', parsed.messageId, parsed.date,
         Math.round(stat.mtimeMs), parsed.autoReply ? 1 : 0, optOut ? 1 : 0);

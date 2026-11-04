@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BootstrapStore } from '../src/store.mjs';
-import { Mail, MailError, mailOperation, parseMail, composeMail, parseMailConfig, companyOf, decodeWords } from '../src/mail.mjs';
+import { Mail, MailError, mailOperation, parseMail, composeMail, parseMailConfig, companyOf, decodeWords, ownWords } from '../src/mail.mjs';
 import { Connectors } from '../src/connectors.mjs';
 import { parseRuntimeConfig } from '../src/runtime-config.mjs';
 
@@ -206,4 +206,24 @@ test('owners.json accepts a mail block with a password file path only, and refus
     { ...mail, smtp: { ...mail.smtp, password: 'x' } }, { ...mail, limits: { companies: 1000 } }, { ...mail, address: 'nope' }]) {
     assert.throws(() => parseRuntimeConfig(JSON.stringify({ owners: [{ ...owner, mail: bad }] })), /Invalid mail settings/);
   }
+});
+
+test('a reply that quotes our mail (with its STOP line) is a reply, not an opt-out; masked addresses count one by one', async t => {
+  const f = fixture(t);
+  await f.send({ kind: 'first', to: 'sl.alias1@passmail.com' });
+  const quoted = `> Bonjour,\r\n> une question.\r\n>\r\n> -- \r\n> Thomas\r\n> ${f.config.optOutLine}\r\n`;
+  f.deliver('From: sl.alias1@passmail.com\r\nSubject: Re: Automatisation\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nOui, avec plaisir !\r\n\r\nLe mer. 4 nov. 2026 =C3=A0 13:31, Thomas <\r\nstudio@blackoutburst.com> a =C3=A9crit :\r\n' + quoted
+    .replace(/é/g, '=C3=A9').replace(/«/g, '=C2=AB').replace(/»/g, '=C2=BB').replace(/\u00a0/g, '=C2=A0').replace(/\u202f/g, '=E2=80=AF'));
+  f.deliver('From: x@yahoo.fr\r\nSubject: Re: Automatisation\r\n\r\nMerci.\r\n\r\nOn Wed, Nov 4, 2026 at 1:31 PM Thomas wrote:\r\n' + quoted);
+  f.deliver(`From: y@gmail.com\r\nSubject: Re: Automatisation\r\n\r\nD'accord.\r\n\r\n-- \r\nThomas\r\n${f.config.optOutLine}\r\n`);
+  f.deliver('From: z@gmail.com\r\nSubject: Re: Automatisation\r\n\r\nStop, merci.\r\n\r\n' + quoted);
+  const inbox = f.mail.inbox(A).messages;
+  assert.deepEqual(inbox.filter(item => item.askedToStop).map(item => item.from), ['z@gmail.com']);
+  assert.equal(f.mail.status(A).optedOut, 1, 'only the real STOP: its address (a personal provider is its own company)');
+  assert.equal(companyOf('sl.other@passmail.com'), 'sl.other@passmail.com');
+  await f.send({ kind: 'first', to: 'sl.other@passmail.com' });
+  const [answer] = inbox.filter(item => item.from === 'sl.alias1@passmail.com');
+  await f.mail.send(A, { requestId: 'answer', kind: 'reply', replyTo: answer.id, subject: 'Automatisation', text: 'Super.' });
+  assert.equal(ownWords('Oui\nLe lun. 2 nov., A <\na@b.example> a écrit :\n> STOP'), 'Oui');
+  assert.equal(ownWords('Oui\n-----Original Message-----\nFrom: a@b.example\nSTOP'), 'Oui');
 });
