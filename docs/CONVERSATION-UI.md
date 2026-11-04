@@ -44,8 +44,12 @@ Events per thread are contiguous:
   and `INTERRUPTED`.
 
 `submit` is idempotent by `requestId`: a retry returns the same answer, while a different
-payload under the same id is `CONFLICT` (409). A second submit while a reply is still open is
-`BUSY` (409). A new thread titled "New conversation" takes its title from its first message.
+payload under the same id is `CONFLICT` (409). The owner can keep texting while a reply is open:
+a turn waits `gatherMs` (live: 5 s, `COMPANION_GATHER_MS`) after its message before it starts, and a
+message sent during that wait folds the waiting turn into its own (state `merged` in the DB; clients see
+it `complete`), so a burst of short texts gets one reply that sees them all, one per line. A message sent
+while a reply is already running is queued and answered right after it. Only a running background wake
+still answers `BUSY` (409). A new thread titled "New conversation" takes its title from its first message.
 
 ## Server (`src/conversations.mjs`)
 

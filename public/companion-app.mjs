@@ -321,21 +321,27 @@ function turnNote() {
   return null;
 }
 
+// A message still on its way to the server. Once accepted, the owner can keep texting while the companion
+// waits or replies: messages sent close together get one reply.
+const submitting = () => Boolean(state.pending) && state.pending.status !== 'accepted';
+
 function renderChat() {
   renderMessages();
   const note = turnNote();
   $('note').hidden = !note; $('note').textContent = note ?? '';
   const streaming = state.turn?.state === 'streaming';
   const ready = state.connection === 'ready' && state.threadId !== null;
-  $('stop').hidden = !streaming;
-  $('stop').disabled = Boolean(state.turn?.stopping);
-  $('send').hidden = streaming;
   const input = $('input');
   if (input.value !== state.draft && document.activeElement !== input) input.value = state.draft;
   const completed = uploads.filter(item => item.status === 'ready');
+  // While a reply runs, Stop shows until the owner starts typing another message.
+  const typing = Boolean(input.value.trim()) || uploads.length > 0;
+  $('stop').hidden = !streaming || typing;
+  $('stop').disabled = Boolean(state.turn?.stopping);
+  $('send').hidden = streaming && !typing;
   const waiting = uploads.some(item => item.status !== 'ready' || item.removing);
-  $('send').disabled = !ready || Boolean(state.pending) || Boolean(heldDraft) || streaming || waiting || (!input.value.trim() && !completed.length) || input.value.length > USER_CHARS;
-  $('attach').disabled = !ready || Boolean(state.pending) || streaming || uploads.length >= 8;
+  $('send').disabled = !ready || submitting() || Boolean(heldDraft) || waiting || (!input.value.trim() && !completed.length) || input.value.length > USER_CHARS;
+  $('attach').disabled = !ready || submitting() || uploads.length >= 8;
   $('file-picker').disabled = $('attach').disabled;
   $('retry-send').hidden = state.pending?.status !== 'uncertain';
   const archived = state.archivedAt !== null;
@@ -421,7 +427,7 @@ function clearUploads() {
 function renderUploads() {
   const root = $('uploads'); root.hidden = !uploads.length;
   $('file-note').hidden = !fileNotice; $('file-note').textContent = fileNotice;
-  const key = JSON.stringify([Boolean(state.pending), uploads.map(item => [item.requestId, item.status, item.progress, item.error, item.dto?.id, item.removing]), fileNotice]);
+  const key = JSON.stringify([submitting(), uploads.map(item => [item.requestId, item.status, item.progress, item.error, item.dto?.id, item.removing]), fileNotice]);
   if (key === uploadsKey) return;
   uploadsKey = key;
   root.replaceChildren(...uploads.map(item => {
@@ -433,10 +439,10 @@ function renderUploads() {
     else info.append(el('span', { className: 'upload-error', textContent: item.error ?? 'Upload cancelled.' }));
     row.append(info);
     if (['error', 'cancelled'].includes(item.status)) {
-      const retry = el('button', { type: 'button', className: 'text-button', textContent: 'Retry', disabled: Boolean(state.pending) });
+      const retry = el('button', { type: 'button', className: 'text-button', textContent: 'Retry', disabled: submitting() });
       retry.addEventListener('click', () => uploadFile(item)); row.append(retry);
     }
-    const remove = el('button', { type: 'button', className: 'text-button', textContent: item.removing ? 'Removing…' : item.status === 'uploading' ? 'Cancel' : 'Remove', disabled: Boolean(state.pending) || Boolean(item.removing) });
+    const remove = el('button', { type: 'button', className: 'text-button', textContent: item.removing ? 'Removing…' : item.status === 'uploading' ? 'Cancel' : 'Remove', disabled: submitting() || Boolean(item.removing) });
     remove.addEventListener('click', async () => {
       if (item.status === 'uploading') { item.controller.abort(); return; }
       const version = uploadEpoch; item.removing = true; renderChat();
@@ -454,7 +460,7 @@ function renderUploads() {
   }));
 }
 async function uploadFile(item) {
-  if (!uploads.includes(item) || state.connection !== 'ready' || state.pending || state.threadId !== item.threadId) return;
+  if (!uploads.includes(item) || state.connection !== 'ready' || submitting() || state.threadId !== item.threadId) return;
   const version = uploadEpoch; item.controller = new AbortController(); item.status = 'uploading'; item.progress = 0; item.error = null; renderChat();
   try {
     const dto = await fileTransport.upload(item.file, { threadId: item.threadId, requestId: item.requestId, signal: item.controller.signal,

@@ -142,7 +142,7 @@ function titleFrom(text) {
 }
 
 export class Conversations {
-  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote;
+  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote; #gatherMs; #gathering = new Map();
   // Both filters must keep a tool (connector switches, #43, on top of the wake or web-allowance filter).
   #filter(companionId, own) {
     const extra = this.#toolFilterFor(companionId);
@@ -158,7 +158,7 @@ export class Conversations {
   // Omitted tools inherit owner policy; [] is an explicit turn-level narrowing.
   constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools,
     session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 }, wakePolicy = {}, onSettled = () => {}, files = null,
-    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null }) {
+    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null, gatherMs = 0 }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
     this.#session = session; this.#allowedTools = allowedTools; this.#onSettled = onSettled;
     this.#files = files; this.#fileToolsForTurn = fileToolsForTurn;
@@ -167,6 +167,9 @@ export class Conversations {
     this.#linkContext = linkContext;
     // turnNote(companionId, requestId): a short app note for this turn (Discord files that could not be received, #48).
     this.#turnNote = turnNote;
+    // gatherMs: an owner message waits this long before the companion starts answering. Messages sent in the
+    // meantime join the same turn, so a burst of short texts gets one reply, like talking to a person.
+    this.#gatherMs = Number.isSafeInteger(gatherMs) && gatherMs > 0 ? gatherMs : 0;
     this.#wakePolicy = { beforeStart: () => true, canDeliver: () => true, ...wakePolicy };
     if (['beforeStart', 'canDeliver'].some(key => typeof this.#wakePolicy[key] !== 'function')) throw invalid();
     if (['recordReleaseCheck', 'releaseDelivered'].some(key => this.#wakePolicy[key] !== undefined
@@ -363,6 +366,7 @@ export class Conversations {
   // queued turns stay queued and run after the next start.
   async shutdown() {
     this.#closing = true;
+    for (const done of [...this.#gathering.values()]) done();
     for (const controller of this.#active.values()) controller.abort();
     await this.idle();
   }
@@ -456,6 +460,7 @@ export class Conversations {
 
   #write(companionId, op) {
     const digest = createHash('sha256').update(JSON.stringify(op)).digest('hex');
+    const merged = [];
     const result = this.#tx(() => {
       const cached = this.#db.prepare('SELECT digest, result FROM conv_requests WHERE companion_id=? AND request_id=?').get(companionId, op.requestId);
       if (cached) {
@@ -476,9 +481,12 @@ export class Conversations {
       } else {
         const thread = this.#thread(companionId, op.threadId);
         if (thread.archived_at !== null) throw new ConversationError('ARCHIVED', 409);
-        const busy = this.#db.prepare("SELECT 1 FROM conv_turns WHERE thread_id=? AND state IN ('queued','running')").get(thread.id);
-        if (busy || this.#db.prepare("SELECT 1 FROM conv_wakes WHERE thread_id=? AND state='running'").get(thread.id)) {
-          throw new ConversationError('BUSY', 409);
+        if (this.#db.prepare("SELECT 1 FROM conv_wakes WHERE thread_id=? AND state='running'").get(thread.id)) throw new ConversationError('BUSY', 409);
+        // A reply that has not started yet is folded into this message's turn; a running reply finishes first.
+        for (const waiting of this.#db.prepare("SELECT * FROM conv_turns WHERE thread_id=? AND state='queued'").all(thread.id)) {
+          this.#db.prepare("UPDATE conv_turns SET state='merged', updated_at=? WHERE thread_id=? AND request_id=?").run(now, thread.id, waiting.request_id);
+          this.#append(thread.id, { type: 'turn', requestId: waiting.request_id, state: 'complete' });
+          merged.push(waiting);
         }
         const messageId = randomUUID();
         this.#db.prepare('INSERT INTO conv_messages (id, thread_id, role, text, request_id, created_at) VALUES (?,?,?,?,?,?)').run(messageId, thread.id, 'user', op.text, op.requestId, now);
@@ -495,6 +503,10 @@ export class Conversations {
       this.#db.prepare('INSERT INTO conv_requests VALUES (?,?,?,?)').run(companionId, op.requestId, digest, JSON.stringify(body));
       return { replay: false, body };
     });
+    for (const turn of merged) {
+      this.#gathering.get(`${turn.thread_id}:${turn.request_id}`)?.();
+      this.#settled({ companionId, threadId: turn.thread_id, requestId: turn.request_id, state: 'merged', text: '', proactive: false });
+    }
     if (op.action === 'submit' && !result.replay) this.#enqueue(companionId, op.threadId, op.requestId);
     return result.body;
   }
@@ -573,15 +585,32 @@ export class Conversations {
     }
     if (turn.state === 'queued') this.#finish(turn, 'cancelled');
     else if (turn.state === 'running') this.#active.get(`${threadId}:${requestId}`)?.abort();
-    return { version: 1, synthetic: false, cancel: { requestId, threadId, state: turn.state === 'queued' ? 'cancelled' : turn.state === 'running' ? 'stopping' : turn.state } };
+    return { version: 1, synthetic: false, cancel: { requestId, threadId, state: turn.state === 'queued' ? 'cancelled' : turn.state === 'running' ? 'stopping' : turn.state === 'merged' ? 'complete' : turn.state } };
   }
 
   // One turn at a time per companion, so "running" always means the provider was really started.
   #enqueue(companionId, threadId, requestId, wakeId = null) {
     const previous = this.#queues.get(companionId) ?? Promise.resolve();
-    const next = previous.then(() => wakeId ? this.#runWake(companionId, wakeId) : this.#run(companionId, threadId, requestId)).catch(() => {});
+    const next = previous.then(() => wakeId ? this.#runWake(companionId, wakeId)
+      : this.#gatherMs ? this.#gather(threadId, requestId).then(() => this.#run(companionId, threadId, requestId))
+        : this.#run(companionId, threadId, requestId)).catch(() => {});
     this.#queues.set(companionId, next);
     next.finally(() => { if (this.#queues.get(companionId) === next) this.#queues.delete(companionId); });
+  }
+
+  // Waits until the owner has been quiet for gatherMs after this message; a newer message or shutdown ends the wait early.
+  async #gather(threadId, requestId) {
+    if (!this.#gatherMs || this.#closing) return;
+    const turn = this.#db.prepare('SELECT state, created_at FROM conv_turns WHERE thread_id=? AND request_id=?').get(threadId, requestId);
+    const wait = turn?.state === 'queued' ? turn.created_at + this.#gatherMs - this.#now() : 0;
+    if (!(wait > 0)) return;
+    const key = `${threadId}:${requestId}`;
+    await new Promise(resolve => {
+      const timer = setTimeout(done, Math.min(wait, this.#gatherMs));
+      function done() { clearTimeout(timer); resolve(); }
+      this.#gathering.set(key, done);
+    });
+    this.#gathering.delete(key);
   }
 
   #finish(turn, state, error = null) {
@@ -591,6 +620,9 @@ export class Conversations {
       this.#db.prepare('UPDATE conv_turns SET state=?, error=?, updated_at=? WHERE thread_id=? AND request_id=?')
         .run(state, error ? JSON.stringify(error) : null, this.#now(), turn.thread_id, turn.request_id);
       this.#append(turn.thread_id, { type: 'turn', requestId: turn.request_id, state, ...(error ? { error } : {}) });
+      // Messages sent while this reply ran are already waiting: clients keep showing that reply as on its way.
+      const next = this.#db.prepare("SELECT request_id FROM conv_turns WHERE thread_id=? AND state='queued' ORDER BY rowid DESC LIMIT 1").get(turn.thread_id);
+      if (next) this.#append(turn.thread_id, { type: 'turn', requestId: next.request_id, state: 'streaming' });
       return true;
     });
     if (!changed) return;
@@ -803,7 +835,15 @@ export class Conversations {
     if (!turn) return;
     if (!this.#runner) { this.#finish(turn, 'error', describe(new RunnerError('NO_RUNTIME'))); return; }
     const thread = this.#db.prepare('SELECT * FROM conv_threads WHERE id=?').get(threadId);
-    const user = this.#db.prepare('SELECT text FROM conv_messages WHERE id=?').get(turn.user_message_id);
+    // The owner's messages folded into this turn (sent while it waited), oldest first, then its own.
+    const burst = [...this.#db.prepare(`SELECT t.request_id, t.user_message_id, m.text FROM conv_turns t JOIN conv_messages m ON m.id=t.user_message_id
+      WHERE t.thread_id=? AND t.state='merged' AND t.rowid < (SELECT rowid FROM conv_turns WHERE thread_id=? AND request_id=?)
+        AND t.rowid > COALESCE((SELECT MAX(rowid) FROM conv_turns WHERE thread_id=? AND state<>'merged'
+          AND rowid < (SELECT rowid FROM conv_turns WHERE thread_id=? AND request_id=?)), 0)
+      ORDER BY t.rowid`).all(threadId, threadId, requestId, threadId, threadId, requestId),
+      { request_id: requestId, user_message_id: turn.user_message_id, text: this.#db.prepare('SELECT text FROM conv_messages WHERE id=?').get(turn.user_message_id).text }];
+    const user = { text: burst.map(item => item.text).filter(Boolean).join('\n') };
+    const burstIds = burst.map(item => item.user_message_id);
     const controller = new AbortController(), key = `${threadId}:${requestId}`;
     const sessionEpoch = this.#sessionEpoch.get(companionId) ?? 0;
     const currentSession = () => sessionEpoch === (this.#sessionEpoch.get(companionId) ?? 0);
@@ -835,11 +875,11 @@ export class Conversations {
     const resume = this.#resume(thread);
     if (!resume) this.#db.prepare('UPDATE conv_threads SET provider_session=NULL, session_turns=0 WHERE id=?').run(threadId);
     const recent = resume ? [] : this.#db.prepare(`SELECT role, text, peer_json FROM (SELECT rowid AS r, role, text, peer_json, created_at FROM conv_messages
-      WHERE thread_id=? AND id<>? ORDER BY created_at DESC, r DESC LIMIT ?) ORDER BY created_at, r`)
-      .all(threadId, turn.user_message_id, this.#session.recentMessages)
+      WHERE thread_id=? AND id NOT IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC, r DESC LIMIT ?) ORDER BY created_at, r`)
+      .all(threadId, JSON.stringify(burstIds), this.#session.recentMessages)
       .map(row=>({role:row.role,text:row.text,...(row.role==='peer'?{peer:JSON.parse(row.peer_json)}:{})}));
     try {
-      const incoming = this.#files?.incoming(companionId, turn.user_message_id) ?? [];
+      const incoming = this.#files ? burstIds.flatMap(id => this.#files.incoming(companionId, id)) : [];
       fileTools = this.#fileToolsForTurn(companionId, { threadId, requestId, ownerText:user.text, current: live, attach: file => {
         if (!live()) throw new FileError('FILE_TURN_ENDED', 409);
         this.#tx(() => {
@@ -868,7 +908,7 @@ export class Conversations {
       }
       const webSpent = this.#webBudget ? !this.#webBudget.available(companionId) : false;
       const turnInput = {
-        prompt: user.text + filePrompt + (this.#turnNote?.(companionId, requestId) ?? '') + (linked?.prompt ?? '') + (requestId.startsWith('discord-') ? DISCORD_NOTE : '') + (webSpent ? WEB_SPENT_NOTE : ''),
+        prompt: user.text + filePrompt + burst.map(item => this.#turnNote?.(companionId, item.request_id) ?? '').join('') + (linked?.prompt ?? '') + (requestId.startsWith('discord-') ? DISCORD_NOTE : '') + (webSpent ? WEB_SPENT_NOTE : ''),
         ...((filter => filter ? { toolFilter: filter } : {})(this.#filter(companionId, webSpent ? withoutWeb : null))), images: [...incoming.filter(file => file.mime.startsWith('image/')).map(file => file.path), ...(linked?.images ?? [])].slice(0, 8), appServers: fileTools.servers,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }), allowedTools: this.#allowedTools, signal: controller.signal,
         onEvent: event => {

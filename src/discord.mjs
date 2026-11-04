@@ -208,6 +208,8 @@ export class DiscordBridge {
   settled({ companionId, requestId, state, text, messageId, proactive }) {
     const channel = this.#pending.get(requestId);
     this.#pending.delete(requestId);
+    // Folded into the reply to the owner's next message: that reply answers both.
+    if (state === 'merged') { clearInterval(channel?.typing); return; }
     const link = this.#links.get(companionId);
     if (!link || link.problem) return;
     let target = null, reply = '';

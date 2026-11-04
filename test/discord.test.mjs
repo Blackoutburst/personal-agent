@@ -52,12 +52,12 @@ function fakeDiscord({ me = BOT } = {}) {
   return { sent, sockets, fetchImpl, WebSocketImpl: Socket, PNG };
 }
 
-function fixture(t, { handler, me, withFiles = false } = {}) {
+function fixture(t, { handler, me, withFiles = false, gatherMs = 0 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'discord-')), store = new BootstrapStore(dir, ROOT);
   const discord = fakeDiscord({ me }), companionId = randomUUID();
   const files = withFiles ? new FileStore({ store, dataDir: dir, workspaceFor: () => ({ dir }), limits: { normal: 1024 } }) : null;
   let bridge;
-  const conversations = new Conversations({ store, flushMs: 1, systemPrompt: () => 'persona', files,
+  const conversations = new Conversations({ store, flushMs: 1, systemPrompt: () => 'persona', files, gatherMs,
     runner: { turn: async (id, turn) => (handler ?? (() => ({ text: 'Hello from Pip!' })))(id, turn) },
     onSettled: event => bridge.settled(event), turnNote: (id, requestId) => bridge.turnNote(id, requestId) });
   const links = new DiscordLinks({ store });
@@ -251,16 +251,33 @@ test('without a file store, attachments get a short refusal and no turn', async 
   assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM conv_messages').get().n, 0);
 });
 
-test('a busy chat answers politely instead of losing the message', async t => {
-  let release;
-  const f = await linked(t, { handler: () => new Promise(resolve => { release = () => resolve({ text: 'done' }); }) });
+test('a message sent while the companion is replying gets its own reply right after', async t => {
+  const prompts = [], releases = [];
+  const f = await linked(t, { handler: (_id, turn) => { prompts.push(turn.prompt); return new Promise(resolve => releases.push(() => resolve({ text: 'reply ' + releases.length }))); } });
   f.socket.dm(OWNER, 'first');
   await sleep(10);
   f.socket.dm(OWNER, 'second');
   await sleep(10);
-  assert.match(f.discord.sent.at(-1).content, /still answering/);
-  release(); await f.conversations.idle(); await sleep(10);
-  assert.equal(f.discord.sent.at(-1).content, 'done');
+  assert.ok(!f.discord.sent.some(message => /still answering/.test(message.content)));
+  releases[0](); await sleep(20); releases[1](); await f.conversations.idle(); await sleep(10);
+  assert.deepEqual(f.discord.sent.slice(-2).map(message => message.content), ['reply 1', 'reply 2']);
+  assert.match(prompts[1], /^second/);
+});
+
+test('several short DMs sent close together get one reply that sees them all', async t => {
+  const prompts = [];
+  const f = await linked(t, { gatherMs: 80, handler: (_id, turn) => { prompts.push(turn.prompt); return { text: 'unlucky' }; } });
+  const before = f.discord.sent.length;
+  f.socket.dm(OWNER, 'koko is cheating ?'); await sleep(20);
+  f.socket.dm(OWNER, 'need to check 2s'); await sleep(20);
+  f.socket.dm(OWNER, 'yes he is');
+  await sleep(250); await f.conversations.idle(); await sleep(10);
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /^koko is cheating \?\nneed to check 2s\nyes he is/);
+  assert.deepEqual(f.discord.sent.slice(before).map(message => message.content), ['unlucky']);
+  const thread = f.conversations.ongoingThread(f.companionId);
+  const turns = f.store.db.prepare('SELECT state FROM conv_turns WHERE thread_id=? ORDER BY rowid').all(thread).map(row => row.state);
+  assert.deepEqual(turns, ['merged', 'merged', 'complete']);
 });
 
 test('proactive messages (reminders) are sent to the paired DM', async t => {

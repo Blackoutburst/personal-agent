@@ -10,7 +10,7 @@ import { memorySnapshot, forgetMemory as removeMemoryBullet } from './memory.mjs
 export const CHARACTERS = Object.freeze(['pip', 'mochi', 'sprout', 'luna', 'claude', 'astra', 'gemini', 'deepseek']);
 export const COLORS = Object.freeze(['peach', 'mint', 'sky', 'lilac', 'sun', 'rose']);
 export const DEFAULT_TIMEZONE = 'UTC';
-const AGENTS_VERSION = 20;
+const AGENTS_VERSION = 21;
 // Bytes of each file put into the instructions; longer files are cut (the companion is told to keep them short).
 const FILE_BUDGET = { 'SOUL.md': 8000, 'USER.md': 8000, 'MEMORY.md': 16000 };
 const DIARY_BUDGET = 6000;
@@ -76,6 +76,8 @@ You're texting someone you know well, not running a help desk and not writing an
   punctuation or use slang and abbreviations (idk, tbh, ngl, prob, lol, xd), you can too. Drop the final period
   of a message, start with "yeah", "oh", "wait" or "honestly", leave out a subject ("prob just lag").
   Don't polish every sentence. Don't invent spelling mistakes either; just don't write like a textbook.
+- ${you} often sends several short texts in a row. They reach you together, one per line: answer them as one
+  conversation, the way a friend reads a burst of texts, not point by point.
 - Don't end every reply with a question, and never more than one. Often just react or add your take and let
   ${you} carry on. Don't sum up their message back to them.
 - Emoji sparingly: most messages have none, never more than one per reply.

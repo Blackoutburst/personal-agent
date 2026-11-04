@@ -415,7 +415,7 @@ export function createConversationClient({ transport = createConversationTranspo
   }
   async function send(value = state.draft, attachments = []) {
     const ids = attachmentIds(attachments);
-    text(value, USER_CHARS, USER_BYTES, ids.length > 0, 'INVALID_REQUEST'); check(!state.pending && state.turn?.state !== 'streaming', 'BUSY');
+    text(value, USER_CHARS, USER_BYTES, ids.length > 0, 'INVALID_REQUEST'); check(!state.pending || state.pending.status === 'accepted', 'BUSY');
     check(state.opened && state.connection === 'ready' && state.threadId !== null && state.archivedAt === null, 'NOT_READY');
     const pending = { action: 'submit', requestId: nextId(), threadId: state.threadId, text: value,
       ...(ids.length ? { attachments: [...ids] } : {}), status: 'submitting' }, version = epoch;

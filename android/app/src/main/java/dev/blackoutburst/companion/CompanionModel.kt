@@ -867,7 +867,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         // Coming back from the system picker restarts the app's chat resync, which is still loading when
         // Android delivers the result: keep the pick and attach it as soon as the chat is loaded (#32).
         if (state.chatLoading) { pendingPick = uris to expectedScope; return }
-        if (state.sending || state.replying || failedSend != null || pendingArchive != null) {
+        if (state.sending || failedSend != null || pendingArchive != null) {
             _state.update { it.copy(fileError = "Wait for the current message to finish, then attach the files again.") }; return
         }
         if (state.uploads.size + uris.size > MAX_FILES) { _state.update { it.copy(fileError = "Choose at most eight files for one message.") }; return }
@@ -982,7 +982,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     fun send(text: String, expectedScope: Long = scope, onSent: () -> Unit) {
         if (!current(expectedScope)) return
         val now = _state.value
-        if (now.archivedAt != null || now.chatLoading || now.sending || now.replying || pendingArchive != null || now.uploads.any { it.state != "ready" }) return
+        if (now.archivedAt != null || now.chatLoading || now.sending || pendingArchive != null || now.uploads.any { it.state != "ready" }) return
         val files = now.uploads.mapNotNull { it.file }.toList()
         val retry = failedSend
         if (retry == null && (!validText(text, 8000, 32768) || text.isBlank() && files.isEmpty())) return

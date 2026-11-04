@@ -249,7 +249,7 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
             ActionButton(onClick = { model.backToCurrent() }) { Text("Back to chat") }
         } else Row(Modifier.fillMaxWidth().padding(12.dp, 6.dp), verticalAlignment = Alignment.Bottom) {
             RoundButton("Attach files", "+",
-                enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.replying && !state.archiving && !state.archiveFailed && state.uploads.size < MAX_FILES) {
+                enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.archiving && !state.archiveFailed && state.uploads.size < MAX_FILES) {
                 pickerScope = state.scope; picker.launch(arrayOf("*/*"))
             }
             Spacer(Modifier.size(8.dp))
@@ -261,7 +261,9 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
                 colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Card, unfocusedContainerColor = Card,
                     focusedBorderColor = Line, unfocusedBorderColor = Line))
             Spacer(Modifier.size(8.dp))
-            if (state.replying) RoundButton("Stop", "■") { model.stop(state.scope) }
+            // While a reply runs, Stop shows until the owner starts another message: they can keep texting,
+            // and messages sent close together get one reply.
+            if (state.replying && draft.isBlank() && state.uploads.isEmpty() && !state.sendFailed) RoundButton("Stop", "■") { model.stop(state.scope) }
             else RoundButton(if (state.sendFailed) "Retry send" else "Send", if (state.sendFailed) "↻" else "↑",
                 enabled = (draft.isNotBlank() || state.uploads.isNotEmpty() || state.sendFailed) && !state.chatLoading && !state.sending && !state.archiving && !state.archiveFailed && state.uploads.all { it.state == "ready" }) {
                 val submitted = draft

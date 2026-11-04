@@ -363,17 +363,18 @@ test('each owner only ever sees and reaches their own conversations and agent', 
   assert.notEqual(other, mine);
 });
 
-test('retries are idempotent, conflicting reuse and a second concurrent turn are refused', async t => {
+test('retries are idempotent, conflicting reuse is refused and a message sent during a reply gets its own turn after it', async t => {
   const f = setup(t), app = await f.open(); await ready(f, app);
   const threadId = await newThread(app);
   const request = { action: 'submit', requestId: 'once', threadId, text: 'STREAM' };
   const first = await post(app, request);
   assert.deepEqual((await post(app, request)).body, first.body);
   assert.equal((await post(app, { ...request, text: 'different' })).status, 409);
-  const busy = await post(app, { action: 'submit', requestId: 'twice', threadId, text: 'again' });
-  assert.deepEqual([busy.status, busy.body.error.code], [409, 'BUSY']);
+  const queued = await post(app, { action: 'submit', requestId: 'twice', threadId, text: 'again' });
+  assert.equal(queued.status, 200);
   await settle(app, A, threadId);
-  assert.equal(f.calls('blackout').length, 1);
+  for (let i = 0; i < 200 && f.calls('blackout').length < 2; i++) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(f.calls('blackout').length, 2);
 });
 
 test('stop cancels a running reply and keeps what was written', async t => {
@@ -472,7 +473,6 @@ test('the browser client drives a real conversation: stream, stop, error and reo
   state = await client.create('New conversation');
   assert.equal(state.threads.length, 1);
   await client.send('STREAM');
-  await assert.rejects(() => client.send('again'), error => error.code === 'BUSY');
   state = await until(s => s.turn?.state === 'complete', 'stream complete');
   assert.equal(state.pending, null);
   assert.deepEqual(state.messages.map(m => [m.role, m.text]), [['user', 'STREAM'], ['assistant', 'one two three four five']]);
@@ -571,7 +571,7 @@ test('the feeling tag picks the face and never shows in the reply', async t => {
   assert.match(prompt, /Follow AGENTS\.md/);
   const agents = readFileSync(join(f.home('blackout'), '..', 'workspace', 'AGENTS.md'), 'utf8');
   assert.match(agents, /\[feeling:laugh\]/);
-  assert.match(agents, /version 20/);
+  assert.match(agents, /version 21/);
   assert.match(agents, /## Board work/);
   assert.match(agents, /## Following Board work/);
 });

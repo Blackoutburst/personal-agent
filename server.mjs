@@ -472,7 +472,9 @@ if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === pat
       runtimeDir: process.env.COMPANION_RUNTIME_DIR,
       fileOptions: { limits: { normal: Number(process.env.COMPANION_FILE_MAX_BYTES ?? FILE_LIMITS.normal),
         video: Number(process.env.COMPANION_VIDEO_MAX_BYTES ?? FILE_LIMITS.video), quota: Number(process.env.COMPANION_FILE_QUOTA_BYTES ?? FILE_LIMITS.quota) } },
-      binaries: { claude: process.env.COMPANION_CLAUDE_BIN || undefined, codex: process.env.COMPANION_CODEX_BIN || undefined } });
+      binaries: { claude: process.env.COMPANION_CLAUDE_BIN || undefined, codex: process.env.COMPANION_CODEX_BIN || undefined },
+      // Owner messages sent within this many ms of each other get one reply.
+      conversationOptions: { gatherMs: Number(process.env.COMPANION_GATHER_MS ?? 5000) } });
     console.log(`Personal Agent local bootstrap: ${app.url} (${process.env.COMPANION_MODE || 'unavailable'})`);
     let stopping = false;
     const stop = async () => { if (stopping) return; stopping = true; await app.close(); };
