@@ -103,7 +103,7 @@ export class PushNotifier {
   }
 
   // Conversations' settle hook: a finished reply or a delivered proactive message.
-  settled({ companionId, threadId, requestId, state, text, messageId }) {
+  settled({ companionId, threadId, requestId, state, text, messageId, board }) {
     if (state !== 'complete' || typeof messageId !== 'string' || typeof threadId !== 'string') return;
     if (typeof requestId === 'string' && requestId.startsWith('discord-')) return;
     if (this.#recent.has(messageId)) return;
@@ -112,7 +112,8 @@ export class PushNotifier {
     const tokens = this.#devices.tokens(companionId);
     if (!tokens.length) return;
     const name = String(this.#nameFor(companionId) ?? '').slice(0, 60);
-    const data = { type: 'message', threadId, messageId, ...(name ? { name } : {}) };
+    // board: a Board sub-conversation's message (#55), so tapping it opens the Board tab on that thread. Flag only, no text.
+    const data = { type: 'message', threadId, messageId, ...(name ? { name } : {}), ...(board ? { board: '1' } : {}) };
     this.#deliver(tokens, data).catch(error => this.#log(`Push failed: ${error.code ?? error.message}`));
   }
 

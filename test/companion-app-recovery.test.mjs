@@ -8,11 +8,13 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../public/companion-app.mjs', import.meta.url), 'utf8').replace(/^import .*;\r?$/gm, '');
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const THREAD = '1e80ef85-15aa-4afb-99cf-e415fa3e4971';
+const BOARD_THREAD = '2b7c1d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e';
 const initial = () => ({ messages: [], turn: null, pending: null, draft: '', threadId: null, opened: false, connection: 'disconnected', error: null, synthetic: false });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const flush = async () => { for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve)); };
 function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: profileRuntime = { state: 'ready', provider: 'claude' } } = {}) {
   let active, clientState = initial(), listener, clientEpoch = 0, clock = 0, timerId = 0, locationHash = hash;
+  const boardCalls = [], boardOptions = [];
   const all = [], nodes = new Map(), windowListeners = new Map(), documentListeners = new Map(), timers = new Map(), reads = [], writes = [], requests = [], queues = new Map(), denials = [], uploads = [], sends = [];
   class Element {
     constructor(tag = 'div') { this.tagName = tag.toUpperCase(); this.children = []; this.listeners = new Map(); this.dataset = {}; this.attributes = new Map(); this.hidden = false; this.disabled = false; this.value = ''; this.text = ''; this.scrollHeight = 100; this.clientHeight = 100; this.scrollTop = 0; this.className = ''; this.style = { setProperty() {} }; this.classList = { add() {}, remove() {} }; all.push(this); }
@@ -50,6 +52,7 @@ function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: prof
   async function read(kind) { reads.push(kind); if (readFailures-- > 0) return emit({ connection: 'reconnecting', opened: kind !== 'open', error: 'NETWORK_ERROR' }); return emit({ connection: 'ready', opened: true, threadId: THREAD, error: null }); }
   const client = { getState: () => structuredClone(clientState), subscribe: run => { listener = run; run(structuredClone(clientState)); },
     clear() { clientEpoch++; clientState = initial(); return emit({}); }, open: () => read('open'), refresh: () => read('refresh'), poll: () => read('poll'),
+    select(threadId) { reads.push('select:' + threadId); return emit({ connection: 'ready', opened: true, threadId, threads: [{ id: threadId, title: '#15 · Fix login' }], error: null }); },
     create() { writes.push('create'); return emit({ connection: 'ready', opened: true, threadId: THREAD }); }, setFiles() {},
     setDraft(value) { return emit({ draft: value }); },
     async send(text, attachments) { const epoch = clientEpoch, pending = { text, requestId: 'stable-send-1', status: 'submitting', action: 'submit' }; writes.push('send'); sends.push({ text, attachments: [...attachments] }); emit({ pending }); const outcome = await nextSend.promise;
@@ -64,7 +67,9 @@ function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: prof
     document, navigator: { onLine: true }, crypto: { randomUUID: () => '9d23bd88-cc69-4067-b375-e32bf5d7b338' }, location: { get hash() { return locationHash; }, set hash(value) { const changed = value !== locationHash; locationHash = value; if (changed) queueMicrotask(() => windowListeners.get('hashchange')?.()); } }, matchMedia: () => ({ matches: false }), confirm: () => true,
     createConversationClient: () => client, createFileTransport: () => ({ async upload(file, options) { uploads.push({ file, options }); return { id: '4d317b44-1f1a-46f1-b515-822d93c8246c', name: file.name, size: file.size, mime: 'application/octet-stream', url: '/api/files/4d317b44-1f1a-46f1-b515-822d93c8246c' }; } }), USER_CHARS: 8000, AttachmentError: class extends Error {},
     renderCharacter: () => '<svg></svg>', CHARACTERS: [{ id: 'pip', label: 'Pip', hint: 'Synthetic' }], COLORS: { peach: { body: '#a', shade: '#b', light: '#c' } }, OUTFITS: [], HAS_OUTFITS: () => false,
-    createRemindersUI: feature, createCalendarUI: feature, createStudioUI: feature, createMemoryUI: feature, createPersonalityUI: feature, createContactUI: feature, createOwnerProfileUI: feature, createWeatherUI: feature, createWebPushUI: feature, createPushPresence: () => ({ update() {} }), createVoiceRecorder: () => ({ start() {}, cancel() {}, send() {}, recording: () => false, supported: () => false }), voiceView: () => new Element(), registerServiceWorker: () => {}, renderPeerCard: () => new Element(),
+    createRemindersUI: feature, createCalendarUI: feature, createStudioUI: feature, createMemoryUI: feature, createPersonalityUI: feature, createContactUI: feature, createOwnerProfileUI: feature, createWeatherUI: feature, createWebPushUI: feature, createBoardUI: options => { boardOptions.push(options); return { clear() {}, refresh: async () => { boardCalls.push('refresh'); }, show: async () => { boardCalls.push('show'); }, hide() {},
+      markRead: async id => { boardCalls.push('read:' + id); }, archive: async (id, done) => { boardCalls.push(`archive:${id}:${done}`); return true; },
+      topic: id => id === BOARD_THREAD ? { threadId: id, label: '#15 · Fix login', archived: false } : null }; }, createPushPresence: () => ({ update() {} }), createVoiceRecorder: () => ({ start() {}, cancel() {}, send() {}, recording: () => false, supported: () => false }), voiceView: () => new Element(), registerServiceWorker: () => {}, renderPeerCard: () => new Element(),
     fetch: async (url, options = {}) => { if (url === 'android.json') return response({}, 404); const input = JSON.parse(options.body); requests.push(input); const queue = queues.get(input.action), next = queue?.shift();
       if (next) return await next;
       if (input.action === 'setProfile') setupSaved = true;
@@ -75,7 +80,7 @@ function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: prof
   sandbox.window = { companionTheme: { get: () => 'system', set() {} }, addEventListener(name, run) { windowListeners.set(name, run); } };
   const context = vm.createContext(sandbox); new vm.Script(source, { filename: 'public/companion-app.mjs' }).runInContext(context);
   const $ = id => document.getElementById(id), button = text => all.filter(node => node.tagName === 'BUTTON' && node.textContent === text && node.parent).at(-1);
-  return { $, document, reads, writes, requests, uploads, sends, client, emit, timers, context, response, profile, button, sandbox,
+  return { boardCalls, boardOptions, location: () => locationHash, $, document, reads, writes, requests, uploads, sends, client, emit, timers, context, response, profile, button, sandbox,
     queue(action, value) { if (!queues.has(action)) queues.set(action, []); queues.get(action).push(value); },
     send(outcome) { nextSend = deferred(); return { finish: () => nextSend.resolve(outcome) }; },
     failReads(count) { readFailures = count; }, deny: () => denials[0](),
@@ -207,4 +212,22 @@ test('the Me tab shows one sub-page at a time: memories, companion or settings; 
     assert.equal(f.$('app').dataset.view, 'me', hash); assert.equal(f.$('me-tabs').hidden, false);
     for (const id of ['view-memories', 'view-look', 'view-settings']) assert.equal(f.$(id).hidden, id !== shown, `${hash} ${id}`);
   }
+});
+
+test('a Board push link opens that sub-conversation in the chat view, marks it read, and Chat goes back to the main chat', async () => {
+  const f = fixture({ hash: '#board/' + BOARD_THREAD }); await flush();
+  assert.deepEqual(f.reads, ['select:' + BOARD_THREAD], 'The Board thread is selected, not the main chat');
+  assert.ok(f.boardCalls.includes('read:' + BOARD_THREAD), 'Opening it marks it read');
+  assert.equal(f.$('board-banner').hidden, false);
+  assert.equal(f.$('board-topic').textContent, '#15 · Fix login');
+  assert.equal(f.$('past-chats').hidden, true); assert.equal(f.$('new-chat').hidden, true);
+  await f.$('board-done').emit('click'); await flush();
+  assert.ok(f.boardCalls.includes(`archive:${BOARD_THREAD}:true`));
+  assert.equal(f.location(), '#board', 'Done goes back to the Board list');
+  assert.ok(f.boardCalls.includes('show'));
+  f.sandbox.location.hash = '#chat'; await flush();
+  assert.equal(f.reads.at(-1), 'open', 'Chat reopens the main conversation');
+  assert.equal(f.$('board-banner').hidden, true); assert.equal(f.$('past-chats').hidden, false);
+  f.boardOptions[0].onOpen(BOARD_THREAD); await flush();
+  assert.equal(f.location(), '#board/' + BOARD_THREAD); assert.equal(f.reads.at(-1), 'select:' + BOARD_THREAD);
 });

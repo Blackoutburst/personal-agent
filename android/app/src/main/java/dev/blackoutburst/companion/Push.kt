@@ -24,6 +24,8 @@ import kotlin.coroutines.resume
 object Push {
     const val CHANNEL = "messages"
     const val EXTRA_THREAD = "dev.blackoutburst.companion.THREAD"
+    /** Set for a Board sub-conversation's message (#55): the tap opens it in the Board tab. */
+    const val EXTRA_BOARD = "dev.blackoutburst.companion.BOARD"
     private const val PREFS = "push"
     private const val SEEN_MAX = 100
 
@@ -85,8 +87,8 @@ object Push {
 
     fun clearShown(context: Context) = context.getSystemService(NotificationManager::class.java).cancelAll()
 
-    fun show(context: Context, threadId: String, messageId: String, title: String, text: String) {
-        val open = Intent(context, MainActivity::class.java).putExtra(EXTRA_THREAD, threadId)
+    fun show(context: Context, threadId: String, messageId: String, title: String, text: String, board: Boolean = false) {
+        val open = Intent(context, MainActivity::class.java).putExtra(EXTRA_THREAD, threadId).putExtra(EXTRA_BOARD, board)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val tap = PendingIntent.getActivity(context, messageId.hashCode(), open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val notification = Notification.Builder(context, CHANNEL)
@@ -95,6 +97,7 @@ object Push {
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(tap)
+            .apply { if (board) setSubText("Board") }
             .setAutoCancel(true)
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setColor(0xFFEE8F64.toInt())
@@ -148,6 +151,6 @@ class PushService : FirebaseMessagingService() {
         }?.let { found ->
             notificationText(found.text).ifBlank { if (found.attachments.isNotEmpty()) "Sent you a file" else "" }
         }?.ifBlank { null } ?: "New message"
-        Push.show(this, threadId, messageId, title, text)
+        Push.show(this, threadId, messageId, title, text, boardPush(data))
     }
 }

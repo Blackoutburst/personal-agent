@@ -316,6 +316,20 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
             list
         }
     }
+    /** Board tab (#55): the Board sub-conversations (open or archived), with unread counts. An older server answers 400. */
+    suspend fun boardInbox(archived: Boolean = false): BoardInbox = parseBoardInbox(post(companion + "api/conversation", buildJsonObject {
+        put("action", "boardInbox"); if (archived) put("archived", true)
+    }))
+    suspend fun boardRead(threadId: String): BoardChange {
+        if (!fileId(threadId)) throw ApiException("INVALID_REQUEST")
+        return parseBoardChange(post(companion + "api/conversation", buildJsonObject { put("action", "boardRead"); put("threadId", threadId) }), threadId)
+    }
+    suspend fun boardArchive(threadId: String, archived: Boolean): BoardChange {
+        if (!fileId(threadId)) throw ApiException("INVALID_REQUEST")
+        return parseBoardChange(post(companion + "api/conversation", buildJsonObject {
+            put("action", "boardArchive"); put("threadId", threadId); put("archived", archived)
+        }), threadId)
+    }
     suspend fun upload(threadId: String, key: String, name: String, source: java.io.File,
         cancel: TransferCancellation, voice: Boolean = false, progress: (Long) -> Unit): Attachment = transfers.upload(threadId, key, name, source, cancel, voice, progress)
     suspend fun download(file: Attachment, destination: java.io.File, cancel: TransferCancellation,

@@ -3,6 +3,7 @@ import { RunnerError } from './runner.mjs';
 import { splitFeeling, stripFeelingTags } from './wardrobe.mjs';
 import { READ_ONLY_BOARD_TOOLS, WEB_TOOLS } from './tool-policy.mjs';
 import { FileError } from './files.mjs';
+import { BoardInboxError } from './board-inbox.mjs';
 import { finishedBubbles } from '../public/bubbles.mjs';
 import { quietWindow, withoutSilence, maybeSilent, BURST_NOTE, FOLLOW_UP_NOTE } from './texting.mjs';
 
@@ -111,7 +112,7 @@ function releaseDecision(raw) {
 }
 // Parse one protocol request. Actions: snapshot, events, createThread, submit, cancel.
 export function parseRequest(payload) {
-  const { action } = only(payload, ['action', 'threadId', 'cursor', 'requestId', 'title', 'text', 'attachments', 'active']);
+  const { action } = only(payload, ['action', 'threadId', 'cursor', 'requestId', 'title', 'text', 'attachments', 'active', 'archived']);
   const id = value => { if (typeof value !== 'string' || !UUID.test(value)) throw invalid(); return value; };
   const request = value => { if (typeof value !== 'string' || !REQUEST.test(value)) throw invalid(); return value; };
   if (action === 'snapshot') { only(payload, ['action', 'threadId']); return { action, threadId: payload.threadId === undefined ? undefined : id(payload.threadId) }; }
@@ -144,6 +145,18 @@ export function parseRequest(payload) {
     if (typeof payload.active !== 'boolean') throw invalid();
     return { action, threadId: id(payload.threadId), active: payload.active };
   }
+  // The Board tab (#55): its sub-conversations, marking one read, archiving or reopening one.
+  if (action === 'boardInbox') {
+    only(payload, ['action', 'archived']);
+    if (payload.archived !== undefined && typeof payload.archived !== 'boolean') throw invalid();
+    return { action, archived: payload.archived === true };
+  }
+  if (action === 'boardRead') { only(payload, ['action', 'threadId']); return { action, threadId: id(payload.threadId) }; }
+  if (action === 'boardArchive') {
+    only(payload, ['action', 'threadId', 'archived']);
+    if (typeof payload.archived !== 'boolean') throw invalid();
+    return { action, threadId: id(payload.threadId), archived: payload.archived };
+  }
   if (action === 'cancel') {
     only(payload, ['action', 'requestId', 'threadId']);
     return { action, requestId: request(payload.requestId), threadId: id(payload.threadId) };
@@ -157,7 +170,7 @@ function titleFrom(text) {
 }
 
 export class Conversations {
-  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote; #gatherMs; #texting; #gathering = new Map(); #typing = new Map(); #runs = new Map();
+  #db; #runner; #now; #systemPrompt; #boardInbox; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote; #gatherMs; #texting; #gathering = new Map(); #typing = new Map(); #runs = new Map();
   // Both filters must keep a tool (connector switches, #43, on top of the wake or web-allowance filter).
   #filter(companionId, own) {
     const extra = this.#toolFilterFor(companionId);
@@ -173,7 +186,7 @@ export class Conversations {
   // Omitted tools inherit owner policy; [] is an explicit turn-level narrowing.
   constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools,
     session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 }, wakePolicy = {}, onSettled = () => {}, files = null,
-    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null, gatherMs = 0, texting = false }) {
+    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null, gatherMs = 0, texting = false, boardInbox = null }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
     this.#session = session; this.#allowedTools = allowedTools; this.#onSettled = onSettled;
     this.#files = files; this.#fileToolsForTurn = fileToolsForTurn;
@@ -182,6 +195,8 @@ export class Conversations {
     this.#linkContext = linkContext;
     // turnNote(companionId, requestId): a short app note for this turn (Discord files that could not be received, #48).
     this.#turnNote = turnNote;
+    // boardInbox (#55): Board wakes go to one sub-conversation per Board thread or ticket instead of the main chat.
+    this.#boardInbox = boardInbox;
     // gatherMs: an owner message waits this long before the companion starts answering. Messages sent in the
     // meantime join the same turn, so a burst of short texts gets one reply, like talking to a person.
     this.#gatherMs = Number.isSafeInteger(gatherMs) && gatherMs > 0 ? gatherMs : 0;
@@ -264,7 +279,7 @@ export class Conversations {
       if (this.#db.prepare('SELECT 1 FROM conv_requests WHERE companion_id=? AND request_id=?').get(companionId, requestId)) {
         throw new ConversationError('CONFLICT', 409);
       }
-      const mapping = { thread_id: this.#ongoing(companionId) };
+      const mapping = { thread_id: value.kind === 'board' && this.#boardInbox ? this.#boardThread(companionId, value.id) : this.#ongoing(companionId) };
       this.#thread(companionId, mapping.thread_id);
       this.#db.prepare(`INSERT INTO conv_wakes(companion_id,id,request_id,thread_id,kind,prompt,fingerprint,
         state,attempt_token,result_text,message_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'queued',NULL,NULL,NULL,?,?)`)
@@ -306,6 +321,20 @@ export class Conversations {
     if(peer.direction==='received') this.resetSessions(companionId);
     return {messageId};
   }
+  // Inside the admission transaction: the Board sub-conversation of this wake (made on first use). Its conv_threads row
+  // is stamped archived_at so older releases treat it as a read-only past chat (docs/BOARD-INBOX.md, rollback).
+  #boardThread(companionId, wakeId) {
+    return this.#boardInbox.threadForWake(companionId, wakeId, {
+      create: title => {
+        const id = randomUUID(), now = this.#now();
+        this.#db.prepare('INSERT INTO conv_threads(id,companion_id,title,created_at,updated_at,archived_at) VALUES(?,?,?,?,?,?)')
+          .run(id, companionId, title, now, now, now);
+        return id;
+      },
+      retitle: (id, title) => this.#db.prepare('UPDATE conv_threads SET title=? WHERE id=? AND companion_id=?').run(title, id, companionId)
+    });
+  }
+  #isBoard(threadId) { return Boolean(this.#boardInbox?.isBoard(threadId)); }
   #ongoing(companionId) {
     const mapping = this.#db.prepare('SELECT thread_id FROM conv_ongoing WHERE companion_id=?').get(companionId);
     if (mapping) return mapping.thread_id;
@@ -320,7 +349,13 @@ export class Conversations {
   }
 
   // Tells the onSettled listener (e.g. the Discord bridge) how a turn ended; listener errors never affect turns.
-  #settled(event) { try { this.#onSettled(event); } catch { /* listener problem only */ } }
+  #settled(event) {
+    try {
+      // A Board sub-conversation's message: push opens that sub-conversation, Discord marks it with its topic (#55).
+      const topic = this.#boardInbox?.topic(event.threadId);
+      this.#onSettled(topic ? { ...event, board: { label: topic.label } } : event);
+    } catch { /* listener problem only */ }
+  }
   #nativeSettled(companionId) {
     // Only called after an actual native attempt closes, including silent,
     // failed and cancelled turns; delivery-only and quiet queued wakes do not qualify.
@@ -408,8 +443,24 @@ export class Conversations {
     if (op.action === 'deleteThread') return this.#deleteThread(companionId, op);
     if (op.action === 'archiveThread') return this.#archiveThread(companionId, op);
     if (op.action === 'archivedThreads') return this.#archivedThreads(companionId);
+    if (['boardInbox', 'boardRead', 'boardArchive'].includes(op.action)) return this.#board(companionId, op);
     if (op.action === 'typing') { this.#thread(companionId, op.threadId); this.#setTyping(op.threadId, op.active, TYPING_MS.app); return { version: 1, synthetic: false, typing: op.active }; }
     return this.#write(companionId, op);
+  }
+
+  #board(companionId, op) {
+    if (!this.#boardInbox) {
+      if (op.action === 'boardInbox') return { version: 1, synthetic: false, threads: [], unread: 0, any: false };
+      throw notFound();
+    }
+    try {
+      if (op.action === 'boardInbox') return { version: 1, synthetic: false, ...this.#boardInbox.list(companionId, { archived: op.archived }) };
+      if (op.action === 'boardRead') return { version: 1, synthetic: false, ...this.#boardInbox.markRead(companionId, op.threadId) };
+      return { version: 1, synthetic: false, ...this.#boardInbox.archive(companionId, op.threadId, op.archived) };
+    } catch (error) {
+      if (error instanceof BoardInboxError) throw new ConversationError(error.code, error.status);
+      throw error;
+    }
   }
 
   #thread(companionId, threadId) {
@@ -465,8 +516,10 @@ export class Conversations {
       }));
     }
     // An archived chat is opened read-only; it is listed with the threads so clients can match the selection.
-    const archived = selected && selected.archived_at !== null;
-    if (archived) threads.unshift({ id: selected.id, title: selected.title });
+    // A Board sub-conversation (#55) is open for replies although its row carries archived_at (kept for rollback).
+    const board = Boolean(selected) && this.#isBoard(selected.id);
+    const archived = selected && selected.archived_at !== null && !board;
+    if (archived || board) threads.unshift({ id: selected.id, title: selected.title });
     return { version: 1, synthetic: false, threads, threadId: selected?.id ?? null, messages, cursor: String(cursor),
       runtime: { state: runtime.state, ...(runtime.provider ? { provider: runtime.provider } : {}) }, ...(turn ? { turn } : {}),
       ...(archived ? { archivedAt: selected.archived_at } : {}) };
@@ -512,8 +565,11 @@ export class Conversations {
         body = { version: 1, synthetic: false, thread: { id, title: op.title } };
       } else {
         const thread = this.#thread(companionId, op.threadId);
-        if (thread.archived_at !== null) throw new ConversationError('ARCHIVED', 409);
+        const board = this.#isBoard(thread.id);
+        if (thread.archived_at !== null && !board) throw new ConversationError('ARCHIVED', 409);
         if (this.#db.prepare("SELECT 1 FROM conv_wakes WHERE thread_id=? AND state='running'").get(thread.id)) throw new ConversationError('BUSY', 409);
+        // Answering a Board sub-conversation the owner had archived reopens it.
+        if (board) this.#boardInbox.reopen(thread.id);
         // A reply that has not started yet is folded into this message's turn. With texting, so is a running reply
         // nobody has seen yet and that has not acted (no tool call): it stops and starts over with every text.
         // Otherwise the running reply finishes first and this message is answered right after it.
@@ -562,6 +618,7 @@ export class Conversations {
         .run(this.#now(), companionId, op.threadId);
       for (const table of ['conv_messages', 'conv_events', 'conv_turns']) this.#db.prepare(`DELETE FROM ${table} WHERE thread_id=?`).run(op.threadId);
       this.#db.prepare('DELETE FROM conv_ongoing WHERE companion_id=? AND thread_id=?').run(companionId, op.threadId);
+      this.#boardInbox?.forget(op.threadId);
       this.#db.prepare(`DELETE FROM conv_requests WHERE companion_id=? AND
         (json_extract(result,'$.threadId')=? OR json_extract(result,'$.accepted.threadId')=? OR json_extract(result,'$.thread.id')=?)`)
         .run(companionId, op.threadId, op.threadId, op.threadId);
@@ -607,7 +664,8 @@ export class Conversations {
   #archivedThreads(companionId) {
     const rows = this.#db.prepare(`SELECT t.id, t.title, t.archived_at, t.created_at,
         (SELECT COUNT(*) FROM conv_messages m WHERE m.thread_id=t.id) AS messages
-      FROM conv_threads t WHERE t.companion_id=? AND t.archived_at IS NOT NULL ORDER BY t.archived_at DESC, t.id LIMIT ?`).all(companionId, LIMITS.threads);
+      FROM conv_threads t WHERE t.companion_id=? AND t.archived_at IS NOT NULL${this.#boardInbox ? ' AND t.id NOT IN (SELECT thread_id FROM board_inbox_threads)' : ''}
+      ORDER BY t.archived_at DESC, t.id LIMIT ?`).all(companionId, LIMITS.threads);
     return { version: 1, synthetic: false, threads: rows.map(row => ({ id: row.id, title: row.title, startedAt: row.created_at,
       archivedAt: row.archived_at, messages: row.messages })) };
   }
@@ -711,6 +769,8 @@ export class Conversations {
       this.#db.prepare("UPDATE conv_wakes SET state='message',result_text=NULL,result_feeling=NULL,message_id=?,updated_at=? WHERE companion_id=? AND id=?")
         .run(messageId, this.#now(), wake.companion_id, wake.id);
       this.#append(wake.thread_id, { type: 'message', messageId });
+      // A new Board message reopens its archived sub-conversation, unread (#55).
+      if (this.#isBoard(wake.thread_id)) this.#boardInbox.reopen(wake.thread_id);
       delivered = true;
     }
     if (running) this.#append(wake.thread_id, { type: 'turn', requestId: wake.request_id, state: 'complete' });
@@ -981,7 +1041,7 @@ export class Conversations {
       }
       const webSpent = this.#webBudget ? !this.#webBudget.available(companionId) : false;
       const turnInput = {
-        prompt: user.text + filePrompt + burst.map(item => this.#turnNote?.(companionId, item.request_id) ?? '').join('') + (linked?.prompt ?? '') + notes + (requestId.startsWith('discord-') ? DISCORD_NOTE : '') + (webSpent ? WEB_SPENT_NOTE : ''),
+        prompt: user.text + filePrompt + burst.map(item => this.#turnNote?.(companionId, item.request_id) ?? '').join('') + (this.#boardInbox?.turnNote(threadId) ?? '') + (linked?.prompt ?? '') + notes + (requestId.startsWith('discord-') ? DISCORD_NOTE : '') + (webSpent ? WEB_SPENT_NOTE : ''),
         ...((filter => filter ? { toolFilter: filter } : {})(this.#filter(companionId, webSpent ? withoutWeb : null))), images: [...incoming.filter(file => file.mime.startsWith('image/')).map(file => file.path), ...(linked?.images ?? [])].slice(0, 8), appServers: fileTools.servers,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }), allowedTools: this.#allowedTools, signal: controller.signal,
         onEvent: event => {

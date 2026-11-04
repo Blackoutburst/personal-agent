@@ -35,6 +35,7 @@ import { PersonalityStore } from './src/personality.mjs';
 import { Contacts, ContactError } from './src/contacts.mjs';
 import { Weather } from './src/weather.mjs';
 import { BoardCompanion } from './src/board-companion.mjs';
+import { BoardInbox } from './src/board-inbox.mjs';
 import { PushDevices, FcmSender, PushNotifier } from './src/push.mjs';
 import { WebPushSubscriptions, WebPushSender, WebPushNotifier, loadVapidKeys } from './src/web-push.mjs';
 
@@ -393,7 +394,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         ...(schedulerOptions.now && !mailOptions.now ? { now: schedulerOptions.now } : {}) });
       studioHttp = createStudioHttp({ access, studio: new Studio({ store, owners, ...(mailOptions.now ? { now: mailOptions.now } : {}) }) });
       connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, mail: () => mail, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
-      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget: new WebBudget({ store }),
+      // Board inbox (#55, docs/BOARD-INBOX.md): one sub-conversation per Board thread or ticket, out of the main chat.
+      const boardInbox = new BoardInbox({ store, ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
+      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget: new WebBudget({ store }), boardInbox,
         linkContext: (companionId, text) => x.forTurn(companionId, text),
         turnNote: (companionId, requestId) => discord?.turnNote(companionId, requestId) ?? null,
         toolFilterFor: companionId => connectors.toolFilter(companionId), wakePolicy: {
@@ -439,7 +442,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       // Board companion duties (docs/BOARD-COMPANION.md): Needs-you wakes, profile sync and attachments.
       boardCompanion = new BoardCompanion({ store, owners, profiles, scheduler: schedulerService,
         companionIdFor: owner => companionIdFor(store, owner), active: companionId => connectors.enabled(companionId, 'board'),
-        log: message => console.error(message), ...boardOptions });
+        log: message => console.error(message), inbox: boardInbox, ...boardOptions });
       // Android push (docs/PUSH.md): on when the FCM service-account key exists. Devices register through /api/companion.
       pushDevices = new PushDevices({ store });
       const pushKey = pushOptions.keyFile ?? process.env.COMPANION_PUSH_KEY
@@ -455,7 +458,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       webPushNotifier = new WebPushNotifier({ subscriptions: webPush.subscriptions, sender: webPushSender,
         nameFor: companionId => profiles.get(companionId)?.name, log: message => console.error(message) });
       // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
-      discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, files, ...discordOptions,
+      discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, files, boardInbox, ...discordOptions,
         log: message => console.error(message) });
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality, contacts, weather,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },

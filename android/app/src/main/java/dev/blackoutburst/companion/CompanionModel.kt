@@ -115,6 +115,19 @@ data class UiState(
     val schedulesNotice: String? = null,
     /** A watch change whose result never came back: retried only on request, with the same request id. */
     val watchRetry: WatchChange? = null,
+    /** Board tab (#55): the list shown (open or archived), the badge, and the Board sub-conversation open in the chat. */
+    val boardTopics: List<BoardTopic>? = null,
+    val boardShowArchived: Boolean = false,
+    val boardUnread: Int = 0,
+    val boardAny: Boolean = false,
+    val boardLoading: Boolean = false,
+    val boardBusy: Boolean = false,
+    val boardError: String? = null,
+    val boardThread: String? = null,
+    val boardLabel: String? = null,
+    val boardArchivedTopic: Boolean = false,
+    /** Bumped when a notification tap asks for the Board tab. */
+    val boardRequest: Long = 0,
 ) {
     val name get() = profile?.name ?: "Your companion"
     val replying get() = turn?.state == "streaming" || waitingFor != null
@@ -160,6 +173,12 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private var contactsJob: Job? = null
     @Volatile private var ownerProfileEpoch = 0L
     private var ownerProfileJob: Job? = null
+    // Notification taps that arrive before sign-in finished; the Board tab's topics and read marker (#55).
+    private var pendingThread: String? = null
+    private var pendingBoard = false
+    private var boardAt = 0L
+    private var boardReadKey: String? = null
+    private val boardTopics = mutableMapOf<String, BoardTopic>()
 
     init {
         // An interrupted prior process must not leave an unbounded or reusable private media cache.
@@ -230,6 +249,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         store.session = null
         poller?.cancel()
         cursor = "0"
+        boardTopics.clear(); boardReadKey = null
         _state.value = UiState(scope = scope, gate = Gate.SignedOut)
     }
 
@@ -246,8 +266,11 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 if (!current(version)) return@launch
                 _state.update { it.copy(gate = Gate.Ready, username = session.username, profile = info.profile, wearing = info.wearing, runtime = info.runtime, offline = false) }
                 Push.register(getApplication(), api)
-                pendingThread?.let { id -> pendingThread = null; if (id != _state.value.threadId) _state.update { it.copy(threadId = id) } }
+                pendingThread?.let { id -> pendingThread = null
+                    if (pendingBoard) { pendingBoard = false; _state.update { it.copy(threadId = id, boardThread = id) } }
+                    else if (id != _state.value.threadId) _state.update { it.copy(threadId = id) } }
                 resync()
+                refreshBoard(version)
                 startPolling()
             } catch (error: ApiException) {
                 if (!current(version)) return@launch
@@ -259,15 +282,122 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     // ---- Notifications (docs/PUSH.md) ----
 
-    private var pendingThread: String? = null
 
-    /** A notification was tapped: show the Chat tab on that conversation. */
-    fun openThread(threadId: String) {
+    /** A notification was tapped: show the Chat tab on that conversation, or the Board tab on a Board sub-conversation. */
+    fun openThread(threadId: String, board: Boolean = false) {
+        if (board) {
+            _state.update { it.copy(boardRequest = it.boardRequest + 1) }
+            if (_state.value.gate != Gate.Ready) { pendingThread = threadId; pendingBoard = true; return }
+            if (threadId != _state.value.threadId || _state.value.boardThread != threadId) openBoardTopic(threadId, force = true)
+            return
+        }
         _state.update { it.copy(chatRequest = it.chatRequest + 1) }
-        if (_state.value.gate != Gate.Ready) { pendingThread = threadId; return }
+        if (_state.value.gate != Gate.Ready) { pendingThread = threadId; pendingBoard = false; return }
         if (threadId == _state.value.threadId) return
-        _state.update { it.copy(threadId = threadId, messages = emptyList(), turn = null) }
+        _state.update { it.copy(threadId = threadId, boardThread = null, messages = emptyList(), turn = null) }
         viewModelScope.launch { guarded { resync() } }
+    }
+
+    // ---- Board inbox (#55, docs/BOARD-INBOX.md) ----
+
+
+    /** The Board tab's list (open, or archived) and the badge. */
+    fun loadBoard(archived: Boolean = _state.value.boardShowArchived) {
+        val version = scope
+        _state.update { it.copy(boardShowArchived = archived, boardLoading = true, boardError = null,
+            boardTopics = if (it.boardShowArchived == archived) it.boardTopics else null) }
+        viewModelScope.launch { refreshBoard(version) }
+    }
+
+    private suspend fun refreshBoard(version: Long = scope) {
+        boardAt = System.currentTimeMillis()
+        val archived = _state.value.boardShowArchived
+        try {
+            val open = api.boardInbox(false)
+            val shown = if (archived) api.boardInbox(true) else open
+            if (!current(version)) return
+            (open.threads + shown.threads).forEach { boardTopics[it.threadId] = it }
+            _state.update { state ->
+                val topic = state.boardThread?.let { boardTopics[it] }
+                state.copy(boardTopics = if (state.boardShowArchived == archived) shown.threads else state.boardTopics,
+                    boardUnread = open.unread, boardAny = open.any || state.boardThread != null, boardLoading = false, boardError = null,
+                    boardLabel = topic?.label ?: state.boardLabel, boardArchivedTopic = topic?.archived ?: state.boardArchivedTopic)
+            }
+        } catch (error: ApiException) {
+            if (!current(version)) return
+            if (error.signedOut) { signedOut(); return }
+            // An older server has no Board inbox (400): the tab simply stays hidden.
+            _state.update { it.copy(boardLoading = false, boardError = if (error.status == 400) null else "The Board inbox could not be loaded. Try again in a moment.") }
+        }
+    }
+
+    /** Opens a Board sub-conversation in the Board tab. Replies there are about its ticket. */
+    fun openBoardTopic(threadId: String, force: Boolean = false) {
+        val now = _state.value
+        if (!fileId(threadId)) return
+        if (!force && (now.sending || now.archiving || pendingArchive != null || now.uploads.isNotEmpty())) return
+        // A notification tap wins over files picked for another chat: they are dropped, never sent here.
+        if (now.uploads.isNotEmpty()) dropUploads()
+        cursor = "0"; boardReadKey = null
+        val topic = boardTopics[threadId]
+        _state.update { it.copy(threadId = threadId, boardThread = threadId, boardLabel = topic?.label, boardArchivedTopic = topic?.archived == true,
+            archivedAt = null, messages = emptyList(), turn = null, waitingFor = null, fileError = null, uploads = emptyList()) }
+        viewModelScope.launch { guarded { resync() } }
+    }
+
+    /** Leaves a Board sub-conversation for the main chat (the Board tab shows its list again). */
+    fun leaveBoardTopic() {
+        val now = _state.value
+        if (now.boardThread == null || now.sending || now.archiving || now.uploads.isNotEmpty()) return
+        cursor = "0"; boardReadKey = null
+        _state.update { it.copy(threadId = null, boardThread = null, boardLabel = null, boardArchivedTopic = false, archivedAt = null,
+            messages = emptyList(), turn = null, waitingFor = null, uploads = emptyList(), fileError = null) }
+        val version = scope
+        viewModelScope.launch { guarded { resync() }; refreshBoard(version) }
+    }
+
+    /** Done (archived) or reopened. A new Board message or a reply reopens an archived topic by itself. */
+    fun archiveBoardTopic(threadId: String, archived: Boolean, onDone: () -> Unit = {}) {
+        if (_state.value.boardBusy) return
+        val version = scope
+        _state.update { it.copy(boardBusy = true, boardError = null) }
+        viewModelScope.launch {
+            try {
+                val change = api.boardArchive(threadId, archived)
+                if (!current(version)) return@launch
+                boardTopics[threadId]?.let { boardTopics[threadId] = it.copy(archived = archived, unread = if (archived) 0 else it.unread) }
+                _state.update { it.copy(boardBusy = false, boardUnread = change.unread,
+                    boardArchivedTopic = if (it.boardThread == threadId) archived else it.boardArchivedTopic) }
+                onDone()
+                refreshBoard(version)
+            } catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) { signedOut(); return@launch }
+                _state.update { it.copy(boardBusy = false, boardError = "That change was not confirmed. Try again.") }
+            }
+        }
+    }
+
+    private fun dropUploads() {
+        transfers.values.toList().forEach { it.cancel() }; transfers.clear()
+        uploadJobs.values.toList().forEach { it.cancel() }; uploadJobs.clear()
+        uploadSources.clear()
+        _state.update { it.copy(uploads = emptyList()) }
+    }
+
+    /** A Board sub-conversation on screen is read: marked when it opens and when a new companion message arrives. */
+    private fun markBoardRead() {
+        val state = _state.value
+        val threadId = state.boardThread ?: return
+        if (!visible || state.threadId != threadId || state.chatLoading) return
+        val key = threadId + ":" + (state.messages.lastOrNull { it.role == "assistant" && it.text.isNotEmpty() }?.id ?: "")
+        if (key == boardReadKey) return
+        boardReadKey = key
+        val version = scope
+        viewModelScope.launch {
+            try { val change = api.boardRead(threadId); if (current(version)) _state.update { it.copy(boardUnread = change.unread) } }
+            catch (error: ApiException) { if (current(version)) { if (error.signedOut) signedOut() else boardReadKey = null } }
+        }
     }
 
     fun notificationsAsked() {
@@ -1322,6 +1452,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 if (!visible) { delay(1000); continue }
                 guarded { sync() }
                 if (System.currentTimeMillis() - wearingAt > 10 * 60_000L) refreshWearing()
+                if (System.currentTimeMillis() - boardAt > 30_000L) refreshBoard()
                 delay(if (_state.value.replying || _state.value.sending) 500 else 3000)
             }
         }
@@ -1335,7 +1466,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 if (error.status != 404 || requested == null || !current(version) || _state.value.threadId != requested) throw error
                 // A deletion from another device wins over this device's cached files, pending writes and history.
                 invalidateFiles(stopPolling = false); version = scope; requested = null; cursor = "0"
-                _state.update { it.copy(scope = version, threadId = null, messages = emptyList(), turn = null,
+                _state.update { it.copy(scope = version, threadId = null, boardThread = null, messages = emptyList(), turn = null,
                     waitingFor = null, uploads = emptyList(), sending = false, sendFailed = false,
                     fileError = "That conversation is no longer available.") }
                 try { api.snapshot() } catch (failure: ApiException) {
@@ -1354,6 +1485,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             if (current(version)) {
                 _state.update { it.copy(chatLoading = false) }
                 pendingPick?.let { (uris, pickScope) -> pendingPick = null; attachFiles(uris, pickScope) }
+                markBoardRead()
             }
         }
     }
@@ -1379,6 +1511,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         if (!current(version, threadId)) return
         if (needsResync) { resync(); if (!current(version, threadId)) return }
         _state.update { it.copy(offline = false) }
+        markBoardRead()
     }
 
     private fun applyEvents(events: List<Event>) = _state.update { start ->

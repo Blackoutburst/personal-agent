@@ -89,10 +89,13 @@ function request(action, payload) {
   const selected = plain(payload, action === 'snapshot' ? [] : action === 'createThread' ? ['requestId', 'title'] :
     action === 'submit' ? ['requestId', 'threadId', 'text'] : action === 'events' ? ['threadId', 'cursor'] :
     ['cancel', 'deleteThread', 'archiveThread'].includes(action) ? ['requestId', 'threadId'] : action === 'archivedThreads' ? [] :
-    action === 'typing' ? ['threadId', 'active'] : ['invalid-action'],
-  action === 'snapshot' ? ['threadId'] : action === 'submit' ? ['attachments'] : [], 'INVALID_REQUEST');
-  check(['snapshot', 'createThread', 'submit', 'events', 'cancel', 'deleteThread', 'archiveThread', 'archivedThreads', 'typing'].includes(action), 'INVALID_REQUEST');
+    action === 'typing' ? ['threadId', 'active'] : action === 'boardInbox' ? [] : action === 'boardRead' ? ['threadId']
+      : action === 'boardArchive' ? ['threadId', 'archived'] : ['invalid-action'],
+  action === 'snapshot' ? ['threadId'] : action === 'submit' ? ['attachments'] : action === 'boardInbox' ? ['archived'] : [], 'INVALID_REQUEST');
+  check(['snapshot', 'createThread', 'submit', 'events', 'cancel', 'deleteThread', 'archiveThread', 'archivedThreads', 'typing',
+    'boardInbox', 'boardRead', 'boardArchive'].includes(action), 'INVALID_REQUEST');
   if (action === 'typing') check(typeof selected.active === 'boolean', 'INVALID_REQUEST');
+  if (Object.hasOwn(selected, 'archived')) check(typeof selected.archived === 'boolean', 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'threadId')) identifier(selected.threadId, false, 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'requestId')) identifier(selected.requestId, true, 'INVALID_REQUEST');
   if (action === 'createThread') text(selected.title, 80, 80, false, 'INVALID_REQUEST');
@@ -308,6 +311,29 @@ function eventPage(value, threadId, from) {
   check(!fresh.length || fresh[0].seq === from + 1, 'RESYNC_REQUIRED');
   return { events: fresh, end: Math.max(from, end), lastSeq: selected.lastSeq };
 }
+// The Board tab (#55): one sub-conversation per Board thread or ticket, with unread counts. Display data only.
+function boardCount(value) { check(Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000); return value; }
+export function parseBoardInbox(value) {
+  const selected = envelope(value, ['threads', 'unread', 'any']);
+  check(typeof selected.any === 'boolean');
+  const threads = array(selected.threads, 200).map(item => {
+    const row = plain(item, ['threadId', 'label', 'general', 'archived', 'unread', 'updatedAt'], ['ticketNumber', 'preview', 'previewRole']);
+    identifier(row.threadId); text(row.label, 220, 880);
+    check(typeof row.general === 'boolean' && typeof row.archived === 'boolean');
+    boardCount(row.unread); check(Number.isSafeInteger(row.updatedAt) && row.updatedAt >= 0);
+    if (Object.hasOwn(row, 'ticketNumber')) check(Number.isSafeInteger(row.ticketNumber) && row.ticketNumber > 0);
+    check(Object.hasOwn(row, 'preview') === Object.hasOwn(row, 'previewRole'));
+    if (Object.hasOwn(row, 'preview')) { text(row.preview, 140, 560); check(['user', 'assistant'].includes(row.previewRole)); }
+    return row;
+  });
+  check(new Set(threads.map(item => item.threadId)).size === threads.length);
+  return { threads, unread: boardCount(selected.unread), any: selected.any };
+}
+export function parseBoardChange(value, threadId) {
+  const selected = envelope(value, ['threadId', 'unread'], ['archived']);
+  check(selected.threadId === threadId && (!Object.hasOwn(selected, 'archived') || typeof selected.archived === 'boolean'));
+  return { threadId, unread: boardCount(selected.unread), ...(Object.hasOwn(selected, 'archived') ? { archived: selected.archived } : {}) };
+}
 function upsert(messages, next) {
   const index = messages.findIndex(item => item.id === next.id);
   if (index === -1) { check(messages.length < 500); messages.push(next); }
@@ -519,6 +545,13 @@ export function createConversationClient({ transport = createConversationTranspo
     subscribe(listener) { check(typeof listener === 'function', 'INVALID_REQUEST'); listeners.add(listener); listener(copy()); return () => listeners.delete(listener); },
     open, select(threadId) { identifier(threadId, false, 'INVALID_REQUEST'); return open({ threadId }); }, create, send, retry, poll,
     cancel, refresh, deleteThread, archiveThread, archivedThreads, typing,
+    // Board tab (#55): list the sub-conversations, mark one read, archive or reopen one. These never change the open chat.
+    async boardInbox(archived = false) { check(typeof archived === 'boolean', 'INVALID_REQUEST'); return parseBoardInbox(await transport('boardInbox', archived ? { archived } : {})); },
+    async boardRead(threadId) { identifier(threadId, false, 'INVALID_REQUEST'); return parseBoardChange(await transport('boardRead', { threadId }), threadId); },
+    async boardArchive(threadId, archived) {
+      identifier(threadId, false, 'INVALID_REQUEST'); check(typeof archived === 'boolean', 'INVALID_REQUEST');
+      return parseBoardChange(await transport('boardArchive', { threadId, archived }), threadId);
+    },
     setFiles(value) {
       check(state.opened && state.threadId !== null && state.connection === 'ready', 'NOT_READY');
       const selected = array(value, 8).map(parseAttachment); check(selected.every(file => file.direction === 'user') && new Set(selected.map(file => file.id)).size === selected.length, 'INVALID_REQUEST');

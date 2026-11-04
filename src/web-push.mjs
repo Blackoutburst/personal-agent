@@ -169,7 +169,7 @@ export class WebPushNotifier {
   }
 
   // Conversations' settle hook, the same events as Android push.
-  settled({ companionId, threadId, requestId, state, text, messageId }) {
+  settled({ companionId, threadId, requestId, state, text, messageId, board }) {
     if (state !== 'complete' || typeof messageId !== 'string' || typeof threadId !== 'string') return;
     if (typeof requestId === 'string' && requestId.startsWith('discord-')) return;
     if (this.#recent.has(messageId)) return;
@@ -180,7 +180,7 @@ export class WebPushNotifier {
     const title = String(this.#nameFor(companionId) ?? '').slice(0, 60) || 'Your companion';
     let preview = previewText(text);
     if (preview.length > PREVIEW) preview = preview.slice(0, PREVIEW - 1).trimEnd() + '…';
-    this.#deliver(subscriptions, { type: 'message', threadId, messageId, title }, preview || 'New message')
+    this.#deliver(subscriptions, { type: 'message', threadId, messageId, title, ...(board ? { board: true } : {}) }, preview || 'New message')
       .catch(error => this.#log(`Web push failed: ${error.code ?? error.message}`));
   }
 

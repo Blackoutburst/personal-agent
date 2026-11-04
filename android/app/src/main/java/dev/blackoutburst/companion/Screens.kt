@@ -130,7 +130,7 @@ fun tonesFor(choice: ThemeChoice): Tones = when (choice) {
     ThemeChoice.Dark -> DarkTones
 }
 
-private enum class Tab(val label: String) { Chat("Chat"), Calendar("Calendar"), Me("Me") }
+private enum class Tab(val label: String) { Chat("Chat"), Board("Board"), Calendar("Calendar"), Me("Me") }
 /** Sections of the Me tab; memories come first. */
 private enum class MeSection(val label: String) { Memories("Memories"), Profile("Your profile"), Companion("Companion"), Watches("Watches"), Connectors("Connectors"), Settings("Settings") }
 
@@ -181,6 +181,9 @@ private fun SignInScreen(state: UiState, signIn: () -> Unit) {
 private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExportControl) {
     var tab by rememberSaveable { mutableStateOf(Tab.Chat) }
     LaunchedEffect(state.chatRequest) { if (state.chatRequest > 0) tab = Tab.Chat }
+    // Board tab (#55): a notification for a Board sub-conversation opens it there; leaving the tab returns to the main chat.
+    LaunchedEffect(state.boardRequest) { if (state.boardRequest > 0) tab = Tab.Board }
+    LaunchedEffect(tab) { if (tab == Tab.Board) model.loadBoard() else model.leaveBoardTopic() }
     // Notifications (docs/PUSH.md): asked once, right after the first message the owner sends.
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { model.notificationsAsked() }
     LaunchedEffect(state.askNotifications) { if (state.askNotifications) askPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
@@ -188,16 +191,21 @@ private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExpo
         Box(Modifier.weight(1f)) {
             when (tab) {
                 Tab.Chat -> ChatScreen(model, state)
+                Tab.Board -> if (state.boardThread != null && state.threadId == state.boardThread) ChatScreen(model, state) else BoardScreen(model, state)
                 Tab.Calendar -> CalendarScreen(model, state)
                 Tab.Me -> MeScreen(model, state, memoryExport) { tab = Tab.Chat }
             }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-            for (item in Tab.entries) {
+            // The Board tab shows once the owner has a Board conversation (an older server never reports one).
+            for (item in Tab.entries.filter { it != Tab.Board || state.boardAny || state.boardThread != null || tab == Tab.Board }) {
                 val selected = item == tab
-                Text(item.label, Modifier.clip(RoundedCornerShape(50)).background(if (selected) Card else Color.Transparent)
-                    .clickable(role = Role.Tab) { tab = item }.padding(horizontal = 22.dp, vertical = 10.dp),
-                    color = if (selected) Ink else Soft, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 16.sp)
+                Row(Modifier.clip(RoundedCornerShape(50)).background(if (selected) Card else Color.Transparent)
+                    .clickable(role = Role.Tab) { if (item == Tab.Board && tab == Tab.Board) model.leaveBoardTopic(); tab = item }
+                    .padding(horizontal = if (state.boardAny) 16.dp else 22.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(item.label, color = if (selected) Ink else Soft, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 16.sp)
+                    if (item == Tab.Board && state.boardUnread > 0) { Spacer(Modifier.size(6.dp)); UnreadDot(state.boardUnread) }
+                }
             }
         }
     }
@@ -243,6 +251,8 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
     // Only a person dragging the history closes the keyboard; scrolling to a new reply must not.
     LaunchedEffect(list) { list.interactionSource.interactions.collect { if (it is DragInteraction.Start) dismissKeyboard() } }
     val shown = state.messages.filter { it.text.isNotEmpty() || it.attachments.isNotEmpty() }
+    // A Board sub-conversation (#55): its topic bar instead of Chats; replies here are about that ticket.
+    val onBoard = state.boardThread != null && state.threadId == state.boardThread
     LaunchedEffect(shown.size, shown.lastOrNull()?.text?.length) { if (shown.isNotEmpty()) list.animateScrollToItem(shown.size - 1) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -253,8 +263,9 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
                 Text(state.name, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
                 Text(MOOD_TEXT.getValue(mood), color = Soft, fontSize = 15.sp)
             }
-            ActionButton(enabled = !state.archiving, onClick = { showChats = true; model.loadPastChats() }) { Text("Chats") }
+            if (!onBoard) ActionButton(enabled = !state.archiving, onClick = { showChats = true; model.loadPastChats() }) { Text("Chats") }
         }
+        if (onBoard) BoardTopicBar(model, state, state.threadId!!)
         LazyColumn(Modifier.weight(1f).fillMaxWidth().pointerInput(Unit) { detectTapGestures(onTap = { dismissKeyboard() }) },
             state = list, verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)) {

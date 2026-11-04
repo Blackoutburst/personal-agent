@@ -29,6 +29,9 @@ Each owner can link **their own Discord bot** so they can talk to their companio
 - **Channel note.** A Discord turn's prompt (request id `discord-<message id>`) ends with a short note that the message
   came from the owner's Discord DM and that tables don't render there. The stored message is only what the owner wrote.
 - **Reminders.** When a reminder or other proactive message is delivered, `Conversations` calls `onSettled` with `proactive: true`, and the bridge sends the text to the paired DM channel.
+- **Board messages (#55).** A Board sub-conversation's message arrives under a `**📋 #15 · title**` header. Discord's
+  Reply on one of those messages goes to that sub-conversation; any other DM goes to the main chat. See
+  [BOARD-INBOX.md](BOARD-INBOX.md).
 
 ## Connection
 

@@ -12,6 +12,7 @@ import { createWeatherUI } from './weather-ui.mjs';
 import { createWebPushUI, createPushPresence, registerServiceWorker } from './web-push-ui.mjs';
 import { splitBubbles } from './bubbles.mjs';
 import { createVoiceRecorder, voiceView } from './voice-ui.mjs';
+import { createBoardUI } from './board-ui.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
@@ -24,6 +25,9 @@ const personalityUI = createPersonalityUI({ document, api, onDenied: fileAccessD
 const contactUI = createContactUI({ document, api, onDenied: fileAccessDenied });
 const ownerProfileUI = createOwnerProfileUI({ document, onDenied: fileAccessDenied });
 const weatherUI = createWeatherUI({ document, api, onDenied: fileAccessDenied, onWearing: next => { wearing = next; renderAll(); } });
+// Board tab (#55): one sub-conversation per Board ticket; opening one shows it in the chat view (#board/<thread>).
+const boardUI = createBoardUI({ document, inbox: client, onOpen: threadId => { location.hash = '#board/' + threadId; },
+  onDenied: fileAccessDenied, onChange: () => { if (view === 'chat') renderAll(); } });
 const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
 let profile = null, runtime = null, view = 'loading', chatOpened = false, state = client.getState();
@@ -33,6 +37,8 @@ let uploads = [], uploadEpoch = 0, fileNotice = '', uploadsKey = '';
 // Voice messages (set up with the composer below): the recorder, a send in progress, the typing ping while recording.
 let voiceRecorder = null, voiceSending = false, recordingPing = null;
 let ownerEpoch = 0, startRequest = 0, lookRequest = 0, wearingRequest = 0, composerEpoch = 0, sessionDenied = false;
+// boardThread: the Board sub-conversation the address asks for; selectedBoard: the one the chat view has open.
+let boardThread = null, selectedBoard = null, boardReadMarked = null;
 let readTicket = null, readSequence = 0, readFailures = 0, initialThreadAttempted = false, heldDraft = null;
 const READ_BACKOFF = [1000, 2000, 5000, 10000, 30000];
 const reconnect = el('button', { id: 'reconnect-chat', type: 'button', className: 'text-button', textContent: 'Reconnect chat', hidden: true });
@@ -109,7 +115,7 @@ function show(next) {
   view = next;
   if (!connectorsShown()) { clearTimeout(discordTimer); discordTimer = null; }
   $('app').dataset.view = next;
-  for (const name of ['loading', 'gate', 'chat', 'calendar', 'studio']) $(`view-${name}`).hidden = name !== next;
+  for (const name of ['loading', 'gate', 'chat', 'calendar', 'studio', 'board']) $(`view-${name}`).hidden = name !== next;
   $('view-me').hidden = next !== 'me' && next !== 'look';
   $('me-tabs').hidden = next !== 'me';
   $('view-look').hidden = !lookShown();
@@ -122,10 +128,12 @@ function show(next) {
     if (next === 'me' && link.dataset.section === meSection) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   }
   $('nav').hidden = !profile || next === 'gate' || next === 'loading';
+  const tab = next === 'chat' && boardThread ? 'board' : next;
   for (const link of document.querySelectorAll('#nav a')) {
-    if (link.dataset.view === next) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
+    if (link.dataset.view === tab) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   }
   if (next === 'chat') openChat();
+  if (next === 'board') void boardUI.show(); else boardUI.hide();
   if (next === 'me' && meSection === 'memories') loadMemories();
   if (next === 'me' && meSection === 'profile') void ownerProfileUI.show();
   if (connectorsShown()) { $('discord-pick').hidden = false; void loadConnectors(); void loadDiscord(); }
@@ -152,7 +160,10 @@ function route() {
   const me = { me: 'memories', memories: 'memories', 'me/companion': 'companion', look: 'companion', 'me/watches': 'watches', watches: 'watches',
     'me/connectors': 'connectors', 'me/settings': 'settings', 'me/profile': 'profile' }[hash];
   if (me) meSection = me;
-  show(hash === 'studio' ? 'studio' : hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
+  // #board is the Board tab; #board/<thread> opens that Board sub-conversation in the chat view (also from a push).
+  const board = /^board\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(hash);
+  boardThread = board ? board[1] : null;
+  show(hash === 'board' ? 'board' : board ? 'chat' : hash === 'studio' ? 'studio' : hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
 }
 
 async function start() {
@@ -163,7 +174,7 @@ async function start() {
     if (owner !== ownerEpoch || token !== startRequest) return;
     profile = data.profile; runtime = data.runtime; wearing = data.wearing ?? 'base';
     applyColors(profile);
-    if (profile) void studioUI.probe();
+    if (profile) { void studioUI.probe(); void boardUI.refresh(); }
     route();
   } catch (error) {
     if (owner !== ownerEpoch || token !== startRequest) return;
@@ -197,10 +208,16 @@ const MOOD_TEXT = { idle: 'Here with you', listening: 'Listening…', thinking: 
 // ---------- Chat ----------
 
 async function openChat() {
-  if (chatOpened) return;
-  chatOpened = true;
-  return readChat();
+  if (!chatOpened) {
+    chatOpened = true;
+    if (!boardThread) return readChat();
+    selectedBoard = boardThread; await client.select(boardThread); schedulePoll(); return;
+  }
+  // Moving between the main chat and a Board sub-conversation selects that thread; anything else stays as it is.
+  if (boardThread && state.threadId !== boardThread) { selectedBoard = boardThread; clearUploads(); await client.select(boardThread); schedulePoll(); }
+  else if (!boardThread && selectedBoard && state.threadId === selectedBoard) { selectedBoard = null; clearUploads(); await client.open(); schedulePoll(); }
 }
+const onBoardThread = () => Boolean(selectedBoard) && state.threadId === selectedBoard;
 
 const canRead = () => !sessionDenied && profile && chatOpened && document.visibilityState !== 'hidden' && navigator.onLine !== false;
 async function readChat() {
@@ -366,6 +383,14 @@ function renderChat() {
   $('archived-banner').hidden = !archived;
   if (archived) $('archived-text').textContent = `Archived chat · ended ${new Date(state.archivedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })} · read-only`;
   $('composer').hidden = archived;
+  // In a Board sub-conversation: its topic, a way back to the Board tab and Done; Past chats and New chat are main-chat only.
+  const board = onBoardThread(), topic = board ? boardUI.topic(selectedBoard) : null;
+  $('board-banner').hidden = !board;
+  if (board) {
+    $('board-topic').textContent = topic?.label ?? state.threads.find(item => item.id === state.threadId)?.title ?? 'Board';
+    $('board-done').textContent = topic?.archived ? 'Reopen' : 'Done';
+  }
+  $('past-chats').hidden = board; $('new-chat').hidden = board;
   reconnect.hidden = sessionDenied || Boolean(state.pending && !state.opened) || (!readFailures && state.connection === 'ready'); reconnect.disabled = Boolean(readTicket) || navigator.onLine === false;
   kept.hidden = !heldDraft; keptText.textContent = heldDraft?.text ?? ''; restoreDraft.disabled = Boolean(input.value) || Boolean(state.pending);
   input.placeholder = `Write to ${companionName()}…`;
@@ -434,6 +459,7 @@ function resetShell(denied) {
   for (const id of ['discord-pick', 'android-pick']) $(id).hidden = true;
   connectors = null; connectorsBusy = false; githubForm = false; xForm = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
   kept.hidden = true; keptText.textContent = ''; reconnect.hidden = true;
+  selectedBoard = null; boardReadMarked = null; boardUI.clear();
   memoryUI.clear(); personalityUI.clear(); contactUI.clear(); ownerProfileUI.clear(); weatherUI.clear(); remindersUI.clear(); calendarUI.clear(); studioUI.clear(); client.clear(); clearUploads(); clearFullImage();
 }
 function clearUploads() {
@@ -650,6 +676,11 @@ client.subscribe(next => {
        next.messages.some(message => message.role === 'user' && uploads.every(item => message.attachments?.some(file => file.id === item.dto.id))))) clearUploads();
   if (next.connection === 'denied' || next.error === 'ACCESS_DENIED') { fileAccessDenied(); return; }
   if (previousThread !== next.threadId) { heldDraft = null; composerEpoch++; }
+  // A Board sub-conversation on screen is read: mark it when it opens and whenever a new companion message arrives.
+  if (selectedBoard && next.threadId === selectedBoard && next.opened && view === 'chat' && document.visibilityState !== 'hidden') {
+    const key = selectedBoard + ':' + ([...next.messages].reverse().find(item => item.role === 'assistant' && item.text)?.id ?? '');
+    if (key !== boardReadMarked) { boardReadMarked = key; void boardUI.markRead(selectedBoard); }
+  }
   renderAll();
   if (!polling) schedulePoll();
 });
@@ -748,6 +779,14 @@ $('past-chats').addEventListener('click', async () => {
 });
 $('past-chats-close').addEventListener('click', () => pastDialog.close());
 $('back-to-chat').addEventListener('click', async () => { clearUploads(); await client.open(); schedulePoll(); });
+// Done: the Board topic is handled and moves to Archived (a new Board message or a reply reopens it).
+$('board-done').addEventListener('click', async () => {
+  if (!onBoardThread()) return;
+  const done = !boardUI.topic(selectedBoard)?.archived;
+  if (await boardUI.archive(selectedBoard, done) && done) location.hash = '#board'; else renderAll();
+});
+// The Board badge follows new Board messages while the app is open.
+setInterval(() => { if (profile && !sessionDenied && document.visibilityState !== 'hidden') void boardUI.refresh(); }, 30000);
 $('input').addEventListener('input', () => { composerEpoch++; grow(); try { client.setDraft($('input').value); } catch { /* too long: send stays disabled */ } noteTyping(); renderAll(); });
 // Tells the server the owner is typing (at most every 3 s while they type), like the "typing…" a person sees,
 // so a reply still waiting for more texts keeps waiting. Clearing the box says they stopped.
@@ -1027,6 +1066,7 @@ setInterval(refreshWearing, 10 * 60 * 1000);
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'hidden') { clearTimeout(pollTimer); pollTimer = null; clearTimeout(discordTimer); discordTimer = null; return; }
   refreshWearing();
+  if (profile) void boardUI.refresh();
   if (chatOpened && state.connection !== 'loading' && !polling) { readFailures = 0; await readChat(); }
   schedulePoll();
 });

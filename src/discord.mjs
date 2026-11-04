@@ -2,6 +2,9 @@
 // companion in direct messages with the bot; replies and reminders arrive there too.
 // The bot token is stored server-side and never returned to any client. Only the one Discord user who
 // sent the pairing code can talk to the companion through the bot; everyone else is ignored.
+// Board inbox (#55): a DM cannot hold threads, so a Board sub-conversation's message arrives in the DM under a short
+// "📋 #15 · title" header and its Discord message ids are kept. Discord's reply-to on one of them answers that
+// sub-conversation; every other DM message goes to the main chat as before.
 import { randomInt } from 'node:crypto';
 import { readFileSync, closeSync } from 'node:fs';
 import { ConversationError } from './conversations.mjs';
@@ -150,10 +153,10 @@ class Gateway {
 }
 
 export class DiscordBridge {
-  #links; #conversations; #files; #fetch; #WebSocket; #gateways = new Map(); #states = new Map(); #pending = new Map(); #log; #notes = new Map(); #carried = new Map(); #pause;
+  #links; #conversations; #files; #fetch; #WebSocket; #gateways = new Map(); #states = new Map(); #pending = new Map(); #log; #notes = new Map(); #carried = new Map(); #pause; #boardInbox;
   // files: the chat FileStore. Without it, attachments are refused with a short note.
-  constructor({ links, conversations, files = null, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, log = () => {}, pause = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
-    this.#pause = pause;
+  constructor({ links, conversations, files = null, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, log = () => {}, pause = ms => new Promise(resolve => setTimeout(resolve, ms)), boardInbox = null }) {
+    this.#pause = pause; this.#boardInbox = boardInbox;
     this.#links = links; this.#conversations = conversations; this.#files = files; this.#fetch = fetchImpl; this.#WebSocket = WebSocketImpl; this.#log = log;
   }
 
@@ -209,7 +212,7 @@ export class DiscordBridge {
 
   // Called by Conversations when a turn ends or a proactive message is delivered. Only replies to Discord messages and
   // proactive messages go to the DM; app conversations stay in the app. Files the companion attached follow the text.
-  settled({ companionId, requestId, state, text, messageId, proactive }) {
+  settled({ companionId, threadId, requestId, state, text, messageId, proactive, board }) {
     const channel = this.#pending.get(requestId);
     this.#pending.delete(requestId);
     // Folded into the reply to the owner's next message: that reply answers both.
@@ -225,8 +228,13 @@ export class DiscordBridge {
     } else if (proactive && link.channel_id) { target = link.channel_id; reply = text; }
     if (!target) return;
     const files = messageId && this.#files ? this.#files.list(messageId).filter(file => file.direction === 'companion') : [];
+    // A Board sub-conversation's message: its topic header, and the DM messages are remembered for reply-to routing.
+    const sent = board && this.#boardInbox ? [] : null;
+    const header = board?.label ? String(board.label).replace(/[*_~|\\\x60]/g, '').slice(0, 120) : '';
+    if (header && reply) reply = '**📋 ' + header + '**\n' + reply;
     (async () => {
-      if (reply) await this.#burst(link, target, reply);
+      try { if (reply) await this.#burst(link, target, reply, sent); }
+      finally { for (const id of sent ?? []) { try { this.#boardInbox.rememberDiscord(companionId, id, threadId); } catch { /* routing hint only */ } } }
       for (const file of files) await this.#sendFile(companionId, link, target, file);
     })().catch(error => this.#log(`Discord delivery failed: ${error.message}`));
   }
@@ -302,7 +310,9 @@ export class DiscordBridge {
     if (sent.length > MAX_ATTACHMENTS) { await this.#say(link, message.channel_id, `*Send at most ${MAX_ATTACHMENTS} files per message.*`); return; }
     const requestId = 'discord-' + message.id;
     try {
-      const threadId = this.#conversations.ongoingThread(companionId);
+      // A Discord reply to a Board message answers that Board sub-conversation (#55); anything else is the main chat.
+      const replied = typeof message.message_reference?.message_id === 'string' ? this.#boardInbox?.discordThread(companionId, message.message_reference.message_id) : null;
+      const threadId = replied ?? this.#conversations.ongoingThread(companionId);
       const typing = setInterval(() => this.#rest(link.token, 'POST', `/channels/${message.channel_id}/typing`).catch(() => {}), 8000);
       this.#pending.set(requestId, { id: message.channel_id, typing });
       this.#rest(link.token, 'POST', `/channels/${message.channel_id}/typing`).catch(() => {});
@@ -372,20 +382,23 @@ export class DiscordBridge {
   }
 
   // Like a person texting: each paragraph is its own Discord message, with a short typing pause in between.
-  async #burst(link, channelId, text) {
+  async #burst(link, channelId, text, sent = null) {
     const bubbles = splitBubbles(stripFeelingTags(text).text);
     for (const [index, bubble] of bubbles.entries()) {
       if (index) {
         this.#rest(link.token, 'POST', `/channels/${channelId}/typing`).catch(() => {});
         await this.#pause(Math.min(1800, 500 + bubble.length * 12));
       }
-      if (!await this.#say(link, channelId, bubble)) return;
+      if (!await this.#say(link, channelId, bubble, sent)) return;
     }
   }
 
-  async #say(link, channelId, text) {
+  async #say(link, channelId, text, sent = null) {
     for (const content of chunks(text)) {
-      try { await this.#rest(link.token, 'POST', `/channels/${channelId}/messages`, { content, allowed_mentions: { parse: [] } }); }
+      try {
+        const posted = await this.#rest(link.token, 'POST', `/channels/${channelId}/messages`, { content, allowed_mentions: { parse: [] } });
+        if (sent && typeof posted?.id === 'string') sent.push(posted.id);
+      }
       catch (error) { this.#log(`Discord send failed: ${error.message}`); return false; }
     }
     return true;

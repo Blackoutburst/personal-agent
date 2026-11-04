@@ -29,7 +29,8 @@ self.addEventListener('fetch', event => {
   })());
 });
 
-// The payload is {type, threadId, messageId, title, body}, encrypted by the server for this browser only.
+// The payload is {type, threadId, messageId, title, body, board?}, encrypted by the server for this browser only.
+// board marks a Board sub-conversation's message (#55): opening it shows that sub-conversation in the Board tab.
 self.addEventListener('push', event => event.waitUntil((async () => {
   let data = {};
   try { data = event.data?.json() ?? {}; } catch { /* shown as a plain new message */ }
@@ -41,16 +42,18 @@ self.addEventListener('push', event => event.waitUntil((async () => {
   if (!apple && windows.some(client => client.visibilityState === 'visible' && client.focused)) return;
   await self.registration.showNotification(String(data.title || 'Your companion').slice(0, 60), {
     body: String(data.body || 'New message').slice(0, 200), tag: data.messageId ? `message-${data.messageId}` : undefined,
-    icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', data: { threadId: data.threadId ?? null } });
+    icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', data: { threadId: data.threadId ?? null, board: data.board === true } });
 })()));
 
 self.addEventListener('notificationclick', event => {
   event.notification.close();
   event.waitUntil((async () => {
-    const target = new URL('./#chat', self.registration.scope).href;
+    const { threadId = null, board = false } = event.notification.data ?? {};
+    const hash = board && typeof threadId === 'string' && /^[0-9a-f-]{36}$/.test(threadId) ? '#board/' + threadId : '#chat';
+    const target = new URL('./' + hash, self.registration.scope).href;
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     const open = windows.find(client => client.url.startsWith(self.registration.scope));
-    if (open) { await open.focus(); if ('navigate' in open && !open.url.endsWith('#chat')) await open.navigate(target).catch(() => {}); return; }
+    if (open) { await open.focus(); if ('navigate' in open && !open.url.endsWith(hash)) await open.navigate(target).catch(() => {}); return; }
     await self.clients.openWindow(target);
   })());
 });

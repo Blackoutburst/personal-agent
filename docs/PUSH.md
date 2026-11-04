@@ -9,7 +9,8 @@ result), the owner's Android devices get a notification, unless the app is open.
   `POST api/companion {action: "pushRegister", token}`. The server binds the token to the signed-in owner
   (`push_devices`; a token re-registered by another account moves to it; newest 10 per owner).
   `pushUnregister` removes only the caller's own token. On each delivered message (the `onSettled` hook shared
-  with Discord), every device of that owner gets a **data-only** FCM message, `{type, threadId, messageId, name}`,
+  with Discord), every device of that owner gets a **data-only** FCM message, `{type, threadId, messageId, name}`
+  (plus `board: "1"` for a Board sub-conversation, docs/BOARD-INBOX.md, so the tap opens it in the Board tab),
   with Android priority HIGH. The message text never goes through Google. Turns that came in through Discord are
   not pushed, because Discord notifies for those itself. Tokens Google reports as gone are removed.
 - **App** (`Push.kt`): `PushService` receives the data message, skips it if the app is in the foreground,
@@ -51,7 +52,8 @@ needs no review and updates with every deploy. The same works on Android Chrome 
   `webPushSubscribe {endpoint, p256dh, auth, preview}`, `webPushStatus {endpoint}` and `webPushUnsubscribe {endpoint}`,
   always for the signed-in owner (`web_push_subscriptions`; re-subscribing from another account moves it; newest 10 per
   owner). Endpoints must be https URLs of the browsers' push services (Apple, Google, Mozilla, Microsoft), because the
-  server POSTs to them. The same settle events as Android push send `{type, threadId, messageId, title, body}`,
+  server POSTs to them. The same settle events as Android push send `{type, threadId, messageId, title, body}`
+  (plus `board: true` for a Board sub-conversation: `sw.js` then opens `#board/<threadId>`),
   encrypted for that browser alone (RFC 8291 aes128gcm, VAPID RFC 8292, Node crypto only), so the push service only
   relays ciphertext. `body` is a plain-text preview of up to 180 characters, or "New message" when the device turned
   the preview off. Subscriptions the push service reports gone (404/410) are removed. Logs carry counts only.

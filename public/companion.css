@@ -547,3 +547,23 @@ legend { font-weight: 700; margin-bottom: 10px; }
   .cal-date { margin: 3px 0 1px 3px; font-size: 11px; min-width: 20px; height: 20px; line-height: 20px; }
 }
 .github-link .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+/* Board tab (#55): the companion's Board messages, one conversation per ticket. */
+.nav-badge { display: inline-block; min-width: 18px; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--body); color: var(--on-body); font-size: 11px; line-height: 16px; text-align: center; }
+.nav-badge[hidden] { display: none; }
+.nav a[aria-current="page"] .nav-badge { background: var(--card); color: var(--ink); }
+.board-filter { display: flex; gap: 8px; margin: 0 0 12px; }
+.board-filter .text-button[aria-pressed="true"] { background: var(--body); color: var(--on-body); }
+.board-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.board-row { display: flex; align-items: center; gap: 8px; }
+.board-topic { position: relative; flex: 1; min-width: 0; display: grid; gap: 4px; text-align: left; padding: 12px 44px 12px 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); color: var(--ink); font: inherit; cursor: pointer; }
+.board-topic:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.board-topic-head { display: flex; justify-content: space-between; gap: 10px; }
+.board-topic-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-topic-head small, .board-topic-preview { color: var(--soft); }
+.board-topic-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.board-topic.unread strong { font-weight: 800; }
+.board-unread { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); min-width: 20px; padding: 2px 6px; border-radius: 999px; background: var(--body); color: var(--on-body); font-size: 12px; font-weight: 700; text-align: center; }
+.board-banner { display: flex; align-items: center; gap: 10px; margin: 6px 16px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.board-banner[hidden] { display: none; }
+.board-banner strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

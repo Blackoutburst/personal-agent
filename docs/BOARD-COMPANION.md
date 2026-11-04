@@ -1,5 +1,8 @@
 # The companion on the Board
 
+> Since #55 the companion's messages from Board wakes go to the Board tab, one sub-conversation per Board thread or
+> ticket, not to the main chat: see [BOARD-INBOX.md](BOARD-INBOX.md).
+
 An owner whose runtime config has a `board` entry gets a companion that acts on the Board
 (board.blackoutburst.com) for them. On the Board side the companion is a **companion profile**
 (Board 2.19, schema 19, Board ticket #50): its own identity shown as "Name · for Owner", with the

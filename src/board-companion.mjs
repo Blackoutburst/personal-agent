@@ -7,6 +7,8 @@
 //    "board" wake per thread; the companion reads them with its tools and answers on the Board, asks the owner, or
 //    stays silent. Mentions from before the first check are skipped.
 // 3. Profile sync: the companion's Board name/avatar/description follow the app's Look settings.
+// Board inbox (#55, docs/BOARD-INBOX.md): with an inbox, each wake is recorded with its Board thread and ticket first, so
+// Conversations delivers it into that topic's own sub-conversation instead of the owner's main chat.
 // The Board connection is the owner's paired bridge; this module never sees its credential.
 import { createHash } from 'node:crypto';
 import { BoardClient } from './board-client.mjs';
@@ -83,13 +85,14 @@ export function ownerMentionPrompt(threadId, messageIds) {
 
 export class BoardCompanion {
   #db; #owners; #profiles; #scheduler; #companionIdFor; #clientFor; #timer = null; #running = false; #clients = new Map();
-  #log; #synced = new Map(); #active;
+  #log; #synced = new Map(); #active; #inbox;
   // The app's Board session id is stable per owner so the Board keeps its inbox position across restarts.
   // active(companionId): false while the owner switched the Board connector off (#43).
   constructor({ store, owners, profiles, scheduler, companionIdFor, active = () => true,
     clientFor = (board, owner) => new BoardClient({ board,
       sessionId: 'companion-app-' + createHash('sha256').update(String(owner?.label ?? '')).digest('hex').slice(0, 16) }),
-    log = () => {} }) {
+    log = () => {}, inbox = null }) {
+    this.#inbox = inbox;
     this.#db = store.db; this.#owners = owners.filter(owner => owner.board); this.#profiles = profiles;
     this.#scheduler = scheduler; this.#companionIdFor = companionIdFor; this.#active = active; this.#clientFor = clientFor; this.#log = log;
     this.#db.exec(`CREATE TABLE IF NOT EXISTS board_needs_you_seen (
@@ -178,8 +181,10 @@ export class BoardCompanion {
       for (const { threadId, forOwner, ids } of threads.values()) {
         if (!baseline) {
           const requestId = (forOwner ? 'board-owner-ping-' : 'board-mention-') + createHash('sha256').update(ids.join(',')).digest('hex').slice(0, 32);
-          this.#scheduler.enqueueEvent(companionId, { requestId, kind: 'board',
+          await this.#route(client, companionId, requestId, { boardThreadId: threadId });
+          const queued = this.#scheduler.enqueueEvent(companionId, { requestId, kind: 'board',
             prompt: (forOwner ? ownerMentionPrompt : mentionPrompt)(threadId, ids.slice(0, 20)) });
+          this.#inbox?.routed(companionId, requestId, queued?.id);
           this.#log(`Board companion: queued ${forOwner ? 'owner-ping' : 'mention'} wake for ${ids.length} message(s) in thread ${threadId.slice(0, 8)}`);
         }
         for (const id of ids) mark.run(companionId, id, now);
@@ -202,10 +207,41 @@ export class BoardCompanion {
       if (!request || request.status !== 'open' || request.owner_id !== boardOwner) continue;
       if (typeof request.id !== 'string' || !ID.test(request.id) || seen.get(companionId, request.id)) continue;
       const requestId = 'board-needs-you-' + createHash('sha256').update(request.id).digest('hex').slice(0, 32);
-      this.#scheduler.enqueueEvent(companionId, { requestId, kind: 'board', prompt: needsYouPrompt({
-        id: request.id, ticket_id: clean(request.ticket_id, 64), ticket_number: Number.isInteger(request.ticket_number) ? request.ticket_number : null }) });
+      // The Board lists a request with its ticket's number and title (older Boards: ticket_number).
+      const number = Number.isInteger(request.number) ? request.number : Number.isInteger(request.ticket_number) ? request.ticket_number : null;
+      await this.#route(client, companionId, requestId, { ticketId: request.ticket_id, ticketNumber: number,
+        title: typeof request.title === 'string' ? request.title : null });
+      const queued = this.#scheduler.enqueueEvent(companionId, { requestId, kind: 'board', prompt: needsYouPrompt({
+        id: request.id, ticket_id: clean(request.ticket_id, 64), ticket_number: number }) });
+      this.#inbox?.routed(companionId, requestId, queued?.id);
       mark.run(companionId, request.id, Date.now());
     }
+  }
+
+  // Records what a wake is about before it is queued. A mention knows its thread: the thread names its ticket. A
+  // Needs-you request knows its ticket: the ticket names its discussion thread. One read-only Board lookup fills in
+  // the other side unless the topic is already known; a failed lookup groups by what the wake carries.
+  async #route(client, companionId, requestId, topic) {
+    if (!this.#inbox) return;
+    let value = { ...topic };
+    const known = this.#inbox.known(companionId, value);
+    if (known?.boardThreadId && (known.ticketId || known.title)) value = { ...known, ...Object.fromEntries(Object.entries(value).filter(([, item]) => item != null)) };
+    else {
+      try {
+        if (value.boardThreadId) {
+          const thread = (await client.call('get_thread', { thread_id: value.boardThreadId, limit: 1, view: 'full' }))?.thread;
+          const ticket = thread?.ticket;
+          value = { ...value, ticketId: ticket?.id ?? null, ticketNumber: Number.isInteger(ticket?.number) ? ticket.number : null,
+            title: typeof ticket?.title === 'string' ? ticket.title : typeof thread?.title === 'string' ? thread.title : null };
+        } else if (value.ticketId) {
+          const ticket = (await client.call('get_ticket', { ticket_id: value.ticketId, view: 'full' }))?.ticket;
+          value = { ...value, boardThreadId: typeof ticket?.thread_id === 'string' ? ticket.thread_id : null,
+            ticketNumber: value.ticketNumber ?? (Number.isInteger(ticket?.number) ? ticket.number : null),
+            title: value.title ?? (typeof ticket?.title === 'string' ? ticket.title : null) };
+        }
+      } catch (error) { this.#log(`Board companion: topic lookup failed (${error.code ?? 'ERROR'}); grouped by what the wake carries`); }
+    }
+    this.#inbox.route(companionId, requestId, value);
   }
 
   // Keep the companion's Board profile in step with its Look (name and character). Skips unchanged values.

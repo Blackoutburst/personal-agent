@@ -53,8 +53,9 @@ class MainActivity : ComponentActivity() {
 
     private fun handle(intent: Intent?) {
         intent?.getStringExtra(Push.EXTRA_THREAD)?.let { threadId ->
-            intent.removeExtra(Push.EXTRA_THREAD)
-            model.openThread(threadId)
+            val board = intent.getBooleanExtra(Push.EXTRA_BOARD, false)
+            intent.removeExtra(Push.EXTRA_THREAD); intent.removeExtra(Push.EXTRA_BOARD)
+            model.openThread(threadId, board)
         }
         val data = intent?.data ?: return
         if (intent.action == Intent.ACTION_VIEW && data.scheme == "blackoutburst-companion") {

@@ -25,6 +25,7 @@
       </button>
       <nav id="nav" class="nav" aria-label="Pages" hidden>
         <a href="#chat" data-view="chat">Chat</a>
+        <a id="nav-board" href="#board" data-view="board" hidden>Board<span id="nav-board-badge" class="nav-badge" hidden></span></a>
         <a href="#calendar" data-view="calendar">Calendar</a>
         <a id="nav-studio" href="#studio" data-view="studio" hidden>Studio</a>
         <a href="#me" data-view="me">Me</a>
@@ -49,6 +50,11 @@
           <p id="stage-mood" class="stage-mood"></p>
         </div>
         <div class="chat">
+          <div id="board-banner" class="board-banner" hidden>
+            <a id="board-back" class="text-button" href="#board">‹ Board</a>
+            <strong id="board-topic"></strong>
+            <button id="board-done" class="text-button" type="button">Done</button>
+          </div>
           <div id="history" class="history" tabindex="0" aria-label="Your chat">
             <div id="welcome" class="welcome" hidden><p id="welcome-text"></p></div>
             <ol id="messages" class="messages"></ol>
@@ -82,6 +88,17 @@
             <button id="send" class="round send" type="submit" aria-label="Send" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V6M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           </form>
         </div>
+      </section>
+
+      <section id="view-board" class="view page board-page" hidden>
+        <h1>Board</h1>
+        <p id="board-intro" class="intro">Board messages from your companion, one conversation per ticket. Answer inside one and they know which ticket it is about.</p>
+        <div class="board-filter" role="group" aria-label="Show">
+          <button id="board-filter-open" class="text-button" type="button" aria-pressed="true">Open</button>
+          <button id="board-filter-archived" class="text-button" type="button" aria-pressed="false">Archived</button>
+        </div>
+        <p id="board-note" class="intro" role="status"></p>
+        <ul id="board-list" class="board-list" aria-label="Board conversations"></ul>
       </section>
 
       <section id="view-studio" class="view page studio-page" lang="fr" hidden>
