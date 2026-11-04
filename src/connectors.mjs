@@ -38,7 +38,7 @@ export class Connectors {
     const configured = this.#boardConfigured(companionId), on = configured && this.enabled(companionId, 'board');
     items.push({ id: 'board', name: 'Agent Board', purpose: 'Create tickets, follow project work and answer requests on the Board.',
       state: !configured ? 'unavailable' : on ? 'connected' : 'paused',
-      detail: !configured ? 'Not set up for you on this server yet. The server admin links it.' : on ? 'board.blackoutburst.com' : 'Switched off: the Board is untouched, I just stop using it.',
+      detail: !configured ? 'Not set up for you yet. It takes a few steps on the Board, then the server admin finishes it on the server.' : on ? 'board.blackoutburst.com' : 'Switched off: the Board is untouched, I just stop using it.',
       actions: !configured ? [] : on ? ['disconnect'] : ['connect'] });
     // GitHub (#45): the owner pastes their own token; linking and unlinking use githubLink / githubUnlink.
     const github = this.#github()?.status(companionId);

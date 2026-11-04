@@ -1,0 +1,11 @@
+Use your image generation tool to make EDITS of the attached base.png, one per item below. Each edit must keep the character IDENTICAL to base.png: same canvas size, framing, pose, head position and angle, face and expression (the exact same eyes, eyebrows and mouth, in the same place), hair, flat no-outline art style and fully transparent background (no haze, glow, blur, shadow or tint). Change ONLY the clothes (and add the listed accessory on the head or hair if any). Headwear and brims must stay ABOVE the eyebrows and never cover the eyes or eyebrows. Keep the signature {{ORNAMENT}} unless the item says otherwise. Head rules for every picture: {{HEAD_RULES}} HAIR NEVER POKES THROUGH OR STICKS OUT ABOVE ANY HAT, CAP, HOOD OR HEADBAND: with headwear, any strand that sticks up (ahoge) is hidden under it, not drawn at all. Waist-up framing as in base. No text, no background, no scenery. Save each result into ./outfit/ with the exact file name given (copy the generated file there). Do nothing else.
+
+halloween.png — cute witch: black pointed witch hat with a band in the character's colors, black cape with colored lining, small pumpkin brooch
+christmas.png — red Santa-style outfit with white fluffy trim, red Santa hat with a white pompom, small holly pin
+new-year.png — elegant furisode kimono in the character's colors with flower patterns, obi sash, kanzashi hair ornament
+lunar-new-year.png — red qipao with gold embroidery, gold tassel hairpin
+valentine.png — soft pink outfit with a heart-shaped brooch, small heart hairclip
+easter.png — pastel cream outfit with a fluffy white bunny-ears headband
+summer-festival.png — light yukata in the character's colors with a goldfish pattern, obi, small fireworks hairpin
+birthday.png — cute festive outfit with a small striped party hat on the head
+party.png — sparkly golden party outfit for New Year's Eve, small star hairclip

@@ -1,0 +1,16 @@
+{
+  "id": "nova",
+  "label": "Nova",
+  "hint": "a short hint shown under the name in the picker, e.g. a star-haired fox girl",
+  "looks": "how the companion is told it looks, in the second person, e.g. an anime girl with short silver hair, fox ears, teal eyes and a star hairpin",
+  "signature": "the base outfit in the second person, e.g. your signature teal hoodie with a star zipper",
+  "prompt": {
+    "NAME": "Nova-chan",
+    "DESIGN_SOURCE": " from the attached design.png",
+    "DESIGN": "short wavy silver hair with an ahoge, fox ears, teal eyes, a gold star hairpin on the left, teal hoodie with a star zipper pull",
+    "HEAD_TOP": "the ahoge, the fox ears and the hairpin",
+    "EYES": "teal",
+    "ORNAMENT": "gold star hairpin",
+    "HEAD_RULES": "the fox ears always stay as in base.png."
+  }
+}

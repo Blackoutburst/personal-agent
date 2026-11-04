@@ -1,0 +1,17 @@
+Use your image generation tool to make EDITS of the attached base.png, one per item below. Each edit must keep EVERYTHING identical to base.png — same canvas size, same framing, same pose, same head position and angle, same hair, outfit, accessories, colors, flat no-outline art style and fully transparent background (no haze, glow, blur, shadow or tint) — and change ONLY the facial expression (eyes, eyebrows, mouth, blush, small face marks like tears). Exactly two eyes and two eyebrows, drawn exactly where the base ones are; no traces of the base eyes may remain. Keep the {{EYES}} eye color. No hands, no props, no symbols outside the face. Save each result into ./expr/ with the exact file name given (copy the generated file there). Do nothing else.
+
+laugh.png — laughing hard, eyes squeezed shut, wide open laughing mouth
+wink.png — playful wink (the character's right eye closed, viewer's left), cheeky smile
+surprised.png — surprised: wide round eyes, raised eyebrows, small round open mouth
+sad.png — sad: downcast eyes, eyebrows angled up in the middle, small frown
+worried.png — worried: anxious eyebrows, eyes looking slightly aside, wavy uneasy mouth
+teary-smile.png — moved: small happy tears at the eye corners, warm smile
+embarrassed.png — embarrassed: strong blush across cheeks and nose, eyes looking away, flustered wavy mouth
+pout.png — pouting: puffed cheeks, small pout mouth, slightly narrowed eyes, mild grumpy eyebrows
+proud.png — proud and smug: eyes half closed confidently, eyebrows raised, satisfied closed smile
+excited.png — excited: big sparkling starry eyes, wide open smile
+confused.png — confused: one eyebrow raised, the other lowered, small crooked mouth
+determined.png — determined: firm eyebrows, focused eyes, small confident closed smile
+tender.png — tender and loving: soft half-lidded gentle eyes, soft smile, warm blush
+love.png — adoring: eyes with small heart-shaped highlights, happy smile, blush
+focused.png — focused: slightly narrowed concentrating eyes, neutral closed mouth

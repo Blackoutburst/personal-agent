@@ -60,6 +60,8 @@ const STATIC = new Map([
   ['/web-push-ui.mjs', ['web-push-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/bubbles.mjs', ['bubbles.mjs', 'text/javascript; charset=utf-8']],
   ['/voice-ui.mjs', ['voice-ui.mjs', 'text/javascript; charset=utf-8']],
+  // The character handbook zip (Look page; built by ops/build-character-kit.py from character-kit/).
+  ['/character-kit.zip', ['character-kit.zip', 'application/zip']],
   ['/weather-ui.mjs', ['weather-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-character.mjs', ['companion-character.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-theme.js', ['companion-theme.js', 'text/javascript; charset=utf-8']],

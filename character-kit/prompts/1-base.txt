@@ -1,0 +1,9 @@
+Use your image generation tool to create ONE image, then save it as ./base.png in the current directory (copy the generated file there). Do nothing else.
+
+Image: a cute anime companion character ("{{NAME}}"), bust portrait from the waist up, facing the viewer, centered, gentle soft smile, eyes open looking at the viewer.
+- Character design (hair, outfit, accessories){{DESIGN_SOURCE}}: {{DESIGN}}
+- Art style AND framing from the attached framing-and-style.png (another character in the same series): flat, cel-shaded, NO outlines, few strokes, soft pastel shading, rosy cheek blush, chibi-leaning cute proportions (head slightly large). Same canvas, same scale, same head size and position, same waist-up crop. Take ONLY the art style and framing from it, nothing of that character's design (not the hair, colors, flower or clothes).
+- Square canvas. The top of the head (including {{HEAD_TOP}}) fully inside the frame with a margin; cut off at the waist at the bottom edge. Character centered horizontally.
+- One face only: exactly two eyes and two eyebrows, clearly visible, not hidden by bangs.
+- Background: fully transparent, with no haze, glow, blur, shadow, gradient or soft halo. If transparency is impossible, a perfectly flat solid #00FF00 green background.
+- No text, no frame.

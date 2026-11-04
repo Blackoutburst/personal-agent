@@ -507,6 +507,7 @@ function startLook() {
   $('contacts-panel').hidden = !profile;
   if (profile) contactUI.load(); else contactUI.clear(); weatherUI.clear();
   $('weather-panel').hidden = !profile;
+  $('character-kit').hidden = !profile;
   if (profile) weatherUI.load(); else weatherUI.clear();
   $('personality-panel').hidden = !profile;
   if (profile) personalityUI.load(companionName()); else personalityUI.clear();
@@ -827,6 +828,8 @@ function renderConnectors() {
       card.append(githubControls(item, owner));
     } else if (item.id === 'x') {
       card.append(xControls(item, owner));
+    } else if (item.id === 'board' && item.state === 'unavailable') {
+      card.append(boardSetupSteps());
     } else if (item.actions.length) {
       const on = item.actions.includes('connect');
       const button = el('button', { type: 'button', className: on ? 'button primary' : 'button', disabled: connectorsBusy, textContent: on ? 'Connect' : 'Disconnect' });
@@ -839,6 +842,16 @@ function renderConnectors() {
     }
     return card;
   }));
+}
+
+// Agent Board: not set up for this owner yet. Pairing needs their Board account and the server admin (docs/BOARD-COMPANION.md).
+function boardSetupSteps() {
+  const board = (text, path = '') => el('a', { href: 'https://board.blackoutburst.com/' + path, target: '_blank', rel: 'noopener', textContent: text });
+  return el('div', { className: 'github-link' }, el('ol', {},
+    el('li', {}, 'On the ', board('Board'), ', open Agents › Profiles › Create companion. Name it after ', companionName(), ', and pick its projects and permissions. It works the same for a Claude or a ChatGPT (Codex) companion.'),
+    el('li', {}, 'When the server admin is ready, open ', board('Connect agent', '?page=setup'), ', name the computer "Companion server" and generate a pairing code. Send the code to the admin privately, not on the Board: it works once and expires after 10 minutes.'),
+    el('li', {}, 'After the admin has paired it, open your companion profile › Connections › Link executor. Pick the device "Companion server" and the client "Other MCP client", keep the installation key, and send that key to the admin.'),
+    el('li', {}, 'The admin links it on the server. This card then shows Connected, and ', companionName(), ' can follow your projects, answer Board requests and pass on pings for you.')));
 }
 
 // GitHub (#45): each owner pastes their own fine-grained token. It stays on the server and is never shown again.

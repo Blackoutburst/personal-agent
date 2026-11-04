@@ -1,0 +1,8 @@
+Use your image generation tool to make 6 EDITS of the attached base.png. Each edit must keep EVERYTHING identical to base.png — same canvas size, same framing, same pose, same head position and angle, same hair, outfit, accessories, colors, flat no-outline art style and fully transparent background (no haze, glow, blur, shadow or tint) — and change ONLY the facial expression (eyes, eyebrows, mouth, blush). Exactly two eyes and two eyebrows, drawn exactly where the base ones are; no traces of the base eyes may remain. Keep the {{EYES}} eye color. Save each result in the current directory with the exact file name given (copy the generated file there). Do nothing else.
+
+1. blink.png — same gentle smile, both eyes softly closed in a natural blink (curved closed eyelids with lashes).
+2. talk.png — eyes as in base, mouth open mid-sentence in a small friendly rounded "ah" shape, as if speaking.
+3. listening.png — attentive and curious: eyes a little wider and brighter, eyebrows slightly raised, small closed soft smile.
+4. thinking.png — eyes looking up and to the side (the character's left, viewer's right), eyebrows slightly furrowed in thought, small pursed mouth.
+5. happy.png — joyful: eyes closed in happy upturned arcs (^ ^), big open cheerful smile, a bit more blush.
+6. sleepy.png — drowsy: eyelids half-closed and droopy, small relaxed mouth, soft sleepy look.

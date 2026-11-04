@@ -1,0 +1,12 @@
+Use your image generation tool to make EDITS of the attached base.png, one per item below. Each edit must keep the character IDENTICAL to base.png: same canvas size, framing, pose, head position and angle, face and expression (the exact same eyes, eyebrows and mouth, in the same place), hair, flat no-outline art style and fully transparent background (no haze, glow, blur, shadow or tint). Change ONLY the clothes (and add the listed accessory on the head or hair if any). Headwear and brims must stay ABOVE the eyebrows and never cover the eyes or eyebrows. Keep the signature {{ORNAMENT}} unless the item says otherwise. Head rules for every picture: {{HEAD_RULES}} HAIR NEVER POKES THROUGH OR STICKS OUT ABOVE ANY HAT, CAP, HOOD OR HEADBAND: with headwear, any strand that sticks up (ahoge) is hidden under it, not drawn at all. Waist-up framing as in base. No text, no background, no scenery. Save each result into ./outfit/ with the exact file name given (copy the generated file there). Do nothing else.
+
+cozy-home.png — soft oversized cream knit cardigan over a simple top in the character's colors
+pajamas.png — cute pastel pajamas in the character's colors with a small print, a soft sleeping cap with a pompom
+rain.png — glossy yellow raincoat with the hood down, small rain-drop pin
+sunny.png — light white sundress with thin straps and a wide-brim straw hat with a ribbon in the character's colors
+snow.png — puffy cream winter coat, chunky knit scarf in the character's colors, fluffy earmuffs
+windy.png — beige trench coat with a belt, collar turned up, a few hair strands blown sideways
+spring.png — pastel dress with a white collar, small cherry-blossom pin
+summer.png — light white sailor-style top with trims in the character's colors
+autumn.png — warm brown knit sweater, a burgundy beret, small maple-leaf pin
+winter.png — cream turtleneck sweater with a cozy scarf in the character's colors
