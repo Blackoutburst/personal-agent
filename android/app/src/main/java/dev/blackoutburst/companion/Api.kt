@@ -65,8 +65,14 @@ import kotlinx.serialization.json.put
 /** Reminders, release and topic watches and the schedule settings (src/scheduler.mjs, api/schedules). */
 @Serializable data class Reminder(val id: String, val text: String, val dueAt: String, val state: String, val canCancel: Boolean = false)
 @Serializable data class Routine(val enabled: Boolean, val localTime: String, val weekday: Int? = null)
+/** boardWakeCap (#51): a number, JSON null for "no limit", or absent on an older server (then the empty object below). */
 @Serializable data class ScheduleSettings(val heartbeatEnabled: Boolean, val quietStart: String, val quietEnd: String,
-    val dailyDigest: Routine? = null, val weeklyCheckin: Routine? = null)
+    val dailyDigest: Routine? = null, val weeklyCheckin: Routine? = null, val boardWakeCap: JsonElement = BOARD_CAP_ABSENT) {
+    val boardCapOffered: Boolean get() = boardWakeCap !is JsonObject
+    val boardCapLimit: Int? get() = (boardWakeCap as? JsonPrimitive)?.takeUnless { it is kotlinx.serialization.json.JsonNull }?.content?.toIntOrNull()
+}
+val BOARD_CAP_ABSENT = JsonObject(emptyMap())
+const val BOARD_CAP_DEFAULT = 200
 @Serializable data class Digest(val at: String, val evidence: String, val urls: List<String> = emptyList())
 @Serializable data class Watch(
     val id: String, val version: Long, val kind: String, val condition: String, val state: String,

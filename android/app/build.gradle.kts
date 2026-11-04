@@ -39,8 +39,8 @@ android {
         applicationId = "dev.blackoutburst.companion"
         minSdk = 35
         targetSdk = 36
-        versionCode = 31
-        versionName = "0.21.0"
+        versionCode = 32
+        versionName = "0.22.0"
         buildConfigField("String", "SITE", "\"https://blackoutburst.com\"")
         buildConfigField("String", "COMPANION_PATH", "\"/personal-agent-preview/\"")
         for (name in listOf("APP_ID", "API_KEY", "PROJECT_ID", "SENDER_ID"))

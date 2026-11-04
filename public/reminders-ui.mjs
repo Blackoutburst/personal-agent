@@ -52,6 +52,9 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
     { key: 'dailyDigest', row: 'schedule-daily', fields: { enabled: 'schedule-daily-enabled', localTime: 'schedule-daily-time' } },
     { key: 'weeklyCheckin', row: 'schedule-weekly', fields: { enabled: 'schedule-weekly-enabled', localTime: 'schedule-weekly-time', weekday: 'schedule-weekly-day' } }
   ];
+  // #51 Board wake cap: sent only after the owner edits it; capEdited holds that edit's token.
+  let capEdited = 0;
+  const capOffered = () => Boolean(schedules?.settings && Object.hasOwn(schedules.settings, 'boardWakeCap') && $('schedule-board'));
   const supported = new Set(), routineEdits = new Map(routines.map(routine => [routine.key, new Map()]));
   function validRoutine(value, weekly) {
     return value && typeof value === 'object' && !Array.isArray(value) && typeof value.enabled === 'boolean'
@@ -101,6 +104,8 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
     $('schedule-list').replaceChildren(); $('upcoming-count').textContent = '';
     $('schedule-note').textContent = 'Sign in to see your reminders.';
     $('schedule-checkins').checked = false; $('schedule-quiet-start').value = ''; $('schedule-quiet-end').value = '';
+    capEdited = 0;
+    if ($('schedule-board')) { $('schedule-board').hidden = true; $('schedule-board-cap').value = ''; $('schedule-board-cap').disabled = false; $('schedule-board-unlimited').checked = false; }
     $('schedule-zone').textContent = ''; $('schedule-save').disabled = true; $('schedule-settings').hidden = true;
     routines.forEach(clearRoutine);
     $('upcoming').open = false;
@@ -301,9 +306,16 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
       $('schedule-quiet-start').value = schedules.settings.quietStart;
       $('schedule-quiet-end').value = schedules.settings.quietEnd;
     }
+    if ($('schedule-board')) $('schedule-board').hidden = !capOffered();
+    if (capOffered() && !capEdited) {
+      const cap = schedules.settings.boardWakeCap;
+      $('schedule-board-unlimited').checked = cap === null;
+      $('schedule-board-cap').value = cap === null ? '' : String(cap);
+      $('schedule-board-cap').disabled = cap === null;
+    }
     renderRoutines();
     renderWatches();
-    $('schedule-zone').textContent = `Your timezone: ${schedules.timezone}. Daily and weekly times use this zone. Quiet hours can delay delivery. Occasional check-ins run at most every six hours and stay silent without a useful update.`;
+    $('schedule-zone').textContent = `Your timezone: ${schedules.timezone}. Daily and weekly times use this zone. Quiet hours can delay delivery. Occasional check-ins run at most every six hours and stay silent without a useful update.${capOffered() ? ' Board wakes per day limits how often your companion wakes to answer Board mentions in any 24 hours.' : ''}`;
     $('schedule-save').disabled = busy;
   }
   async function refresh(reviewWatches = false) {
@@ -322,7 +334,7 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
   async function change(body) {
     if (busy) return;
     busy = true; message = null;
-    const current = ++generation, edited = editVersion;
+    const current = ++generation, edited = editVersion, sentCap = capEdited;
     const sentRoutineEdits = routines.map(routine => [routine.key, new Map(Object.keys(body.input?.[routine.key] ?? {})
       .map(field => [field, routineEdits.get(routine.key).get(field)]))]);
     render();
@@ -332,6 +344,7 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
         accept(next);
         if (body.action === 'configure') {
           if (edited === editVersion) dirty = false;
+          if (sentCap && capEdited === sentCap) capEdited = 0;
           for (const [key, sent] of sentRoutineEdits) for (const [field, token] of sent) {
             if (routineEdits.get(key).get(field) === token) routineEdits.get(key).delete(field);
           }
@@ -352,6 +365,10 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
   for (const id of ['schedule-checkins', 'schedule-quiet-start', 'schedule-quiet-end']) {
     $(id).addEventListener('input', () => { dirty = true; editVersion++; });
   }
+  for (const id of ['schedule-board-cap', 'schedule-board-unlimited']) $(id)?.addEventListener('input', () => {
+    capEdited = ++editVersion;
+    $('schedule-board-cap').disabled = $('schedule-board-unlimited').checked;
+  });
   for (const routine of routines) for (const [field, id] of Object.entries(routine.fields)) {
     $(id)?.addEventListener('input', () => {
       if (!supported.has(routine.key)) return;
@@ -366,6 +383,13 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
       if (!supported.has(routine.key) || !routineEdits.get(routine.key).size) continue;
       input[routine.key] = Object.fromEntries([...routineEdits.get(routine.key).keys()].map(field => [field,
         field === 'enabled' ? $(routine.fields[field]).checked : field === 'weekday' ? Number($(routine.fields[field]).value) : $(routine.fields[field]).value]));
+    }
+    if (capEdited && capOffered()) {
+      const unlimited = $('schedule-board-unlimited').checked, cap = Number($('schedule-board-cap').value);
+      if (!unlimited && !(Number.isInteger(cap) && cap >= 1 && cap <= 10000)) {
+        message = 'Board wakes per day must be a whole number from 1 to 10000, or choose No limit.'; render(); return;
+      }
+      input.boardWakeCap = unlimited ? null : cap;
     }
     return change({ action: 'configure', input });
   });

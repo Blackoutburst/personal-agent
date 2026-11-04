@@ -251,6 +251,8 @@ fun ScheduleSettingsSection(model: CompanionModel, state: UiState) {
         TimeButton(settings.quietEnd, !busy) { save { put("quietEnd", it) } }
     }
     ScheduleSwitch("Occasional check-ins", settings.heartbeatEnabled, !busy) { value -> save { put("heartbeatEnabled", value) } }
+    if (settings.boardCapOffered) BoardCapRow(settings.boardCapLimit, busy) { cap ->
+        save { if (cap == null) put("boardWakeCap", kotlinx.serialization.json.JsonNull) else put("boardWakeCap", cap) } }
     settings.dailyDigest?.let { daily ->
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { ScheduleSwitch("Daily digest", daily.enabled, !busy) { value ->
@@ -279,6 +281,24 @@ fun ScheduleSettingsSection(model: CompanionModel, state: UiState) {
     Text("Times use your timezone, ${state.schedules?.timezone}. Quiet hours can delay delivery. Check-ins run at most every six hours and stay silent without a useful update.",
         color = soft, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
     state.schedulesError?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
+}
+
+/** #51: how many Board wakes the companion may take in any 24 hours; switching the limit off removes the cap. */
+@Composable
+private fun BoardCapRow(limit: Int?, busy: Boolean, onSave: (Int?) -> Unit) {
+    ScheduleSwitch("Limit Board wakes per day", limit != null, !busy) { on -> onSave(if (on) BOARD_CAP_DEFAULT else null) }
+    if (limit != null) {
+        var text by remember(limit) { mutableStateOf(limit.toString()) }
+        val value = text.toIntOrNull()?.takeIf { it in 1..10000 }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(text, { if (it.length <= 5) text = it.filter(Char::isDigit) }, Modifier.weight(1f),
+                label = { Text("Board wakes per day") }, singleLine = true, isError = value == null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            ActionButton(onClick = { value?.let(onSave) }, Modifier.padding(start = 8.dp), enabled = !busy && value != null && value != limit) { Text("Save") }
+        }
+    }
+    Text("How often your companion may wake to answer Board mentions in any 24 hours.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
 }
 
 @Composable

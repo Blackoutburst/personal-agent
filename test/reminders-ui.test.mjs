@@ -35,10 +35,10 @@ const routineData = (settings = {}, extra = {}) => data({ ...extra, settings: {
 } });
 const routineIds = ['schedule-daily', 'schedule-daily-enabled', 'schedule-daily-time', 'schedule-weekly',
   'schedule-weekly-enabled', 'schedule-weekly-time', 'schedule-weekly-day'];
-function fixture({ routineNodes = true } = {}) {
+function fixture({ routineNodes = true, boardNodes = false } = {}) {
   const nodes = new Map(['upcoming', 'schedule-list', 'upcoming-count', 'schedule-note', 'schedule-checkins',
     'schedule-quiet-start', 'schedule-quiet-end', 'schedule-zone', 'schedule-save', 'schedule-settings', 'announce',
-    ...(routineNodes ? routineIds : [])]
+    ...(routineNodes ? routineIds : []), ...(boardNodes ? ['schedule-board', 'schedule-board-cap', 'schedule-board-unlimited'] : [])]
     .map(id => [id, new Element()]));
   nodes.get('schedule-save').disabled = true;
   nodes.get('upcoming').append(nodes.get('schedule-list'), nodes.get('schedule-settings'));
@@ -518,4 +518,39 @@ test('topic watches show their interval, latest result with sources and digest h
   assert.deepEqual(watchWrites(f)[0].body.input, { requestId: 'watch-change-1', id: WATCH, expectedVersion: 1, operation: 'edit', intervalHours: 12 });
   f.requests.at(-1).reply(watches([topic({ version: 2, intervalHours: 12 })])); await save;
   assert.equal(f.$('announce').textContent, 'Watch saved.'); assert.match(byClass(f, 'watch-row')[0].textContent, /Topic · every 12 h/);
+});
+
+const nextTick = () => new Promise(resolve => setImmediate(resolve));
+// #51: the owner edits or removes the Board wake cap; untouched, the cap is never sent.
+test('the Board wake cap shows when offered and is sent only after an edit, with No limit as null', async () => {
+  const f = fixture({ boardNodes: true });
+  const shown = f.ui.show(); f.requests.at(-1).reply(data({ settings: { heartbeatEnabled: false, quietStart: '22:00', quietEnd: '08:00', boardWakeCap: 200 } })); await shown;
+  assert.equal(f.$('schedule-board').hidden, false);
+  assert.equal(f.$('schedule-board-cap').value, '200');
+  assert.match(f.$('schedule-zone').textContent, /Board wakes per day/);
+  f.$('schedule-settings').emit('submit');
+  assert.equal(Object.hasOwn(f.requests.at(-1).body.input, 'boardWakeCap'), false, 'An untouched cap is not sent');
+  f.requests.at(-1).reply(data({ settings: { heartbeatEnabled: false, quietStart: '22:00', quietEnd: '08:00', boardWakeCap: 200 } })); await nextTick();
+  f.$('schedule-board-cap').value = '50'; await f.$('schedule-board-cap').emit('input');
+  f.$('schedule-settings').emit('submit');
+  assert.equal(f.requests.at(-1).body.input.boardWakeCap, 50);
+  f.requests.at(-1).reply(data({ settings: { heartbeatEnabled: false, quietStart: '22:00', quietEnd: '08:00', boardWakeCap: 50 } })); await nextTick();
+  f.$('schedule-board-unlimited').checked = true; await f.$('schedule-board-unlimited').emit('input');
+  assert.equal(f.$('schedule-board-cap').disabled, true);
+  f.$('schedule-settings').emit('submit');
+  assert.equal(f.requests.at(-1).body.input.boardWakeCap, null, 'No limit removes the cap');
+  f.requests.at(-1).reply(data({ settings: { heartbeatEnabled: false, quietStart: '22:00', quietEnd: '08:00', boardWakeCap: null } })); await nextTick();
+  assert.equal(f.$('schedule-board-unlimited').checked, true);
+  const count = f.requests.length;
+  f.$('schedule-board-unlimited').checked = false; await f.$('schedule-board-unlimited').emit('input');
+  f.$('schedule-board-cap').value = '0'; await f.$('schedule-board-cap').emit('input');
+  await f.$('schedule-settings').emit('submit');
+  assert.equal(f.requests.length, count, 'An invalid cap is refused before sending');
+  assert.match(f.$('schedule-note').textContent, /1 to 10000/);
+});
+
+test('an older server without the Board cap keeps the cap controls hidden', async () => {
+  const f = fixture({ boardNodes: true });
+  const shown = f.ui.show(); f.requests.at(-1).reply(data()); await shown;
+  assert.equal(f.$('schedule-board').hidden, true);
 });

@@ -4,7 +4,7 @@ import { ReleaseWatches } from './release-watches.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/, HASH = /^[a-f0-9]{64}$/, CLOCK = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
-const PERIOD = 6 * 3600000, GRACE = 24 * 3600000, DAY_MS = 24 * 3600000;
+const PERIOD = 6 * 3600000, GRACE = 24 * 3600000, DAY_MS = 24 * 3600000, BOARD_WAKE_CAP = 200, MAX_BOARD_WAKE_CAP = 10000;
 const TERMINAL = new Set(['message', 'silent', 'cancelled', 'interrupted', 'error', 'missed']);
 const ROUTINES = ['dailyDigest', 'weeklyCheckin'];
 const CODES = new Set(['INVALID_REQUEST', 'NOT_FOUND', 'CONFLICT', 'CAPACITY', 'UNAVAILABLE', 'IDENTITY_CHANGED']);
@@ -69,16 +69,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS scheduler_routine_attempt ON scheduler_routine
  WHERE admitted_at IS NOT NULL;`;
 
 export class SchedulerStore {
-  #db; #timezone; #now; #spacing; #cap; #release; #boardSpacing; #boardCap; #log; #heldLogged = new Set();
+  #db; #timezone; #now; #spacing; #cap; #release; #boardSpacing; #log; #heldLogged = new Set();
   // log(line) receives only kinds, reasons and id prefixes: never prompts or private content.
   constructor({ store, timezoneFor = () => 'UTC', now = Date.now, minSpacingMs = 300000, maxTurnsPerDay = 24,
-    boardSpacingMs = 30000, maxBoardWakesPerDay = 200, log = () => {} }) {
+    boardSpacingMs = 30000, log = () => {} }) {
     requireSchedule(store?.db && typeof timezoneFor === 'function' && typeof now === 'function'
       && integer(minSpacingMs) && integer(maxTurnsPerDay, 1, 1000) && integer(boardSpacingMs)
-      && integer(maxBoardWakesPerDay, 1, 10000) && typeof log === 'function');
+      && typeof log === 'function');
     this.#db = store.db; this.#timezone = timezoneFor; this.#now = now; this.#spacing = minSpacingMs; this.#cap = maxTurnsPerDay;
-    this.#boardSpacing = boardSpacingMs; this.#boardCap = maxBoardWakesPerDay; this.#log = log;
-    this.#tx(() => { this.#db.exec(SCHEMA); this.#release = new ReleaseWatches(this.#db, code => new SchedulerError(code)); });
+    this.#boardSpacing = boardSpacingMs; this.#log = log;
+    this.#tx(() => { this.#db.exec(SCHEMA);
+      // #51: the owner's cap on Board wakes per rolling 24 h. A separate table keeps scheduler_settings unchanged for
+      // older releases after a rollback. No row means the default; a NULL cap means no cap.
+      this.#db.exec('CREATE TABLE IF NOT EXISTS scheduler_board_caps(companion_id TEXT PRIMARY KEY,wake_cap INTEGER)');
+      this.#release = new ReleaseWatches(this.#db, code => new SchedulerError(code)); });
+  }
+  #boardCap(companionId) {
+    const row = this.#db.prepare('SELECT wake_cap FROM scheduler_board_caps WHERE companion_id=?').get(companionId);
+    return row ? row.wake_cap : BOARD_WAKE_CAP;
   }
   // A wake that stays queued says why, once per wake and reason (#51), instead of waiting silently.
   #held(row, reason) {
@@ -217,6 +225,7 @@ export class SchedulerStore {
       ORDER BY due_at,id`).all(companionId, companionId);
     return { now: iso(time), timezone: this.#zone(companionId), settings: { enabled: !!settings.enabled,
       quietStart: settings.quiet_start, quietEnd: settings.quiet_end, heartbeatEnabled: !!settings.heartbeat_enabled,
+      boardWakeCap: this.#boardCap(companionId),
       dailyDigest: { enabled: !!routines.get('dailyDigest')?.enabled, localTime: routines.get('dailyDigest')?.local_time ?? '09:00' },
       weeklyCheckin: { enabled: !!routines.get('weeklyCheckin')?.enabled, localTime: routines.get('weeklyCheckin')?.local_time ?? '09:00', weekday: routines.get('weeklyCheckin')?.weekday ?? 1 } },
     items: jobs.map(reminder), releaseWatches: this.#release.list(companionId, settings.identity_key) };
@@ -279,7 +288,8 @@ export class SchedulerStore {
     });
   }
   configure(companionId, input) {
-    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', ...ROUTINES]);
+    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', 'boardWakeCap', ...ROUTINES]);
+    if (Object.hasOwn(value, 'boardWakeCap')) requireSchedule(value.boardWakeCap === null || integer(value.boardWakeCap, 1, MAX_BOARD_WAKE_CAP));
     for (const key of ['enabled', 'heartbeatEnabled']) if (Object.hasOwn(value, key)) requireSchedule(typeof value[key] === 'boolean');
     for (const key of ['quietStart', 'quietEnd']) if (Object.hasOwn(value, key)) requireSchedule(typeof value[key] === 'string' && CLOCK.test(value[key]));
     for (const routine of ROUTINES) if (Object.hasOwn(value, routine)) {
@@ -293,6 +303,8 @@ export class SchedulerStore {
       const settings = this.#owner(companionId), changed = value.heartbeatEnabled !== undefined && value.heartbeatEnabled !== !!settings.heartbeat_enabled;
       this.#configureRoutines(companionId, settings, value, this.#time());
       if (changed) this.#db.prepare("UPDATE scheduler_occurrences SET state='cancelled' WHERE companion_id=? AND kind='heartbeat' AND state='queued'").run(companionId);
+      if (Object.hasOwn(value, 'boardWakeCap')) this.#db.prepare(`INSERT INTO scheduler_board_caps VALUES(?,?)
+        ON CONFLICT(companion_id) DO UPDATE SET wake_cap=excluded.wake_cap`).run(companionId, value.boardWakeCap);
       this.#db.prepare(`UPDATE scheduler_settings SET enabled=?,quiet_start=?,quiet_end=?,heartbeat_enabled=?,
         heartbeat_generation=?,heartbeat_next_at=? WHERE companion_id=?`).run(
         Number(value.enabled ?? !!settings.enabled), value.quietStart ?? settings.quiet_start, value.quietEnd ?? settings.quiet_end,
@@ -413,7 +425,8 @@ export class SchedulerStore {
       const board = this.#db.prepare(`SELECT MAX(admitted_at) AS last, SUM(admitted_at>?) AS recent FROM scheduler_occurrences
         WHERE companion_id=? AND kind='board' AND admitted_at IS NOT NULL`).get(now - DAY_MS, companionId);
       if (board?.last != null && now - board.last < this.#boardSpacing) return this.#held(row, 'board_spacing');
-      if ((board?.recent ?? 0) >= this.#boardCap) return this.#held(row, 'board_daily_cap');
+      const cap = this.#boardCap(companionId);
+      if (cap !== null && (board?.recent ?? 0) >= cap) return this.#held(row, 'board_daily_cap');
       this.#db.prepare("UPDATE scheduler_occurrences SET state='admitted',admitted_at=? WHERE id=?").run(now, id);
       return true;
     }
@@ -546,7 +559,7 @@ export class SchedulerService {
     this.#cancelReleaseWakes(companionId); this.#kick(); return result;
   }
   configure(companionId, input) {
-    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', ...ROUTINES]);
+    const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', 'boardWakeCap', ...ROUTINES]);
     const prior = value.heartbeatEnabled === false ? this.#scheduler.pending(companionId).filter(wake => wake.kind === 'heartbeat') : [];
     const result = this.#scheduler.configure(companionId, value);
     this.#cancelRoutineWakes(companionId);

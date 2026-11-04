@@ -38,4 +38,14 @@ class WatchesTest {
         assertEquals("Found · waiting for delivery after quiet hours", watchState(watch.copy(deliveryPending = true), schedules.timezone))
         assertEquals(1, schedules.settings.weeklyCheckin?.weekday)
     }
+
+    @Test fun boardWakeCapDistinguishesNumberNoLimitAndOlderServers() {
+        val base = "\"heartbeatEnabled\":false,\"quietStart\":\"22:00\",\"quietEnd\":\"08:00\""
+        val limited = json.decodeFromString(ScheduleSettings.serializer(), "{$base,\"boardWakeCap\":200}")
+        assertTrue(limited.boardCapOffered); assertEquals(200, limited.boardCapLimit)
+        val unlimited = json.decodeFromString(ScheduleSettings.serializer(), "{$base,\"boardWakeCap\":null}")
+        assertTrue(unlimited.boardCapOffered); assertEquals(null, unlimited.boardCapLimit)
+        val older = json.decodeFromString(ScheduleSettings.serializer(), "{$base}")
+        assertFalse(older.boardCapOffered)
+    }
 }

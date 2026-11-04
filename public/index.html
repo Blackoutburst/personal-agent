@@ -196,6 +196,10 @@
             <label class="routine-field">At <input id="schedule-weekly-time" type="time" required disabled></label>
           </div>
           <label class="checkin-option"><input id="schedule-checkins" type="checkbox"> Occasional check-ins</label>
+          <div id="schedule-board" class="quiet-times" hidden>
+            <label>Board wakes per day <input id="schedule-board-cap" type="number" min="1" max="10000" step="1" inputmode="numeric"></label>
+            <label class="checkin-option"><input id="schedule-board-unlimited" type="checkbox"> No limit</label>
+          </div>
           <div class="quiet-times">
             <label>Quiet from <input id="schedule-quiet-start" type="time" required></label>
             <label>until <input id="schedule-quiet-end" type="time" required></label>

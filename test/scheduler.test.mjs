@@ -93,7 +93,7 @@ function serviceFor(f, conversations, extra = {}) {
 test('defaults create no spontaneous work and reminder writes are owner-scoped and idempotent', t => {
   const f = fixture(t), before = f.scheduler.list(f.a);
   assert.equal(before.timezone, 'UTC'); assert.equal(before.now, iso(f.now()));
-  assert.deepEqual(before.settings, { enabled: true, quietStart: '22:00', quietEnd: '08:00', heartbeatEnabled: false,
+  assert.deepEqual(before.settings, { enabled: true, quietStart: '22:00', quietEnd: '08:00', heartbeatEnabled: false, boardWakeCap: 200,
     dailyDigest: { enabled: false, localTime: '09:00' }, weeklyCheckin: { enabled: false, localTime: '09:00', weekday: 1 } });
   assert.deepEqual(before.items, []); assert.deepEqual(f.scheduler.prepareDue(f.a), []);
   const input = { requestId: 'same-create', text: 'PRIVATE-REMINDER-A', dueAt: '2026-11-02T13:01:00+01:00' };
@@ -471,7 +471,9 @@ test('Board wakes never spend or wait on the proactive daily budget, and held wa
 
 test('Board wakes keep their own spacing and rolling cap so reply loops stay bounded', t => {
   const lines = [];
-  const f = fixture(t, { boardSpacingMs: 30000, maxBoardWakesPerDay: 2, log: line => lines.push(line) });
+  const f = fixture(t, { boardSpacingMs: 30000, log: line => lines.push(line) });
+  assert.equal(f.scheduler.list(f.a).settings.boardWakeCap, 200, 'The default Board cap is 200 per 24 h');
+  f.scheduler.configure(f.a, { boardWakeCap: 2 });
   const enqueue = requestId => {
     f.scheduler.enqueueEvent(f.a, { requestId, kind: 'board', prompt: `Board ${requestId}` });
     return f.scheduler.pending(f.a).find(wake => wake.prompt === `Board ${requestId}`);
@@ -490,4 +492,20 @@ test('Board wakes keep their own spacing and rolling cap so reply loops stay bou
   f.create('proactive-still-free'); f.advance(MINUTE);
   const reminder = f.scheduler.prepareDue(f.a).find(wake => wake.kind !== 'board');
   assert.equal(f.admit(f.a, reminder.id), true, 'Board wakes did not consume proactive spacing or budget');
+});
+
+test('the owner can change or remove the Board wake cap, and invalid caps are refused', t => {
+  const f = fixture(t, { boardSpacingMs: 0 });
+  for (const bad of [0, -1, 1.5, '10', 10001, true]) denied(() => f.scheduler.configure(f.a, { boardWakeCap: bad }), 'INVALID_REQUEST');
+  assert.equal(f.scheduler.configure(f.a, { boardWakeCap: 1 }).settings.boardWakeCap, 1);
+  const wake = requestId => { f.scheduler.enqueueEvent(f.a, { requestId, kind: 'board', prompt: `Board ${requestId}` });
+    return f.scheduler.pending(f.a).find(item => item.prompt === `Board ${requestId}`); };
+  const first = wake('cap-one'); assert.equal(f.admit(f.a, first.id), true); f.scheduler.finishOccurrence(f.a, first.id, 'silent');
+  const second = wake('cap-two'); assert.equal(f.admit(f.a, second.id), false);
+  const removed = f.scheduler.configure(f.a, { boardWakeCap: null });
+  assert.equal(removed.settings.boardWakeCap, null, 'null removes the cap');
+  assert.equal(removed.settings.quietStart, '22:00', 'Changing the cap leaves other settings alone');
+  assert.equal(f.admit(f.a, second.id), true);
+  assert.equal(f.scheduler.list(f.b).settings.boardWakeCap, 200, 'Another owner keeps the default');
+  assert.equal(f.open().scheduler.list(f.a).settings.boardWakeCap, null, 'The choice persists across connections');
 });
