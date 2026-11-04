@@ -59,7 +59,7 @@ const int = (value, min, max) => Number.isSafeInteger(value) && value >= min && 
 // owners.json "mail" for one owner (validated when the runtime file loads).
 export function parseMailConfig(value, label = 'owner') {
   const fail = () => { throw new Error(`Invalid mail settings for ${label}`); };
-  if (!object(value) || Object.keys(value).some(key => !['address', 'displayName', 'maildir', 'smtp', 'signature', 'optOutLine', 'limits', 'purpose'].includes(key))) fail();
+  if (!object(value) || Object.keys(value).some(key => !['address', 'displayName', 'maildir', 'smtp', 'signature', 'optOutLine', 'limits', 'purpose', 'studioViewers'].includes(key))) fail();
   const { address, displayName, maildir, smtp, signature, optOutLine = DEFAULT_OPT_OUT_LINE, limits = {}, purpose = null } = value;
   if (typeof address !== 'string' || !ADDRESS.test(address) || address.length > 254) fail();
   if (!singleLine(displayName, 80) || /["<>@,\\]/.test(displayName)) fail();
@@ -73,8 +73,11 @@ export function parseMailConfig(value, label = 'owner') {
   if (!object(limits) || Object.keys(limits).some(key => !['companies', 'followUps', 'perDay'].includes(key))) fail();
   const { companies = 30, followUps = 1, perDay = 15 } = limits;
   if (!int(companies, 1, 200) || !int(followUps, 0, 3) || !int(perDay, 1, 100)) fail();
+  const studioViewers = value.studioViewers ?? [];
+  if (!Array.isArray(studioViewers) || studioViewers.length > 20 || new Set(studioViewers).size !== studioViewers.length
+    || studioViewers.some(label => typeof label !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(label))) fail();
   return Object.freeze({ address: address.toLowerCase(), displayName: displayName.trim(), maildir, signature: signature.trim(), optOutLine: optOutLine.trim(),
-    purpose: purpose?.trim() ?? null, smtp: Object.freeze({ ...smtp }), limits: Object.freeze({ companies, followUps, perDay }) });
+    purpose: purpose?.trim() ?? null, studioViewers: Object.freeze([...studioViewers]), smtp: Object.freeze({ ...smtp }), limits: Object.freeze({ companies, followUps, perDay }) });
 }
 
 export const companyOf = address => {
@@ -262,7 +265,9 @@ export class Mail {
         kind TEXT NOT NULL, to_addr TEXT NOT NULL, company TEXT NOT NULL, subject TEXT NOT NULL, message_id TEXT NOT NULL,
         state TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(companion_id, request_id));
       CREATE TABLE IF NOT EXISTS mail_suppressed(companion_id TEXT NOT NULL, entry TEXT NOT NULL, reason TEXT NOT NULL,
-        created_at INTEGER NOT NULL, PRIMARY KEY(companion_id, entry))`);
+        created_at INTEGER NOT NULL, PRIMARY KEY(companion_id, entry));
+      CREATE TABLE IF NOT EXISTS mail_archive(companion_id TEXT NOT NULL, direction TEXT NOT NULL, id TEXT NOT NULL,
+        company TEXT, address TEXT, text TEXT NOT NULL, PRIMARY KEY(companion_id,direction,id))`);
   }
 
   configured(companionId) { return Boolean(this.#configFor(companionId)); }
@@ -271,13 +276,15 @@ export class Mail {
   // New files in the Maildir become rows (state lives here; the files are left as they are).
   #scan(companionId, config) {
     const known = new Set(this.#db.prepare('SELECT file FROM mail_messages WHERE companion_id=?').all(companionId).map(row => row.file));
+    const archived = new Set(this.#db.prepare(`SELECT m.file FROM mail_messages m JOIN mail_archive a
+      ON a.companion_id=m.companion_id AND a.direction='received' AND a.id=m.id WHERE m.companion_id=?`).all(companionId).map(row => row.file));
     let entries = [];
     for (const folder of ['new', 'cur']) {
       let names = [];
       try { names = readdirSync(join(config.maildir, folder)); } catch { continue; }
       for (const name of names) {
         const base = name.split(':')[0];
-        if (!base || base.startsWith('.') || known.has(base)) continue;
+        if (!base || base.startsWith('.') || (known.has(base) && archived.has(base))) continue;
         entries.push({ base, path: join(config.maildir, folder, name) });
       }
     }
@@ -292,6 +299,10 @@ export class Mail {
       const optOut = !parsed.autoReply && sender !== null
         && OPT_OUT.test(`${parsed.subject.replace(/^(?:(?:re|tr|fwd?|aw)\s*:\s*)+/i, '')}\n${ownWords(parsed.text, [config.optOutLine, config.signature]).slice(0, 600)}`);
       const id = createHash('sha256').update(`${companionId}:${entry.base}`).digest('hex').slice(0, 24);
+      this.#db.prepare('INSERT OR IGNORE INTO mail_archive VALUES(?,?,?,?,?,?)')
+        .run(companionId, 'received', id, sender ? companyOf(sender) : null, sender, parsed.text);
+      // Backfill retained bodies only. Never reclassify an old handled message or restore a cleared suppression.
+      if (known.has(entry.base)) continue;
       insert.run(companionId, id, entry.base, sender, parsed.fromName, parsed.subject || '(no subject)', parsed.messageId, parsed.date,
         Math.round(stat.mtimeMs), parsed.autoReply ? 1 : 0, optOut ? 1 : 0);
       if (optOut) { this.#suppress(companionId, sender, 'asked to stop'); this.#suppress(companionId, companyOf(sender), 'asked to stop'); }
@@ -429,7 +440,12 @@ export class Mail {
     const data = composeMail({ from: config.address, displayName: config.displayName, to, subject: finalSubject, text: body, messageId,
       inReplyTo, date: new Date(this.#now()) });
     // Recorded before sending: a crash in between leaves "pending", which is reported as uncertain and never resent blindly.
-    this.#db.prepare('INSERT INTO mail_sent VALUES(?,?,?,?,?,?,?,?,?,?)').run(companionId, requestId, fingerprint, kind, to, company, finalSubject, messageId, 'pending', this.#now());
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      this.#db.prepare('INSERT INTO mail_sent VALUES(?,?,?,?,?,?,?,?,?,?)').run(companionId, requestId, fingerprint, kind, to, company, finalSubject, messageId, 'pending', this.#now());
+      this.#db.prepare('INSERT OR REPLACE INTO mail_archive VALUES(?,?,?,?,?,?)').run(companionId, 'sent', requestId, company, to, body);
+      this.#db.exec('COMMIT');
+    } catch (error) { this.#db.exec('ROLLBACK'); throw error; }
     let password;
     try { password = this.#readPassword(config.smtp.passwordFile); } catch { password = null; }
     if (!password) { this.#db.prepare(`UPDATE mail_sent SET state='failed' WHERE companion_id=? AND request_id=?`).run(companionId, requestId); throw new MailError('MAIL_NOT_CONFIGURED', 503); }

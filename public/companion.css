@@ -55,6 +55,33 @@ a { color: var(--shade); }
 main { flex: 1; min-height: 0; display: flex; }
 .view { flex: 1; min-height: 0; }
 
+/* Studio: a contact book and readable correspondence, in the host app's theme. */
+.studio-controls { display: flex; gap: 12px; align-items: center; margin: 20px 0; }
+.studio-page .note:empty { display: none; }
+.studio-controls input { flex: 1; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.studio-layout { display: grid; grid-template-columns: minmax(230px, .85fr) minmax(0, 1.6fr); gap: 24px; }
+.studio-contacts, .studio-detail { min-width: 0; overflow-wrap: anywhere; }
+.studio-contact { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 16px 12px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
+.studio-contact[aria-pressed=true] { background: var(--card); border-left: 4px solid var(--shade); padding-left: 8px; }
+.studio-contact span, .studio-contact time { font-size: 13px; }
+.studio-contact time, .studio-message-meta, .studio-provenance { color: var(--soft); }
+.studio-contact:focus-visible, .studio-controls input:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+.studio-timeline { list-style: none; margin: 0; padding: 0; }
+.studio-message { padding: 18px 0; border-top: 1px solid var(--line); }
+.studio-message p { margin: 6px 0; }
+.studio-message h3 { font-size: 16px; margin: 10px 0; }
+.studio-message-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; max-width: 72ch; }
+.studio-opposition { color: var(--danger); font-weight: 700; }
+.studio-provenance { font-size: 13px; line-height: 1.5; padding-top: 24px; max-width: 80ch; }
+@media (max-width: 640px) {
+  .studio-layout { display: block; }
+  .studio-layout[data-detail=false] .studio-detail, .studio-layout[data-detail=true] .studio-contacts { display: none; }
+  .studio-controls { flex-wrap: wrap; }
+  .studio-controls input { flex-basis: 100%; }
+  .topbar:has(#nav-studio:not([hidden])) .who-text { display: none; }
+  .topbar:has(#nav-studio:not([hidden])) .nav a { padding: 8px 10px; }
+}
+
 /* Loading and gate */
 .loading { display: grid; place-items: center; }
 .soft-spinner { width: 42px; height: 42px; border-radius: 50%; border: 5px solid var(--light); border-top-color: var(--body); animation: spin 1s linear infinite; }

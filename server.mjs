@@ -23,6 +23,7 @@ import { createSchedulerHttp, schedulerOperation } from './src/scheduler-http.mj
 import { Calendar } from './src/calendar.mjs';
 import { GitHub } from './src/github.mjs';
 import { Mail } from './src/mail.mjs';
+import { Studio, createStudioHttp } from './src/studio.mjs';
 import { XPosts } from './src/x-posts.mjs';
 import { SecretBox } from './src/secrets.mjs';
 import { DiscordLinks, DiscordBridge } from './src/discord.mjs';
@@ -58,6 +59,7 @@ const STATIC = new Map([
   ['/memory-ui.mjs', ['memory-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/personality-ui.mjs', ['personality-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/contact-ui.mjs', ['contact-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/studio-ui.mjs', ['studio-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/web-push-ui.mjs', ['web-push-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/bubbles.mjs', ['bubbles.mjs', 'text/javascript; charset=utf-8']],
   ['/voice-ui.mjs', ['voice-ui.mjs', 'text/javascript; charset=utf-8']],
@@ -118,6 +120,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let conversationHttp;
   let agentsConfigured = false;
   let companionHttp;
+  let studioHttp;
   let schedulerHttp, schedulerService, schedulerStore, calendar = null, github = null, mail = null, x = null, discord = null;
   let asr = null, files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
   const fileTurns = new Map();
@@ -216,6 +219,11 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       }
       if (path === '/api/schedules' && mode === 'account') {
         const result = await schedulerHttp(req);
+        if (result.closeConnection) res.setHeader('connection', 'close');
+        return send(result.status, result.body);
+      }
+      if (path === '/api/studio' && mode === 'account') {
+        const result = await studioHttp(req);
         if (result.closeConnection) res.setHeader('connection', 'close');
         return send(result.status, result.body);
       }
@@ -368,6 +376,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       // Mail (#50, docs/MAIL.md): the mailbox from this owner's owners.json entry, read and sent on the server only.
       mail = new Mail({ store, configFor: companionId => runner?.ownerFor(companionId)?.mail ?? null, ...mailOptions,
         ...(schedulerOptions.now && !mailOptions.now ? { now: schedulerOptions.now } : {}) });
+      studioHttp = createStudioHttp({ access, studio: new Studio({ store, owners, ...(mailOptions.now ? { now: mailOptions.now } : {}) }) });
       connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, mail: () => mail, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
       conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget: new WebBudget({ store }),
         linkContext: (companionId, text) => x.forTurn(companionId, text),

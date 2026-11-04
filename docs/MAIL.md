@@ -69,3 +69,37 @@ The owner's entry in `owners.json`:
 Restart the service after editing. The owner can switch Mail off and on in Me › Connectors.
 
 To check by hand: `sudo grep postfix/studio /var/log/mail.log | tail` (addresses only; never copy mail text out).
+
+## Private Studio contact view (#52)
+
+The authenticated web app's **Studio** tab (`#studio`) is a read-only view of the dedicated business mailbox's
+contacts and sent/received exchanges. It cannot send, mark handled, change opposition or adjust limits. Those
+operations remain companion-only. Account validation runs on every `/api/studio` request; a client cannot select
+another owner or mailbox. Nothing from companion conversations, memories or provider settings is returned.
+
+Enable it explicitly in the dedicated mailbox owner's `mail` configuration:
+
+```json
+"studioViewers": ["<existing-owner-label>", "<other-authorized-owner-label>"]
+```
+
+Use the exact labels from the runtime's existing `owners` entries. Every viewer must be a configured owner and may
+be assigned to only one Studio mailbox. There is no implicit sharing, including for the mailbox owner. The server
+admin adds only this field for the authorized Studio humans, preserving the other settings, then restarts the
+service. A viewer needs an existing companion identity; the mailbox owner must already have signed in. Never
+publish the runtime file or mail bodies to the Board. Account-only access is still required; this option does not
+make a public page.
+
+`mail_archive` keeps the composed outgoing body (including the actual signature and opt-out line) alongside the
+pre-transport pending record. Unknown outcomes stay visibly uncertain and are never reported as sent. Received
+bodies are retained by the normal connector scan, including handled messages whose Maildir file is still present.
+Backfilling those bodies does not reclassify old messages, mark them handled/notified or recreate suppressions.
+There is no invented reconstruction of old sent bodies: old metadata remains visible with an explicit unavailable
+body notice. Missing old inbound files are counted in the provenance note. The view itself never scans the mailbox,
+changes sending counters or wakes the companion. Detail pages contain at most 50 messages; the contact view shows
+at most the 200 most recent companies and discloses that limit. Mail text is rendered as plain text, with no HTML,
+remote images or active links.
+
+Deployment uses the normal release procedure. The additive archive table is retained on rollback; older code
+ignores it. No other mail table schema or limits change. To roll back to a version that predates the viewer field,
+remove only `studioViewers` from the runtime configuration as well (older parsers reject unknown keys).

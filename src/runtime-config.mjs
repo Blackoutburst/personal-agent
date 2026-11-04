@@ -17,7 +17,7 @@ export function parseRuntimeConfig(text, env = process.env) {
       || Object.keys(config).some(key => key !== 'owners')
       || !Array.isArray(config.owners) || config.owners.length === 0) throw new Error('Runtime config needs only an "owners" list');
   const labels = new Set(), subjects = new Set();
-  return config.owners.map(owner => {
+  const owners = config.owners.map(owner => {
     if (!owner || typeof owner !== 'object' || Array.isArray(owner)
         || Object.keys(owner).some(key => !['subject', 'label', 'provider', 'model', 'issuer', 'name', 'tools', 'board', 'mail'].includes(key))) {
       throw new Error('Invalid runtime owner fields');
@@ -42,6 +42,12 @@ export function parseRuntimeConfig(text, env = process.env) {
     labels.add(label); subjects.add(subject);
     return Object.freeze({ subject, label, provider, model, issuer, ...(name !== null ? { name: name.trim() } : {}), ...(mail ? { mail } : {}), ...toolPolicy });
   });
+  const viewers = new Set();
+  for (const owner of owners) for (const label of owner.mail?.studioViewers ?? []) {
+    if (!labels.has(label) || viewers.has(label)) throw new Error('Studio viewers must name configured owners and select only one mailbox');
+    viewers.add(label);
+  }
+  return owners;
 }
 
 export function loadRuntimeConfig(path) {

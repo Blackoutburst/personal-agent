@@ -3,6 +3,7 @@ import { createConversationClient, createFileTransport, AttachmentError, USER_CH
 import { renderCharacter, CHARACTERS, COLORS, OUTFITS, HAS_OUTFITS } from './companion-character.mjs';
 import { createRemindersUI } from './reminders-ui.mjs';
 import { createCalendarUI } from './calendar-ui.mjs';
+import { createStudioUI } from './studio-ui.mjs';
 import { createMemoryUI } from './memory-ui.mjs';
 import { createPersonalityUI } from './personality-ui.mjs';
 import { createContactUI, renderPeerCard } from './contact-ui.mjs';
@@ -15,6 +16,7 @@ const $ = id => document.getElementById(id);
 const client = createConversationClient();
 const fileTransport = createFileTransport();
 const calendarUI = createCalendarUI({ document, visible: () => view === 'calendar' });
+const studioUI = createStudioUI({ document, onDenied: fileAccessDenied });
 const remindersUI = createRemindersUI({ document, visible: () => view === 'me' && (meSection === 'watches' || meSection === 'settings') });
 const memoryUI = createMemoryUI({ document, api, onDenied: fileAccessDenied });
 const personalityUI = createPersonalityUI({ document, api, onDenied: fileAccessDenied });
@@ -105,7 +107,7 @@ function show(next) {
   view = next;
   if (!connectorsShown()) { clearTimeout(discordTimer); discordTimer = null; }
   $('app').dataset.view = next;
-  for (const name of ['loading', 'gate', 'chat', 'calendar']) $(`view-${name}`).hidden = name !== next;
+  for (const name of ['loading', 'gate', 'chat', 'calendar', 'studio']) $(`view-${name}`).hidden = name !== next;
   $('view-me').hidden = next !== 'me' && next !== 'look';
   $('me-tabs').hidden = next !== 'me';
   $('view-look').hidden = !lookShown();
@@ -126,6 +128,7 @@ function show(next) {
   if (lookShown()) startLook();
   if (next === 'me' && (meSection === 'watches' || meSection === 'settings')) void remindersUI.show();
   if (next === 'calendar') void calendarUI.show();
+  if (next === 'studio') void studioUI.show();
   if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); void webPushUI.show(); }
   pushPresence.update();
   renderAll();
@@ -145,7 +148,7 @@ function route() {
   const me = { me: 'memories', memories: 'memories', 'me/companion': 'companion', look: 'companion', 'me/watches': 'watches', watches: 'watches',
     'me/connectors': 'connectors', 'me/settings': 'settings' }[hash];
   if (me) meSection = me;
-  show(hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
+  show(hash === 'studio' ? 'studio' : hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
 }
 
 async function start() {
@@ -156,6 +159,7 @@ async function start() {
     if (owner !== ownerEpoch || token !== startRequest) return;
     profile = data.profile; runtime = data.runtime; wearing = data.wearing ?? 'base';
     applyColors(profile);
+    if (profile) void studioUI.probe();
     route();
   } catch (error) {
     if (owner !== ownerEpoch || token !== startRequest) return;
@@ -426,7 +430,7 @@ function resetShell(denied) {
   for (const id of ['discord-pick', 'android-pick']) $(id).hidden = true;
   connectors = null; connectorsBusy = false; githubForm = false; xForm = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
   kept.hidden = true; keptText.textContent = ''; reconnect.hidden = true;
-  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); remindersUI.clear(); calendarUI.clear(); client.clear(); clearUploads(); clearFullImage();
+  memoryUI.clear(); personalityUI.clear(); contactUI.clear(); weatherUI.clear(); remindersUI.clear(); calendarUI.clear(); studioUI.clear(); client.clear(); clearUploads(); clearFullImage();
 }
 function clearUploads() {
   uploadEpoch++;
