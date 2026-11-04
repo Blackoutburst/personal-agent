@@ -205,3 +205,39 @@ test('status and owner-managed sign-in commands retain their existing paths and 
     binary: 'codex', args: ['login', '--device-auth'], env: { CODEX_HOME: '/owner-home' }
   });
 });
+
+// #53 group turns run isolated: Codex loses every built-in that can read files, Claude gets images inline.
+test('group turns: Codex has file, browser, memory and subagent built-ins off; 1:1 turns keep them', async t => {
+  const env = setup({ providers: { blackout: 'codex', screamer: 'codex' } }); t.after(env.cleanup);
+  const group = randomUUID();
+  await env.runner.turn(env.ids.blackout, { prompt: 'hi group', group });
+  await env.runner.turn(env.ids.blackout, { prompt: 'hi alone' });
+  const [inGroup, alone] = env.calls('blackout');
+  for (const feature of ['shell_tool', 'unified_exec', 'view_image', 'browser_use', 'in_app_browser', 'computer_use', 'apps', 'memories', 'multi_agent']) {
+    assert.ok(inGroup.args.includes(`features.${feature}=false`), feature);
+    assert.ok(!alone.args.includes(`features.${feature}=false`), feature);
+  }
+  assert.ok(inGroup.args.includes('sandbox_mode="read-only"'));
+});
+
+test('group turns: Claude receives posted images inline, never through a file tool', async t => {
+  const env = setup(); t.after(env.cleanup);
+  const png = join(env.dir, 'photo.png'), text = join(env.dir, 'notes.png');
+  writeFileSync(png, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 7)]));
+  writeFileSync(text, 'not really an image');
+  await env.runner.turn(env.ids.blackout, { prompt: 'look', group: randomUUID(), images: [png, text] });
+  await env.runner.turn(env.ids.blackout, { prompt: 'look alone', images: [png] });
+  const [inGroup, alone] = env.calls('blackout');
+  assert.equal(inGroup.args[inGroup.args.indexOf('--input-format') + 1], 'stream-json');
+  const message = JSON.parse(inGroup.prompt);
+  assert.equal(message.type, 'user');
+  const [first, ...images] = message.message.content;
+  assert.equal(first.type, 'text');
+  assert.match(first.text, /^look/);
+  assert.match(first.text, /1 attached image\(s\) could not be shown/);
+  assert.equal(images.length, 1);
+  assert.deepEqual(images[0].source.media_type, 'image/png');
+  assert.equal(Buffer.from(images[0].source.data, 'base64').length, 40);
+  assert.ok(!alone.args.includes('--input-format'));
+  assert.equal(alone.prompt, 'look alone');
+});

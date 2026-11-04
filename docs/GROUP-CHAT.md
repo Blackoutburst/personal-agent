@@ -81,10 +81,12 @@ message resets it. There is no other behavior limit; the existing provider limit
   search/fetch (if the owner's policy and the daily web allowance allow it). Own-wake posts get no tools.
 - If its own owner asks in the group for something private, the companion says it will pick it up in their own chat
   (AGENTS v25 "Group chat"). There is no cross-context retrieval.
-- Residual risk: Codex's sandbox restricts writes, not reads, so a Codex companion could still read files by absolute
-  path with its own shell. Nothing private is in its prompt or folder, and the instructions forbid it; Claude
-  companions have no file tool at all in groups. Claude companions also do not see image pixels in groups (no Read
-  tool); they get file names and types. Codex companions get images natively.
+- Codex group turns also switch off every built-in that could read a file or reach outside the turn: shell and unified
+  exec, view_image, browser/computer use, apps, Codex memories, goals and subagents (`ISOLATED_OFF` in
+  src/providers/codex.mjs; its read-only sandbox limits writes, not reads). Checked with codex-cli 0.166.0: with them
+  off, a canary file outside the group folder cannot be read; with them on, it can. Images still arrive via `--image`.
+- Claude group turns have no file tool, so images posted in the new messages are sent inline (stream-json input,
+  base64, PNG/JPEG/GIF/WebP by magic number, at most 3.75 MB each, up to 8); skipped images get a short app note.
 
 ## Own initiative (#54)
 

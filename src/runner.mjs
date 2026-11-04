@@ -149,10 +149,11 @@ export class CompanionRunner {
   async #turn(owner, { prompt, resume, systemPrompt, toolPolicy, images, onEvent, signal, releaseCheck, cwd = null }) {
     if (signal?.aborted) throw new RunnerError('CANCELLED');
     const adapter = ADAPTERS[owner.provider], { home, workspace } = this.paths(owner);
-    const spec = adapter.command({ binary: this.binaries[owner.provider], home, resume, model: owner.model, systemPrompt, toolPolicy, images, readOnly: releaseCheck || cwd !== null });
+    const spec = adapter.command({ binary: this.binaries[owner.provider], home, resume, model: owner.model, systemPrompt, toolPolicy, images, readOnly: releaseCheck || cwd !== null, isolated: cwd !== null });
     const child = this.#run(spec, cwd ?? workspace);
     child.stdin.on('error', () => {});
-    child.stdin.end((spec.promptPrefix ?? '') + prompt);
+    const input = (spec.promptPrefix ?? '') + prompt;
+    child.stdin.end(spec.input ? spec.input(input) : input);
 
     let sessionId = resume, text = '', streamed = '', usage = null, rate = null, failure = null, done = false, buffer = '';
     const handle = event => {
