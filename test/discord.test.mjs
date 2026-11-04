@@ -61,7 +61,7 @@ function fixture(t, { handler, me, withFiles = false } = {}) {
     runner: { turn: async (id, turn) => (handler ?? (() => ({ text: 'Hello from Pip!' })))(id, turn) },
     onSettled: event => bridge.settled(event), turnNote: (id, requestId) => bridge.turnNote(id, requestId) });
   const links = new DiscordLinks({ store });
-  bridge = new DiscordBridge({ links, conversations, files, fetchImpl: discord.fetchImpl, WebSocketImpl: discord.WebSocketImpl });
+  bridge = new DiscordBridge({ links, conversations, files, fetchImpl: discord.fetchImpl, WebSocketImpl: discord.WebSocketImpl, pause: async () => {} });
   t.after(async () => { bridge.stop(); await conversations.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { store, discord, companionId, conversations, links, bridge, dir };
 }
@@ -144,6 +144,13 @@ test('a DM from the owner becomes a turn in the ongoing chat and the reply comes
   assert.ok(replies.every(reply => reply.content.length <= 2000 && reply.channel === '444444444444444444'));
   assert.ok(!replies[0].content.includes('[feeling'), 'The feeling tag never shows');
   assert.deepEqual(replies[0].allowed_mentions, { parse: [] });
+});
+
+test('a reply with several paragraphs arrives as several short Discord messages, lists and code kept whole', async t => {
+  const f = await linked(t, { handler: () => ({ text: 'oh no\n\nwait is koko cheating\n\n- one\n\n- two\n\n```\na\n\nb\n```' }) });
+  f.socket.dm(OWNER, 'koko is cheating ?');
+  await f.conversations.idle(); await sleep(10);
+  assert.deepEqual(f.discord.sent.slice(1).map(reply => reply.content), ['oh no', 'wait is koko cheating', '- one\n\n- two', '```\na\n\nb\n```']);
 });
 
 test('Discord turns carry a channel note; the stored message is only what the owner wrote', async t => {

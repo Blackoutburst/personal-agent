@@ -5,6 +5,7 @@
 import { randomInt } from 'node:crypto';
 import { readFileSync, closeSync } from 'node:fs';
 import { ConversationError } from './conversations.mjs';
+import { splitBubbles } from '../public/bubbles.mjs';
 
 const API = 'https://discord.com/api/v10';
 const GATEWAY = 'wss://gateway.discord.gg/?v=10&encoding=json';
@@ -145,9 +146,10 @@ class Gateway {
 }
 
 export class DiscordBridge {
-  #links; #conversations; #files; #fetch; #WebSocket; #gateways = new Map(); #states = new Map(); #pending = new Map(); #log; #notes = new Map(); #carried = new Map();
+  #links; #conversations; #files; #fetch; #WebSocket; #gateways = new Map(); #states = new Map(); #pending = new Map(); #log; #notes = new Map(); #carried = new Map(); #pause;
   // files: the chat FileStore. Without it, attachments are refused with a short note.
-  constructor({ links, conversations, files = null, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, log = () => {} }) {
+  constructor({ links, conversations, files = null, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, log = () => {}, pause = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+    this.#pause = pause;
     this.#links = links; this.#conversations = conversations; this.#files = files; this.#fetch = fetchImpl; this.#WebSocket = WebSocketImpl; this.#log = log;
   }
 
@@ -218,7 +220,7 @@ export class DiscordBridge {
     if (!target) return;
     const files = messageId && this.#files ? this.#files.list(messageId).filter(file => file.direction === 'companion') : [];
     (async () => {
-      if (reply) await this.#say(link, target, reply);
+      if (reply) await this.#burst(link, target, reply);
       for (const file of files) await this.#sendFile(companionId, link, target, file);
     })().catch(error => this.#log(`Discord delivery failed: ${error.message}`));
   }
@@ -353,11 +355,24 @@ export class DiscordBridge {
     return { ids, skipped };
   }
 
+  // Like a person texting: each paragraph is its own Discord message, with a short typing pause in between.
+  async #burst(link, channelId, text) {
+    const bubbles = splitBubbles(text);
+    for (const [index, bubble] of bubbles.entries()) {
+      if (index) {
+        this.#rest(link.token, 'POST', `/channels/${channelId}/typing`).catch(() => {});
+        await this.#pause(Math.min(1800, 500 + bubble.length * 12));
+      }
+      if (!await this.#say(link, channelId, bubble)) return;
+    }
+  }
+
   async #say(link, channelId, text) {
     for (const content of chunks(text)) {
       try { await this.#rest(link.token, 'POST', `/channels/${channelId}/messages`, { content, allowed_mentions: { parse: [] } }); }
-      catch (error) { this.#log(`Discord send failed: ${error.message}`); return; }
+      catch (error) { this.#log(`Discord send failed: ${error.message}`); return false; }
     }
+    return true;
   }
 
   async #rest(token, method, path, body, retried = false) {

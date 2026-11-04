@@ -571,7 +571,7 @@ test('the feeling tag picks the face and never shows in the reply', async t => {
   assert.match(prompt, /Follow AGENTS\.md/);
   const agents = readFileSync(join(f.home('blackout'), '..', 'workspace', 'AGENTS.md'), 'utf8');
   assert.match(agents, /\[feeling:laugh\]/);
-  assert.match(agents, /version 19/);
+  assert.match(agents, /version 20/);
   assert.match(agents, /## Board work/);
   assert.match(agents, /## Following Board work/);
 });

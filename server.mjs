@@ -57,6 +57,7 @@ const STATIC = new Map([
   ['/personality-ui.mjs', ['personality-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/contact-ui.mjs', ['contact-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/web-push-ui.mjs', ['web-push-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/bubbles.mjs', ['bubbles.mjs', 'text/javascript; charset=utf-8']],
   ['/weather-ui.mjs', ['weather-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-character.mjs', ['companion-character.mjs', 'text/javascript; charset=utf-8']],
   ['/companion-theme.js', ['companion-theme.js', 'text/javascript; charset=utf-8']],

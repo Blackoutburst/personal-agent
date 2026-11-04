@@ -339,21 +339,29 @@ private fun note(state: UiState): String? {
 internal fun Bubble(model: CompanionModel, message: Message, scope: Long) {
     if (message.role == "peer") { PeerCard(message); return }
     val mine = message.role == "user"
-    val bubbleShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = if (mine) 20.dp else 6.dp, bottomEnd = if (mine) 6.dp else 20.dp)
+    // A companion reply shows as several short bubbles, one per paragraph (splitBubbles); files go in the last one.
+    val texts = if (mine) listOf(message.text) else splitBubbles(message.text).ifEmpty { listOf("") }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
-        Column(
-            Modifier.widthIn(max = 320.dp)
-                .clip(bubbleShape)
-                .background(if (mine) Mine else LocalTones.current.bubble)
-                .border(1.dp, if (mine) Color.Transparent else LocalTones.current.bubbleLine, bubbleShape)
-                .padding(horizontal = 16.dp, vertical = 10.dp)) {
-            if (message.text.isNotEmpty()) MarkdownText(message.text, color = Ink,
-                link = if (LocalTones.current.dark) Color(0xFFEE8F64) else Color(0xFFB4532A),
-                codeBackground = if (LocalTones.current.dark) Color.Black.copy(alpha = 0.28f) else Ink.copy(alpha = 0.08f),
-                fontSize = 17.sp, lineHeight = 23.sp)
-            message.attachments.forEach { file ->
-                if (message.text.isNotEmpty() || file != message.attachments.first()) Spacer(Modifier.height(8.dp))
-                AttachmentView(model, file, scope)
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            texts.forEachIndexed { index, text ->
+                val last = index == texts.lastIndex
+                val bubbleShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp,
+                    bottomStart = if (mine || !last) 20.dp else 6.dp, bottomEnd = if (mine) 6.dp else 20.dp)
+                Column(
+                    Modifier.widthIn(max = 320.dp)
+                        .clip(bubbleShape)
+                        .background(if (mine) Mine else LocalTones.current.bubble)
+                        .border(1.dp, if (mine) Color.Transparent else LocalTones.current.bubbleLine, bubbleShape)
+                        .padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    if (text.isNotEmpty()) MarkdownText(text, color = Ink,
+                        link = if (LocalTones.current.dark) Color(0xFFEE8F64) else Color(0xFFB4532A),
+                        codeBackground = if (LocalTones.current.dark) Color.Black.copy(alpha = 0.28f) else Ink.copy(alpha = 0.08f),
+                        fontSize = 17.sp, lineHeight = 23.sp)
+                    if (last) message.attachments.forEach { file ->
+                        if (text.isNotEmpty() || file != message.attachments.first()) Spacer(Modifier.height(8.dp))
+                        AttachmentView(model, file, scope)
+                    }
+                }
             }
         }
     }

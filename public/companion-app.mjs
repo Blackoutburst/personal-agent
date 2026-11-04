@@ -8,6 +8,7 @@ import { createPersonalityUI } from './personality-ui.mjs';
 import { createContactUI, renderPeerCard } from './contact-ui.mjs';
 import { createWeatherUI } from './weather-ui.mjs';
 import { createWebPushUI, createPushPresence, registerServiceWorker } from './web-push-ui.mjs';
+import { splitBubbles } from './bubbles.mjs';
 
 const $ = id => document.getElementById(id);
 const client = createConversationClient();
@@ -245,18 +246,18 @@ function renderMessages() {
     let node = messageNodes.get(message.id);
     if (!node) {
       node = document.createElement('li');
-      node.className = message.role === 'peer' ? `bubble peer-card ${message.peer.direction}` : `bubble ${message.role === 'user' ? 'user' : 'companion'}`;
+      node.className = message.role === 'peer' ? `bubble peer-card ${message.peer.direction}` : message.role === 'user' ? 'bubble user' : 'companion bubble-group';
       if (message.role === 'peer') node.append(renderPeerCard(document, message));
-      else node.append(el('div', { className: 'message-text' }), el('div', { className: 'message-files' }));
+      else if (message.role === 'user') node.append(el('div', { className: 'message-text' }), el('div', { className: 'message-files' }));
       messageNodes.set(message.id, node);
     }
-    if (message.role !== 'peer') {
+    if (message.role === 'user') {
       if (node.dataset.text !== message.text) { textWithLinks(node.querySelector('.message-text'), message.text); node.dataset.text = message.text; }
       const filesKey = JSON.stringify(message.attachments ?? []);
       if (node.dataset.files !== filesKey) {
         node.querySelector('.message-files').replaceChildren(...(message.attachments ?? []).map(fileView)); node.dataset.files = filesKey;
       }
-    }
+    } else if (message.role !== 'peer') renderCompanionBubbles(node, message);
     if (list.children[index] !== node) list.insertBefore(node, list.children[index] ?? null);
     index++;
   }
@@ -266,6 +267,26 @@ function renderMessages() {
   $('welcome').hidden = index > 0 || state.connection === 'loading';
   $('welcome-text').textContent = `Say hi to ${companionName()} 👋 ${companionName()} remembers what matters to you, so tell them about your day.`;
   if (follow) history.scrollTop = history.scrollHeight;
+}
+
+// A companion reply shows as several short bubbles, one per paragraph, like separate chat messages.
+// While it streams, earlier bubbles stay in place and only the growing last one is redrawn.
+function renderCompanionBubbles(node, message) {
+  const texts = splitBubbles(message.text ?? ''), files = message.attachments ?? [];
+  if (!texts.length && files.length) texts.push('');
+  const filesKey = JSON.stringify(files);
+  [...node.children].slice(texts.length).forEach(child => child.remove());
+  texts.forEach((text, index) => {
+    let bubble = node.children[index];
+    if (!bubble) {
+      bubble = el('div', { className: 'bubble companion' });
+      bubble.append(el('div', { className: 'message-text' }), el('div', { className: 'message-files' }));
+      node.append(bubble);
+    }
+    if (bubble.dataset.text !== text) { textWithLinks(bubble.querySelector('.message-text'), text); bubble.dataset.text = text; }
+    const key = index === texts.length - 1 ? filesKey : '[]';
+    if (bubble.dataset.files !== key) { bubble.querySelector('.message-files').replaceChildren(...JSON.parse(key).map(fileView)); bubble.dataset.files = key; }
+  });
 }
 
 function turnNote() {
