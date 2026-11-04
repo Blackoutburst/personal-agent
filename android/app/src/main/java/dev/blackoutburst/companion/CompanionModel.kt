@@ -407,7 +407,13 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         boardReadKey = key
         val version = scope
         viewModelScope.launch {
-            try { val change = api.boardRead(threadId); if (current(version)) _state.update { it.copy(boardUnread = change.unread) } }
+            try {
+                val change = api.boardRead(threadId)
+                if (!current(version)) return@launch
+                // The opened conversation loses its unread marker in the list too (#61).
+                boardTopics[threadId]?.let { boardTopics[threadId] = it.copy(unread = 0) }
+                _state.update { it.copy(boardUnread = change.unread, boardTopics = it.boardTopics?.map { topic -> if (topic.threadId == threadId) topic.copy(unread = 0) else topic }) }
+            }
             catch (error: ApiException) { if (current(version)) { if (error.signedOut) signedOut() else boardReadKey = null } }
         }
     }

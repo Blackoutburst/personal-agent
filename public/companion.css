@@ -554,12 +554,18 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .nav a[aria-current="page"] .nav-badge { background: var(--card); color: var(--ink); }
 .board-filter { display: flex; gap: 8px; margin: 0 0 12px; }
 .board-filter .text-button[aria-pressed="true"] { background: var(--body); color: var(--on-body); }
-.board-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-.board-row { display: flex; align-items: center; gap: 8px; }
+/* minmax(0, 1fr): a long ticket title must not widen the column past the page (#61: it pushed the Done button out of view). */
+.board-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.board-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.board-toggle { flex: 0 0 auto; white-space: nowrap; }
+.board-toggle-icon { font-size: 14px; line-height: 1; }
+@media (max-width: 480px) { .board-row .board-toggle { padding: 8px 10px; gap: 4px; } .board-row .board-topic { padding: 11px 38px 11px 12px; } .board-row .board-unread { right: 10px; } }
+.board-dot { flex: 0 0 auto; align-self: center; width: 8px; height: 8px; border-radius: 50%; background: var(--body); }
 .board-topic { position: relative; flex: 1; min-width: 0; display: grid; gap: 4px; text-align: left; padding: 12px 44px 12px 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); color: var(--ink); font: inherit; cursor: pointer; }
 .board-topic:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
-.board-topic-head { display: flex; justify-content: space-between; gap: 10px; }
-.board-topic-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-topic-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.board-topic-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-topic-head small { flex: 0 0 auto; white-space: nowrap; }
 .board-topic-head small, .board-topic-preview { color: var(--soft); }
 .board-topic-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .board-topic.unread strong { font-weight: 800; }

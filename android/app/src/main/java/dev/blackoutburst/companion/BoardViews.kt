@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -69,6 +70,11 @@ private fun BoardRow(model: CompanionModel, state: UiState, topic: BoardTopic) {
         .clickable { model.openBoardTopic(topic.threadId) }.padding(14.dp, 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Unread (#61): a dot before the label (and the count on the right) until the conversation is opened.
+                if (topic.unread > 0) {
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFEE8F64)))
+                    Spacer(Modifier.size(6.dp))
+                }
                 Text(topic.label, Modifier.weight(1f), color = tones.ink, fontWeight = if (topic.unread > 0) FontWeight.ExtraBold else FontWeight.SemiBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(boardWhen(topic.updatedAt), color = tones.soft, fontSize = 12.sp)
@@ -77,20 +83,24 @@ private fun BoardRow(model: CompanionModel, state: UiState, topic: BoardTopic) {
         }
         if (topic.unread > 0) {
             Spacer(Modifier.size(8.dp))
-            UnreadDot(topic.unread)
+            UnreadDot(topic.unread, badgeText(topic.unread))
         }
         Spacer(Modifier.size(8.dp))
-        ActionButton(enabled = !state.boardBusy, onClick = { model.archiveBoardTopic(topic.threadId, !topic.archived) }) {
-            Text(if (topic.archived) "Reopen" else "Done")
+        // Done / Reopen (#61): an icon and a label, and a description that says where the topic goes.
+        val action = if (topic.archived) "Reopen: move ${topic.label} back to Open" else "Done: move ${topic.label} to Archived"
+        ActionButton(enabled = !state.boardBusy, onClick = { model.archiveBoardTopic(topic.threadId, !topic.archived) },
+            modifier = Modifier.semantics { contentDescription = action }) {
+            Text(if (topic.archived) "↺" else "✓", fontSize = 14.sp)
+            Text(if (topic.archived) "Reopen" else "Done", maxLines = 1, softWrap = false)
         }
     }
 }
 
 @Composable
-internal fun UnreadDot(count: Int) {
+internal fun UnreadDot(count: Int, text: String = if (count > 99) "99+" else count.toString()) {
     Box(Modifier.clip(RoundedCornerShape(50)).background(Color(0xFFEE8F64)).padding(horizontal = 7.dp, vertical = 2.dp)
         .semantics { contentDescription = "$count unread" }) {
-        Text(if (count > 99) "99+" else count.toString(), color = Color(0xFF3A2E39), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text(text, color = Color(0xFF3A2E39), fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
 }
 

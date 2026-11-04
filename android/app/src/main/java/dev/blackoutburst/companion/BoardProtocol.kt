@@ -41,3 +41,6 @@ fun boardPreview(topic: BoardTopic): String? = topic.preview?.let { if (topic.pr
 
 /** A push for a Board sub-conversation carries board = "1" (src/push.mjs): the tap opens it in the Board tab. */
 fun boardPush(data: Map<String, String>): Boolean = data["board"] == "1"
+
+/** Board badge text (#61): the tab counts unread conversations, 1-9 then 9+; a row's message count reads the same way. */
+internal fun badgeText(count: Int): String = if (count > 9) "9+" else count.coerceAtLeast(0).toString()

@@ -175,10 +175,11 @@ export class BoardInbox {
     any: Boolean(this.#db.prepare('SELECT 1 FROM board_inbox_threads WHERE companion_id=? LIMIT 1').get(companionId)) };
   }
 
-  // The tab badge: unread companion messages in open sub-conversations.
+  // The tab badge (#61): open sub-conversations with at least one unread companion message (each row carries its own
+  // message count). Opening a conversation marks it read (markRead), so it leaves the badge.
   unread(companionId) {
-    return this.#db.prepare(`SELECT COUNT(*) AS n FROM board_inbox_threads b JOIN conv_messages m ON m.thread_id=b.thread_id
-      WHERE b.companion_id=? AND b.archived_at IS NULL AND m.role='assistant' AND m.text<>'' AND m.rowid>b.read_rowid`).get(companionId).n;
+    return this.#db.prepare(`SELECT COUNT(*) AS n FROM board_inbox_threads b WHERE b.companion_id=? AND b.archived_at IS NULL
+      AND EXISTS (SELECT 1 FROM conv_messages m WHERE m.thread_id=b.thread_id AND m.role='assistant' AND m.text<>'' AND m.rowid>b.read_rowid)`).get(companionId).n;
   }
 
   markRead(companionId, threadId) {

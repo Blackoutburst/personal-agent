@@ -18,6 +18,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -217,8 +219,12 @@ private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExpo
                     .clickable(role = Role.Tab) { if (item == Tab.Board && tab == Tab.Board) model.leaveBoardTopic(); tab = item }
                     .padding(horizontal = when { shownTabs.size >= 5 -> 10.dp; shownTabs.size == 4 -> 16.dp; else -> 22.dp }, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Text(item.label, color = if (selected) Ink else Soft, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 16.sp)
-                    if (item == Tab.Board && state.boardUnread > 0) { Spacer(Modifier.size(6.dp)); UnreadDot(state.boardUnread) }
+                    val label = @Composable { Text(item.label, color = if (selected) Ink else Soft, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 16.sp) }
+                    // Board badge (#61): unread Board conversations, 1-9 then 9+, cleared as each one is opened.
+                    if (item == Tab.Board && state.boardUnread > 0) {
+                        BadgedBox(modifier = Modifier.padding(end = 6.dp), badge = { Badge(containerColor = Color(0xFFEE8F64), contentColor = Color(0xFF3A2E39),
+                            modifier = Modifier.semantics { contentDescription = "${state.boardUnread} unread" }) { Text(badgeText(state.boardUnread)) } }) { label() }
+                    } else label()
                     if (item == Tab.Group && groups.unread > 0) { Spacer(Modifier.size(6.dp)); UnreadDot(groups.unread) }
                 }
             }

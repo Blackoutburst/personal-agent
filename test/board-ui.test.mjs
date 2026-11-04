@@ -56,17 +56,42 @@ test('marking read and archiving update the badge; the Archived filter lists don
   await f.ui.markRead(T1);
   assert.equal(f.ids['nav-board-badge'].hidden, true);
   assert.equal(f.ui.topic(T1).unread, 0);
-  await f.buttons().find(node => node.textContent === 'Done').click();
+  await f.buttons().find(node => node.textContent.endsWith('Done')).click();
   assert.deepEqual(calls.at(-1), ['archive', T1, true]);
   assert.equal(f.ids['board-list'].children.length, 0);
   assert.match(f.ids['board-note'].textContent, /No Board messages/);
   await f.ids['board-filter-archived'].click();
   assert.equal(f.ids['board-filter-archived'].attributes['aria-pressed'], 'true');
   assert.equal(f.ids['board-list'].children.length, 1);
-  await f.buttons().find(node => node.textContent === 'Reopen').click();
+  await f.buttons().find(node => node.textContent.endsWith('Reopen')).click();
   assert.deepEqual(calls.at(-1), ['archive', T1, false]);
   assert.equal(f.ids['board-list'].children.length, 0);
   assert.match(f.ids['board-note'].textContent, /Nothing archived/);
+});
+
+test('#61: the tab badge reads 1-9 then 9+, unread rows carry a dot and a count, and the row button has an icon, a label and a tooltip', async () => {
+  const many = Array.from({ length: 12 }, (_, i) => topic({ threadId: `1e80ef85-15aa-4afb-99cf-${String(i).padStart(12, '0')}`, unread: i === 0 ? 14 : i % 2 }));
+  let unread = 9;
+  const f = fixture({ boardInbox: async () => ({ threads: many, unread, any: true }),
+    boardRead: async threadId => { const item = many.find(row => row.threadId === threadId); item.unread = 0; unread -= 1; return { threadId, unread }; } });
+  await f.ui.show();
+  assert.equal(f.ids['nav-board-badge'].textContent, '9');
+  assert.equal(f.ids['nav-board'].attributes['aria-label'], 'Board, 9 unread conversations');
+  unread = 12; await f.ui.refresh();
+  assert.equal(f.ids['nav-board-badge'].textContent, '9+');
+  const rows = f.ids['board-list'].children, find = (node, name) => node.className === name ? node : node.children.map(child => find(child, name)).find(Boolean);
+  assert.ok(rows[0].className.includes('unread') && find(rows[0], 'board-dot'), 'An unread conversation is marked');
+  assert.equal(find(rows[0], 'board-unread').textContent, '9+');
+  assert.ok(!rows[2].className.includes('unread') && !find(rows[2], 'board-dot'), 'A read conversation has no marker');
+  const toggle = rows[0].children[1];
+  assert.equal(toggle.textContent, '✓Done'); assert.match(toggle.title, /move this conversation to Archived/); assert.match(toggle.ariaLabel, /^Done: #15/);
+  assert.equal(find(toggle, 'board-toggle-icon').ariaHidden, 'true');
+  // Opening a conversation marks it read: its marker goes and the badge drops.
+  await f.ui.markRead(many[0].threadId);
+  assert.equal(f.ids['nav-board-badge'].textContent, '9+'); assert.equal(f.ui.unread, 11);
+  assert.ok(!f.ids['board-list'].children[0].className.includes('unread'));
+  unread = 1; await f.ui.refresh(); assert.equal(f.ids['nav-board-badge'].textContent, '1');
+  await f.ui.markRead(many[1].threadId); assert.equal(f.ids['nav-board-badge'].hidden, true);
 });
 
 test('failures say so without detail, access denial clears the tab, and an owner reset fences late answers', async () => {

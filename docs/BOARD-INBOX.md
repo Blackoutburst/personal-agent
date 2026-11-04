@@ -37,8 +37,9 @@ thread. The companion's memory files are shared: one companion, one memory. Repl
 ## API (`POST api/conversation`, same auth, origin and CSRF rules as the other conversation actions)
 
 - `{action: "boardInbox", archived?: boolean}` → `{threads: [{threadId, label, ticketNumber?, general, archived,
-  unread, updatedAt, preview?, previewRole?}], unread, any}`. `unread` is the badge: companion messages after the
-  owner's read marker in open topics. `any` says whether the owner has any Board conversation (the apps show the tab
+  unread, updatedAt, preview?, previewRole?}], unread, any}`. `unread` is the badge: the number of open topics with
+  at least one companion message after the owner's read marker (#61; each row's `unread` is that topic's message
+  count). `any` says whether the owner has any Board conversation (the apps show the tab
   only then). Newest activity first, at most 200.
 - `{action: "boardRead", threadId}` → `{threadId, unread}`: marks the topic read up to its latest message.
 - `{action: "boardArchive", threadId, archived}` → `{threadId, archived, unread}`: Done (archive, also marks read) or
@@ -48,8 +49,9 @@ thread. The companion's memory files are shared: one companion, one memory. Repl
 
 ## Clients
 
-- **Web and iPhone (the PWA)**: a Board tab (shown once there is a Board conversation) with an unread badge, Open and
-  Archived filters, a row per topic (label, time, preview, unread count, Done/Reopen). `#board/<threadId>` opens a
+- **Web and iPhone (the PWA)**: a Board tab (shown once there is a Board conversation) with an unread badge (unread
+  conversations, 1-9 then 9+), Open and Archived filters, a row per topic (unread dot and count, label, time, preview,
+  and a labelled "Done" / "Reopen" button with a tooltip that says it moves the topic to Archived / back to Open). `#board/<threadId>` opens a
   topic in the chat view with a "‹ Board · #15 · title · Done" bar; Past chats and New chat are hidden there. An open
   topic is marked read when it opens and when a new companion message arrives. The badge refreshes every 30 s.
 - **Android** (0.24.0, versionCode 34): the same Board tab between Chat and Calendar, with the badge on the tab, the

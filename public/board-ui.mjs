@@ -21,10 +21,12 @@ export function createBoardUI({ document, inbox, onOpen = () => {}, onDenied = (
     return date.toDateString() === today.toDateString() ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       : date.toLocaleDateString([], { day: 'numeric', month: 'short' });
   }
+  // Badge text (#61): 1-9, then 9+.
+  const few = value => value > 9 ? '9+' : String(value);
   function badge() {
     const count = $('nav-board-badge'), link = $('nav-board');
-    if (count) { count.hidden = unread === 0; count.textContent = unread > 99 ? '99+' : String(unread); }
-    if (link) { link.hidden = !any; link.setAttribute?.('aria-label', unread ? `Board, ${unread} unread` : 'Board'); }
+    if (count) { count.hidden = unread === 0; count.textContent = few(unread); }
+    if (link) { link.hidden = !any; link.setAttribute?.('aria-label', unread ? `Board, ${unread} unread ${unread === 1 ? 'conversation' : 'conversations'}` : 'Board'); }
   }
   function render() {
     badge();
@@ -37,14 +39,20 @@ export function createBoardUI({ document, inbox, onOpen = () => {}, onDenied = (
       : 'No Board messages. When your companion has something about a ticket, it shows up here, one conversation per ticket.') : '');
     list.replaceChildren(...(current ?? []).map(item => {
       const open = node('button', { type: 'button', className: 'board-topic' + (item.unread ? ' unread' : '') });
-      const head = node('span', { className: 'board-topic-head' }, node('strong', { textContent: item.label }), node('small', { textContent: when(item.updatedAt) }));
+      // Unread (#61): a dot before the label and the topic's count of unread companion messages, both cleared when it is opened.
+      const title = node('strong', { textContent: item.label });
+      const head = node('span', { className: 'board-topic-head' },
+        ...(item.unread ? [node('span', { className: 'board-dot', ariaHidden: 'true' })] : []), title, node('small', { textContent: when(item.updatedAt) }));
       open.append(head);
       if (item.preview) open.append(node('span', { className: 'board-topic-preview', textContent: (item.previewRole === 'user' ? 'You: ' : '') + item.preview }));
-      if (item.unread) open.append(node('span', { className: 'board-unread', textContent: item.unread > 99 ? '99+' : String(item.unread), ariaLabel: `${item.unread} unread` }));
+      if (item.unread) open.append(node('span', { className: 'board-unread', textContent: few(item.unread), ariaLabel: `${item.unread} unread` }));
       open.addEventListener('click', () => onOpen(item.threadId));
-      const toggle = node('button', { type: 'button', className: 'text-button', textContent: item.archived ? 'Reopen' : 'Done', disabled: busy });
+      // Done / Reopen: an icon and a label that always fit, and a tooltip that says where the topic goes.
+      const hint = item.archived ? 'Reopen: move this conversation back to Open' : 'Done: move this conversation to Archived (a new Board message reopens it)';
+      const toggle = node('button', { type: 'button', className: 'text-button board-toggle', title: hint, ariaLabel: `${item.archived ? 'Reopen' : 'Done'}: ${item.label}`, disabled: busy },
+        node('span', { className: 'board-toggle-icon', ariaHidden: 'true', textContent: item.archived ? '↺' : '✓' }), node('span', { textContent: item.archived ? 'Reopen' : 'Done' }));
       toggle.addEventListener('click', () => archive(item.threadId, !item.archived));
-      return node('li', { className: 'board-row' }, open, toggle);
+      return node('li', { className: 'board-row' + (item.unread ? ' unread' : '') }, open, toggle);
     }));
   }
   function remember(threads) { for (const item of threads) topics.set(item.threadId, item); }

@@ -81,7 +81,7 @@ test('Board wakes land in one sub-conversation per Board thread, grouped with th
   assert.equal(ticket.ticketNumber, 15);
   assert.equal(ticket.unread, 3, 'The mention, the owner ping and the Needs-you request of ticket #15 share one sub-conversation');
   assert.equal(design.unread, 1);
-  assert.equal(listed.unread, 4, 'The tab badge counts every unread Board message');
+  assert.equal(listed.unread, 2, 'The tab badge counts unread conversations (#61), not messages');
   assert.match(ticket.preview, /^Board news:/);
   assert.equal((await f.messages(ticket.threadId)).length, 3);
   // Only one lookup per new topic: the Needs-you request joined the known ticket thread without asking again.
@@ -156,6 +156,7 @@ test('unread counts, mark read, archive and reopen on a new Board message', asyn
   const ticket = listed.threads.find(item => item.ticketNumber === 15);
   const read = await f.conv.handle(f.A, { action: 'boardRead', threadId: ticket.threadId });
   assert.equal(read.unread, 1, 'Marking read returns the new badge total');
+  assert.equal(f.inbox.unread(f.A), 1, 'Opening (marking read) one conversation clears it from the badge');
   listed = await f.list();
   assert.equal(listed.threads.find(item => item.threadId === ticket.threadId).unread, 0);
   const archived = await f.conv.handle(f.A, { action: 'boardArchive', threadId: ticket.threadId, archived: true });

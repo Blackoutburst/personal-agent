@@ -23,6 +23,12 @@ class BoardProtocolTest {
         assertEquals("You: Codex asks whether to ship.", boardPreview(result.threads[1]))
     }
 
+    @Test fun badgeReadsOneToNineThenNinePlus() {
+        assertEquals("1", badgeText(1)); assertEquals("9", badgeText(9))
+        assertEquals("9+", badgeText(10)); assertEquals("9+", badgeText(250))
+        assertEquals("0", badgeText(-3))
+    }
+
     @Test fun toleratesMissingOptionalFieldsAndUnknownOnes() {
         val result = parseBoardInbox(Json.parseToJsonElement("""{"threads":[{"threadId":"$thread","label":"Board","future":1}]}"""))
         assertEquals(0, result.unread); assertFalse(result.any)
