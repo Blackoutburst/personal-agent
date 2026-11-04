@@ -462,7 +462,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         if (activeNow()) {
             if (activeJob?.isActive != true) activeJob = viewModelScope.launch {
                 while (isActive && activeNow()) { activeBeat(); delay(ACTIVE_BEAT_MS) }
-                if (activeReported) activeIdle(api, activeThread)
+                // Ended by the input timeout: the owner walked away, so the conversation on screen does not count as seen.
+                if (activeReported) activeIdle(api, if (System.currentTimeMillis() - lastInput >= ACTIVE_INPUT_MS) null else activeThread)
             } else if (activeReported && threadOnScreen() != activeThread) viewModelScope.launch { activeBeat() }
         } else if (activeReported) {
             activeJob?.cancel(); activeJob = null

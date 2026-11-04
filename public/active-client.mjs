@@ -14,8 +14,10 @@ export function createActiveClient({ api, threadOnScreen = () => null, doc = glo
   const thread = () => { try { return threadOnScreen() ?? null; } catch { return null; } };
   const body = (state, threadId) => ({ action: 'clientActive', client, active: state, ...(threadId ? { threadId } : {}) });
 
+  // Input timeout: the owner walked away, so the conversation on screen does not count as seen.
+  const timedOut = () => now() - lastInput >= INPUT_MS;
   async function beat() {
-    if (!active()) return idle();
+    if (!active()) return idle(!timedOut());
     const threadId = thread();
     reported = true; reportedThread = threadId;
     try { await (sending = api(body(true, threadId))); }
@@ -23,11 +25,11 @@ export function createActiveClient({ api, threadOnScreen = () => null, doc = glo
     finally { sending = null; }
   }
   // Inactive now: told with keepalive so it still goes out while the page is being hidden or closed.
-  function idle() {
+  function idle(seen = true) {
     stopTimer();
     if (!reported) return;
     reported = false;
-    const message = body(false, reportedThread ?? thread());
+    const message = body(false, seen ? reportedThread ?? thread() : null);
     reportedThread = null;
     if (keepalive) { keepalive(message); return; }
     try {
@@ -41,7 +43,7 @@ export function createActiveClient({ api, threadOnScreen = () => null, doc = glo
   // Re-checks the state: a change (became active, other conversation on screen, went inactive) is reported at once.
   function update() {
     if (off) return;
-    if (!active()) return idle();
+    if (!active()) return idle(!timedOut());
     startTimer();
     if (!reported || thread() !== reportedThread) void beat();
   }
@@ -52,10 +54,10 @@ export function createActiveClient({ api, threadOnScreen = () => null, doc = glo
   for (const name of INPUTS) win.addEventListener(name, input, { capture: true, passive: true });
   doc.addEventListener('visibilitychange', update);
   win.addEventListener('focus', () => { lastInput = now(); update(); });
-  win.addEventListener('blur', idle);
-  win.addEventListener('pagehide', idle);
+  win.addEventListener('blur', () => idle());
+  win.addEventListener('pagehide', () => idle());
   // The idle check: no input for INPUT_MS while still visible ends the active state.
-  setInterval(() => { if (reported && !active()) idle(); }, 10_000);
+  setInterval(() => { if (reported && !active()) idle(!timedOut()); }, 10_000);
   update();
   return { update, get reported() { return reported; } };
 }

@@ -266,6 +266,7 @@ test('web client: reports active with the thread on screen, beats while used and
   assert.equal(p.sent.at(-1).active, true);
   p.clock += INPUT_MS; t.mock.timers.tick(BEAT_MS); await p.flush();
   assert.equal(p.kept.length, 2, 'No input for 2 minutes: inactive, the push goes out as usual');
+  assert.deepEqual(p.kept.at(-1), { action: 'clientActive', client: 'tab-12345678', active: false }, 'Walked away: the conversation on screen does not count as seen');
   const count = p.sent.length;
   t.mock.timers.tick(BEAT_MS * 3); await p.flush();
   assert.equal(p.sent.length, count, 'Idle: nothing is sent');
