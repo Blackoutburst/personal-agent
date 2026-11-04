@@ -15,8 +15,14 @@ import { splitBubbles } from './bubbles.mjs';
 import { createVoiceRecorder, voiceView } from './voice-ui.mjs';
 import { createBoardUI } from './board-ui.mjs';
 import { createGroupUI } from './group-ui.mjs';
+import { idleDelay, createActivity, createMotion } from './idle.mjs';
 
 const $ = id => document.getElementById(id);
+// Idle performance (#60): when the owner last used the page; reads back off while nothing happens.
+const activity = createActivity({ doc: document, win: window });
+// Change-only DOM writes: an unchanged render touches nothing, so it costs no style, layout or paint.
+const setText = (node, value) => { value = String(value ?? ''); if (node.textContent !== value) node.textContent = value; };
+const setProp = (node, key, value) => { if (node[key] !== value) node[key] = value; };
 const client = createConversationClient();
 const fileTransport = createFileTransport();
 const calendarUI = createCalendarUI({ document, visible: () => view === 'calendar' });
@@ -31,7 +37,7 @@ const weatherUI = createWeatherUI({ document, api, onDenied: fileAccessDenied, o
 const boardUI = createBoardUI({ document, inbox: client, onOpen: threadId => { location.hash = '#board/' + threadId; },
   onDenied: fileAccessDenied, onChange: () => { if (view === 'chat') renderAll(); } });
 // Group tab (#53): owners and their companions together; #group lists them, #group/<id> opens one.
-const groupUI = createGroupUI({ document, renderCharacter, onDenied: fileAccessDenied, visible: () => view === 'group' && Boolean(groupThread) });
+const groupUI = createGroupUI({ document, renderCharacter, activity, onDenied: fileAccessDenied, onNewData: groupId => dataArrived('group', groupId), visible: () => view === 'group' && Boolean(groupThread) });
 let groupThread = null;
 const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
@@ -70,6 +76,17 @@ const webPushUI = createWebPushUI({ document, api });
 const pushPresence = createPushPresence({ api, onChat: () => view === 'chat' });
 // #59: this tab in active use holds pushes to the owner's other devices; the conversation on screen counts as read.
 const activeClient = createActiveClient({ api, threadOnScreen: () => profile && view === 'chat' && state.opened && state.connection === 'ready' ? state.threadId : null });
+// The companion moves for a while after something happens, then rests (#60). busy: a reply is running.
+const chatBusy = () => view === 'chat' && (state.turn?.state === 'streaming' || Boolean(state.pending));
+const motion = createMotion({ root: document.documentElement, win: window, activity, busy: chatBusy });
+// #60: the one place new data from the server is announced (a new companion message in the open chat, a new group
+// message). Views that react to arrivals (an unread dot in a hidden tab, for example) subscribe here.
+const arrivalListeners = new Set();
+function onDataArrived(listener) { arrivalListeners.add(listener); return () => arrivalListeners.delete(listener); }
+function dataArrived(source, detail = null) {
+  motion.wake();
+  for (const listener of arrivalListeners) { try { listener({ source, detail, hidden: document.visibilityState === 'hidden' }); } catch { /* one listener cannot stop the others */ } }
+}
 const providerName = () => ({ claude: 'Claude', codex: 'ChatGPT' })[runtime?.provider] ?? 'AI';
 function applyColors(look) {
   const colors = COLORS[look?.color] ?? COLORS.peach, root = document.documentElement.style;
@@ -231,7 +248,12 @@ async function openChat() {
 }
 const onBoardThread = () => Boolean(selectedBoard) && state.threadId === selectedBoard;
 
-const canRead = () => !sessionDenied && profile && chatOpened && document.visibilityState !== 'hidden' && navigator.onLine !== false;
+// Hidden tabs keep reading, slowly (HIDDEN_READ_MS), so a new message is still noticed within about a minute.
+const canRead = () => !sessionDenied && profile && chatOpened && navigator.onLine !== false;
+const HIDDEN_READ_MS = 60_000, ACTIVE_READ_MS = 500, FAST_READ_MS = 2000;
+// Time since the owner used the page or the conversation changed: the poll backs off from 2 s to 30 s (#60).
+let lastChatChange = Date.now(), chatKey = '', pollDue = 0, lastRead = 0, arrivalThread = null, arrivalLast = null;
+const chatQuiet = () => Math.min(Date.now() - lastChatChange, activity.quietMs());
 async function readChat() {
   if (!canRead() || readTicket) return;
   clearTimeout(pollTimer); pollTimer = null;
@@ -248,7 +270,8 @@ async function readChat() {
       initialThreadAttempted = true; await client.create('Companion');
     }
     if (ticket.owner !== ownerEpoch || readTicket !== ticket) return;
-    if (state.connection === 'ready') { readFailures = 0; await remindersUI.refreshIfOpen(); await calendarUI.refreshIfOpen(); }
+    lastRead = Date.now();
+    if (state.connection === 'ready') { readFailures = 0; if (document.visibilityState !== 'hidden') { await remindersUI.refreshIfOpen(); await calendarUI.refreshIfOpen(); } }
     else readFailures++;
     if (before?.state === 'streaming' && state.turn?.requestId === before.requestId && state.turn.state === 'complete') happyUntil = Date.now() + 5000;
   } catch { if (ticket.owner === ownerEpoch && readTicket === ticket) readFailures++; }
@@ -264,8 +287,11 @@ function schedulePoll() {
   if (!recovering && !state.threadId) return;
   const active = state.turn?.state === 'streaming' || Boolean(state.pending) || state.hasMore;
   const owner = ownerEpoch, sequence = ++readSequence;
-  pollTimer = setTimeout(() => { pollTimer = null; if (owner === ownerEpoch && sequence === readSequence) void readChat(); },
-    recovering ? READ_BACKOFF[Math.max(0, readFailures - 1)] : active ? 500 : 3000);
+  const hidden = document.visibilityState === 'hidden';
+  const delay = recovering ? Math.max(READ_BACKOFF[Math.max(0, readFailures - 1)], hidden ? HIDDEN_READ_MS : 0)
+    : hidden ? HIDDEN_READ_MS : active ? ACTIVE_READ_MS : idleDelay(chatQuiet(), FAST_READ_MS);
+  pollDue = Date.now() + delay;
+  pollTimer = setTimeout(() => { pollTimer = null; if (owner === ownerEpoch && sequence === readSequence) void readChat(); }, delay);
 }
 
 function dayLabel(date) {
@@ -304,9 +330,9 @@ function renderMessages() {
   for (const [id, node] of messageNodes) if (!keep.has(id)) { node.remove(); messageNodes.delete(id); }
   const busy = state.turn?.state === 'streaming' || Boolean(state.pending);
   // The companion's reply arrives bubble by bubble: it keeps "typing" under them until the reply is done.
-  $('typing').hidden = !busy;
-  $('welcome').hidden = index > 0 || state.connection === 'loading';
-  $('welcome-text').textContent = `Say hi to ${companionName()} 👋 ${companionName()} remembers what matters to you, so tell them about your day.`;
+  setProp($('typing'), 'hidden', !busy);
+  setProp($('welcome'), 'hidden', index > 0 || state.connection === 'loading');
+  setText($('welcome-text'), `Say hi to ${companionName()} 👋 ${companionName()} remembers what matters to you, so tell them about your day.`);
   if (follow) history.scrollTop = history.scrollHeight;
 }
 
@@ -369,7 +395,7 @@ const submitting = () => Boolean(state.pending) && state.pending.status !== 'acc
 function renderChat() {
   renderMessages();
   const note = turnNote();
-  $('note').hidden = !note; $('note').textContent = note ?? '';
+  setProp($('note'), 'hidden', !note); setText($('note'), note ?? '');
   const streaming = state.turn?.state === 'streaming';
   const ready = state.connection === 'ready' && state.threadId !== null;
   const input = $('input');
@@ -377,35 +403,35 @@ function renderChat() {
   const completed = uploads.filter(item => item.status === 'ready');
   // While a reply runs, Stop shows until the owner starts typing another message.
   const typing = Boolean(input.value.trim()) || uploads.length > 0;
-  $('stop').hidden = !streaming || typing;
-  $('stop').disabled = Boolean(state.turn?.stopping);
+  setProp($('stop'), 'hidden', !streaming || typing);
+  setProp($('stop'), 'disabled', Boolean(state.turn?.stopping));
   // Like Discord: the mic sits where Send is until there is something to send.
   const mic = !typing && Boolean(voiceRecorder?.supported());
-  $('mic').hidden = !mic;
-  $('mic').disabled = !ready || submitting() || voiceSending || state.archivedAt !== null || state.synthetic;
-  $('send').hidden = mic;
+  setProp($('mic'), 'hidden', !mic);
+  setProp($('mic'), 'disabled', !ready || submitting() || voiceSending || state.archivedAt !== null || state.synthetic);
+  setProp($('send'), 'hidden', mic);
   const waiting = uploads.some(item => item.status !== 'ready' || item.removing);
-  $('send').disabled = !ready || submitting() || Boolean(heldDraft) || waiting || (!input.value.trim() && !completed.length) || input.value.length > USER_CHARS;
-  $('attach').disabled = !ready || submitting() || uploads.length >= 8;
-  $('file-picker').disabled = $('attach').disabled;
-  $('retry-send').hidden = state.pending?.status !== 'uncertain';
+  setProp($('send'), 'disabled', !ready || submitting() || Boolean(heldDraft) || waiting || (!input.value.trim() && !completed.length) || input.value.length > USER_CHARS);
+  setProp($('attach'), 'disabled', !ready || submitting() || uploads.length >= 8);
+  setProp($('file-picker'), 'disabled', $('attach').disabled);
+  setProp($('retry-send'), 'hidden', state.pending?.status !== 'uncertain');
   const archived = state.archivedAt !== null;
-  $('new-chat').disabled = !ready || archived || state.synthetic || Boolean(state.pending) || streaming || state.messages.length === 0;
-  $('past-chats').disabled = state.synthetic || sessionDenied;
-  $('archived-banner').hidden = !archived;
-  if (archived) $('archived-text').textContent = `Archived chat · ended ${new Date(state.archivedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })} · read-only`;
-  $('composer').hidden = archived;
+  setProp($('new-chat'), 'disabled', !ready || archived || state.synthetic || Boolean(state.pending) || streaming || state.messages.length === 0);
+  setProp($('past-chats'), 'disabled', state.synthetic || sessionDenied);
+  setProp($('archived-banner'), 'hidden', !archived);
+  if (archived) setText($('archived-text'), `Archived chat · ended ${new Date(state.archivedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })} · read-only`);
+  setProp($('composer'), 'hidden', archived);
   // In a Board sub-conversation: its topic, a way back to the Board tab and Done; Past chats and New chat are main-chat only.
   const board = onBoardThread(), topic = board ? boardUI.topic(selectedBoard) : null;
-  $('board-banner').hidden = !board;
+  setProp($('board-banner'), 'hidden', !board);
   if (board) {
-    $('board-topic').textContent = topic?.label ?? state.threads.find(item => item.id === state.threadId)?.title ?? 'Board';
-    $('board-done').textContent = topic?.archived ? 'Reopen' : 'Done';
+    setText($('board-topic'), topic?.label ?? state.threads.find(item => item.id === state.threadId)?.title ?? 'Board');
+    setText($('board-done'), topic?.archived ? 'Reopen' : 'Done');
   }
-  $('past-chats').hidden = board; $('new-chat').hidden = board;
-  reconnect.hidden = sessionDenied || Boolean(state.pending && !state.opened) || (!readFailures && state.connection === 'ready'); reconnect.disabled = Boolean(readTicket) || navigator.onLine === false;
-  kept.hidden = !heldDraft; keptText.textContent = heldDraft?.text ?? ''; restoreDraft.disabled = Boolean(input.value) || Boolean(state.pending);
-  input.placeholder = `Write to ${companionName()}…`;
+  setProp($('past-chats'), 'hidden', board); setProp($('new-chat'), 'hidden', board);
+  setProp(reconnect, 'hidden', sessionDenied || Boolean(state.pending && !state.opened) || (!readFailures && state.connection === 'ready')); if (!reconnect.hidden) setProp(reconnect, 'disabled', Boolean(readTicket) || navigator.onLine === false);
+  setProp(kept, 'hidden', !heldDraft); setText(keptText, heldDraft?.text ?? ''); setProp(restoreDraft, 'disabled', Boolean(input.value) || Boolean(state.pending));
+  setProp(input, 'placeholder', `Write to ${companionName()}…`);
   renderUploads();
 }
 
@@ -480,8 +506,8 @@ function clearUploads() {
   uploads = []; fileNotice = ''; renderUploads();
 }
 function renderUploads() {
-  const root = $('uploads'); root.hidden = !uploads.length;
-  $('file-note').hidden = !fileNotice; $('file-note').textContent = fileNotice;
+  const root = $('uploads'); setProp(root, 'hidden', !uploads.length);
+  setProp($('file-note'), 'hidden', !fileNotice); setText($('file-note'), fileNotice);
   const key = JSON.stringify([submitting(), uploads.map(item => [item.requestId, item.status, item.progress, item.error, item.dto?.id, item.removing]), fileNotice]);
   if (key === uploadsKey) return;
   uploadsKey = key;
@@ -656,17 +682,22 @@ function renderLook() {
 
 // ---------- Rendering ----------
 
+// The face shown depends on the clock (happy for a few seconds, sleepy at night): checked every second, drawn on change.
+let renderedMood = '';
+const moodKey = () => `${mood()}|${feeling() ?? ''}`;
 function renderAll() {
   const look = lookShown() && draftLook ? draftLook : profile;
   const current = mood();
-  $('top-name').textContent = companionName();
-  $('top-mood').textContent = view === 'chat' ? MOOD_TEXT[current] : '';
+  renderedMood = moodKey();
+  setText($('top-name'), companionName());
+  setText($('top-mood'), view === 'chat' ? MOOD_TEXT[current] : '');
   draw($('mini-avatar'), look ?? { character: 'pip', color: 'peach' }, current === 'talking' ? 'talking' : current === 'thinking' ? 'thinking' : 'idle');
-  document.title = profile ? companionName() : 'Your companion';
+  const title = profile ? companionName() : 'Your companion';
+  if (document.title !== title) document.title = title;
   if (view === 'chat') {
     draw($('stage-character'), profile, current, feeling());
-    $('stage-name').textContent = companionName();
-    $('stage-mood').textContent = MOOD_TEXT[current];
+    setText($('stage-name'), companionName());
+    setText($('stage-mood'), MOOD_TEXT[current]);
     renderChat();
   }
   if (lookShown()) renderLook();
@@ -693,11 +724,21 @@ client.subscribe(next => {
     const key = selectedBoard + ':' + ([...next.messages].reverse().find(item => item.role === 'assistant' && item.text)?.id ?? '');
     if (key !== boardReadMarked) { boardReadMarked = key; void boardUI.markRead(selectedBoard); }
   }
+  // #60: something changed in the conversation (a message, a reply starting or ending): reads stay fast for a while.
+  const last = next.messages.at(-1);
+  const changeKey = [next.threadId, next.messages.length, last?.id, last?.text?.length, key ?? '', next.pending?.status ?? ''].join('|');
+  if (changeKey !== chatKey) {
+    // A companion message that was not there before, in the same open thread (not the first load of a chat).
+    const arrived = next.opened && next.threadId === arrivalThread && last?.role !== 'user' && Boolean(last?.text) && last.id !== arrivalLast;
+    chatKey = changeKey; lastChatChange = Date.now();
+    if (arrived) dataArrived('chat', next.threadId); else motion.update();
+  }
+  if (next.opened) { arrivalThread = next.threadId; arrivalLast = last?.id ?? null; }
   activeClient.update();
   renderAll();
   if (!polling) schedulePoll();
 });
-setInterval(() => { if (view === 'chat') renderAll(); }, 1000);
+setInterval(() => { if (view === 'chat' && document.visibilityState !== 'hidden' && moodKey() !== renderedMood) renderAll(); }, 1000);
 
 // ---------- Voice messages ----------
 // Recording counts as typing, so a reply still waiting for more texts keeps waiting.
@@ -799,7 +840,24 @@ $('board-done').addEventListener('click', async () => {
   if (await boardUI.archive(selectedBoard, done) && done) location.hash = '#board'; else renderAll();
 });
 // The Board badge follows new Board messages while the app is open.
-setInterval(() => { if (profile && !sessionDenied && document.visibilityState !== 'hidden') { void boardUI.refresh(); if (!(view === 'group' && groupThread)) void groupUI.refresh(); } }, 30000);
+// #60: every 30 s while the owner is around, every minute in a hidden tab, every 2 minutes after 5 idle minutes.
+let listTicks = 0, listRefreshedAt = 0;
+function refreshLists() {
+  if (!profile || sessionDenied) return;
+  listTicks = 0; listRefreshedAt = Date.now();
+  void boardUI.refresh(); if (!(view === 'group' && groupThread)) void groupUI.refresh();
+}
+setInterval(() => {
+  const every = document.visibilityState === 'hidden' ? 2 : activity.quietMs() > 5 * 60_000 ? 4 : 1;
+  if (++listTicks >= every) refreshLists();
+}, 30000);
+// Coming back to the window: read now instead of waiting for the backed-off poll. Input: the next read comes soon.
+activity.onWake(reason => {
+  if (reason === 'focus' && document.visibilityState !== 'hidden') {
+    if (Date.now() - listRefreshedAt > 30_000) refreshLists();
+    if (chatOpened && state.connection === 'ready' && !readTicket && !polling && Date.now() - lastRead > FAST_READ_MS) void readChat();
+  } else if (reason === 'input' && pollTimer && pollDue - Date.now() > FAST_READ_MS) schedulePoll();
+});
 $('input').addEventListener('input', () => { composerEpoch++; grow(); try { client.setDraft($('input').value); } catch { /* too long: send stays disabled */ } noteTyping(); renderAll(); });
 // Tells the server the owner is typing (at most every 3 s while they type), like the "typing…" a person sees,
 // so a reply still waiting for more texts keeps waiting. Clearing the box says they stopped.
@@ -1077,13 +1135,14 @@ async function refreshWearing() {
 }
 setInterval(refreshWearing, 10 * 60 * 1000);
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'hidden') { clearTimeout(pollTimer); pollTimer = null; clearTimeout(discordTimer); discordTimer = null; return; }
+  // Hidden: the read continues once a minute (schedulePoll), so a new message is still noticed (#60).
+  if (document.visibilityState === 'hidden') { clearTimeout(pollTimer); pollTimer = null; clearTimeout(discordTimer); discordTimer = null; if (!polling) schedulePoll(); return; }
   refreshWearing();
-  if (profile) { void boardUI.refresh(); void groupUI.refresh(); }
+  if (profile) { listRefreshedAt = Date.now(); void boardUI.refresh(); void groupUI.refresh(); }
   if (chatOpened && state.connection !== 'loading' && !polling) { readFailures = 0; await readChat(); }
   schedulePoll();
 });
 window.addEventListener('offline', () => { clearTimeout(pollTimer); pollTimer = null; clearTimeout(discordTimer); discordTimer = null; renderAll(); });
-window.addEventListener('online', () => { if (canRead()) { readFailures = 0; void readChat(); } });
+window.addEventListener('online', () => { if (!canRead()) return; readFailures = 0; if (document.visibilityState === 'hidden') schedulePoll(); else void readChat(); });
 
 start();

@@ -90,8 +90,8 @@ The client model provides `open`, `select`, `create`, `send`, `retry`, `cancel`,
 `poll`, `setDraft`, `clear` and `subscribe`. It validates every response strictly, recovers
 from event gaps with a snapshot, and keeps an uncertain send's request id for an explicit
 retry. It never resends on its own. The companion app (COMPANION.md) uses it for its single
-ongoing chat: it polls every 0.5 s during a reply and every 3 s otherwise, pauses while the page is
-hidden and reloads the snapshot when it becomes visible again.
+ongoing chat: it polls every 0.5 s during a reply, every 2 s right after something happened, then backs off
+(see Idle performance below); a hidden tab reads once a minute and reloads when it becomes visible again.
 
 Failed reads use bounded reconnect backoff and an explicit Reconnect chat action when
 exhausted. These reads never retry a write. An uncertain write keeps its original key for
@@ -108,3 +108,49 @@ overwriting newer typing. Drafts and unconfirmed payloads remain local to the cu
   demo fixture.
 
 No real accounts, conversations or provider usage enter the tests.
+
+## Idle performance (#60)
+
+Report: with the companion tab open and idle, a YouTube 1080p60 tab dropped ~24% of frames; closing the companion fixed it.
+
+**Root cause (measured).** Headless Chromium 1248 against a local harness serving `public/` with a fake signed-in API
+(Claude-chan and Pip), CDP trace + `Performance.getMetrics` + a MutationObserver, 60 s idle windows:
+
+| idle, per minute | before (6217a61) | after, 30 s in | after, 4 min in |
+| --- | --- | --- | --- |
+| compositor frames drawn (`DrawFrame`) | 3601 (60 fps, nonstop) | 18 | 22 |
+| running infinite animations | 4 (`breathe` + `frame-blink` on the stage and top-bar avatars) | 0 (paused) | 0 |
+| main-thread paints / layouts | 174 / 210 | 36 / 18 | 44 / 22 |
+| DOM mutations | 2772 | 19 | 22 |
+| API requests | 29 (22 `events`, 2 `boardInbox`, 2 `groups:list`, 3 `clientActive`) | 15 | 4 |
+
+1. GPU: the avatar's idle loops (`breathe`/`bob`/`float` on the SVG `.char-body`, `frame-blink`/`blink`) were infinite CSS
+   animations, on two avatars. Chrome composites them, so the main thread stays tiny, but the compositor and the GPU process
+   draw a new frame 60 times a second forever, in Chrome's GPU process that the video tab shares.
+2. Every second `renderAll()` rewrote the same texts and flags (`textContent`, `hidden`, `disabled`, `document.title`): about
+   46 mutations a second, each forcing style, layout and paint.
+3. Network: the chat read every 3 s (plus request time) forever; an open group read every 1.5 s and rebuilt every message and
+   avatar on each read (and with `cache-control: no-store` every avatar picture was fetched again).
+
+**Fix.**
+- `public/idle.mjs` `createMotion`: the root carries `data-motion="awake"` for 12 s after something happens (input, focus,
+  coming back, a message arriving) and while a reply runs; otherwise every `.char` animation is `animation-play-state: paused`
+  (no frames). Blinking is no longer an animation: `data-blink` flips for 160 ms every 3.5–7.5 s (two small paints). Leaving
+  the window rests at once; hidden tabs and `prefers-reduced-motion` never move or blink. Visible change: she breathes for a
+  few seconds after you do something, then holds still and keeps blinking.
+- Change-only rendering: `setText`/`setProp` in the app, the 1 s timer only redraws when the face changes (happy ending,
+  night), the Board list and group list/conversation only redraw when their data changed.
+- Reads (`idleDelay`): 0.5 s while a reply runs, 2 s for 20 s after the owner used the page or the chat changed, then 5 s,
+  15 s (after 1 min) and 30 s (after 3 min). Input brings the next read forward, focus reads at once. A hidden tab reads
+  once a minute (Chrome throttles hidden timers to about that anyway), so it still learns about a new message within about
+  a minute. Groups use the same ladder from 1.5 s. Board/group badges: every 30 s, every minute hidden, every 2 minutes
+  after 5 idle minutes. A companion message written on its own after 4 idle minutes showed up 29.7 s later (the 30 s
+  ceiling); replies to the owner's messages stay at 0.5–2 s. SSE would make that instant but needs nginx changes
+  (`proxy_read_timeout 10s` and buffering on the prefix location), so it is left for later.
+- One arrival hook: `dataArrived(source, detail)` in `companion-app.mjs` (subscribe with `onDataArrived`) fires once per
+  new companion message in the open chat (also in a hidden tab, `hidden: true`) and per new group message.
+
+Unchanged: #59 active-client beats (20 s while in active use), #49 push presence (15 s while the chat is visible, if
+notifications are on), the 10 min outfit check. The service worker was not refetching anything in the harness while idle
+(no static request in 60 s); its fetches came from avatar pictures being rebuilt, which no longer happens.
+Not verified here: real Chrome with a GPU next to a YouTube tab.

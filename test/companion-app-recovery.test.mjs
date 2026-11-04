@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { idleDelay } from '../public/idle.mjs';
+import { splitBubbles } from '../public/bubbles.mjs';
 
 // Execute the actual application body, replacing only imported dependencies.
 // Native DOM/fetch/clock boundaries are controlled; no browser/provider/network is launched.
@@ -69,7 +71,7 @@ function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: prof
     renderCharacter: () => '<svg></svg>', CHARACTERS: [{ id: 'pip', label: 'Pip', hint: 'Synthetic' }], COLORS: { peach: { body: '#a', shade: '#b', light: '#c' } }, OUTFITS: [], HAS_OUTFITS: () => false,
     createRemindersUI: feature, createCalendarUI: feature, createStudioUI: feature, createMemoryUI: feature, createPersonalityUI: feature, createContactUI: feature, createOwnerProfileUI: feature, createWeatherUI: feature, createWebPushUI: feature, createGroupUI: () => ({ clear() {}, refresh: async () => {}, open: async () => {}, close() {} }), createBoardUI: options => { boardOptions.push(options); return { clear() {}, refresh: async () => { boardCalls.push('refresh'); }, show: async () => { boardCalls.push('show'); }, hide() {},
       markRead: async id => { boardCalls.push('read:' + id); }, archive: async (id, done) => { boardCalls.push(`archive:${id}:${done}`); return true; },
-      topic: id => id === BOARD_THREAD ? { threadId: id, label: '#15 · Fix login', archived: false } : null }; }, createPushPresence: () => ({ update() {} }), createActiveClient: () => ({ update() {} }), createVoiceRecorder: () => ({ start() {}, cancel() {}, send() {}, recording: () => false, supported: () => false }), voiceView: () => new Element(), registerServiceWorker: () => {}, renderPeerCard: () => new Element(),
+      topic: id => id === BOARD_THREAD ? { threadId: id, label: '#15 · Fix login', archived: false } : null }; }, createPushPresence: () => ({ update() {} }), idleDelay, splitBubbles, createActivity: () => ({ touch() {}, quietMs: () => 0, visible: () => true, focused: () => true, onWake() {} }), createMotion: () => ({ wake() {}, rest() {}, update() {} }), createActiveClient: () => ({ update() {} }), createVoiceRecorder: () => ({ start() {}, cancel() {}, send() {}, recording: () => false, supported: () => false }), voiceView: () => new Element(), registerServiceWorker: () => {}, renderPeerCard: () => new Element(),
     fetch: async (url, options = {}) => { if (url === 'android.json') return response({}, 404); const input = JSON.parse(options.body); requests.push(input); const queue = queues.get(input.action), next = queue?.shift();
       if (next) return await next;
       if (input.action === 'setProfile') setupSaved = true;
@@ -230,4 +232,18 @@ test('a Board push link opens that sub-conversation in the chat view, marks it r
   assert.equal(f.$('board-banner').hidden, true); assert.equal(f.$('past-chats').hidden, false);
   f.boardOptions[0].onOpen(BOARD_THREAD); await flush();
   assert.equal(f.location(), '#board/' + BOARD_THREAD); assert.equal(f.reads.at(-1), 'select:' + BOARD_THREAD);
+});
+
+test('#60: an idle chat backs off, a hidden tab still reads once a minute, and new companion messages reach one arrival hook', async () => {
+  const f = fixture(); await flush();
+  const arrivals = []; vm.runInContext('onDataArrived', f.context)(event => arrivals.push(event));
+  // Fresh activity reads every 2 s (was a fixed 3 s); hidden: once a minute instead of stopping.
+  assert.equal(await f.tick(), 2000);
+  await f.visibility('hidden'); assert.equal(await f.tick(), 60000); assert.equal(await f.tick(), 60000);
+  const message = (id, role, text) => ({ id, threadId: THREAD, role, text });
+  f.emit({ messages: [message('u1', 'user', 'hi')] }); assert.deepEqual(arrivals, []);
+  f.emit({ messages: [message('u1', 'user', 'hi'), message('a1', 'assistant', 'Hello!')] });
+  f.emit({ messages: [message('u1', 'user', 'hi'), message('a1', 'assistant', 'Hello! Longer now')] });
+  assert.equal(arrivals.length, 1); assert.equal(arrivals[0].source, 'chat'); assert.equal(arrivals[0].hidden, true);
+  await f.visibility('visible'); assert.equal(await f.tick(), 2000);
 });

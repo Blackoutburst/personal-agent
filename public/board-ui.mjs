@@ -28,7 +28,11 @@ export function createBoardUI({ document, inbox, onOpen = () => {}, onDenied = (
     if (count) { count.hidden = unread === 0; count.textContent = few(unread); }
     if (link) { link.hidden = !any; link.setAttribute?.('aria-label', unread ? `Board, ${unread} unread ${unread === 1 ? 'conversation' : 'conversations'}` : 'Board'); }
   }
+  // #60: a periodic refresh that changed nothing redraws nothing.
+  let renderedKey = '';
+  const stateKey = () => JSON.stringify([unread, any, archived, busy, notice, current]);
   function render() {
+    renderedKey = stateKey();
     badge();
     const list = $('board-list'), note = $('board-note');
     if (!list) return;
@@ -73,7 +77,7 @@ export function createBoardUI({ document, inbox, onOpen = () => {}, onDenied = (
       if (!active(owner, token) || denied(error)) return;
       if (visible) notice = 'The Board inbox could not be loaded. It retries in a moment.';
     }
-    if (active(owner, token)) { render(); onChange(); }
+    if (active(owner, token) && stateKey() !== renderedKey) { render(); onChange(); }
   }
   async function show() { visible = true; render(); await refresh(); }
   function hide() { visible = false; }

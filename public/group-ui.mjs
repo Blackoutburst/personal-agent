@@ -3,8 +3,11 @@
 // author's name and picture (owners: their profile photo; companions: their current look), markdown, files and
 // pictures, reply-to, typing, @mention suggestions and the per-group notification setting. Everything is built from
 // DOM nodes and text, never from message HTML. The server decides who may see what; this module only shows it.
+import { idleDelay } from './idle.mjs';
+
 const GROUP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const POLL_MS = 1500, TYPING_PING_MS = 4000, MAX_FILES = 8, MAX_FILE_BYTES = 25 * 1024 * 1024;
+// POLL_MS: the open group's read while things happen; it backs off to 30 s while idle and 60 s in a hidden tab (#60).
+const POLL_MS = 1500, HIDDEN_POLL_MS = 60_000, TYPING_PING_MS = 4000, MAX_FILES = 8, MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 export class GroupError extends Error {
   constructor(code, status = 0) { super(code); this.name = 'GroupError'; this.code = code; this.status = status; }
@@ -108,10 +111,13 @@ export function mentionQuery(value, caret) {
 
 export function createGroupUI({ document, call = createGroupTransport(), fetchImpl = globalThis.fetch, renderCharacter = null,
   requestId = () => globalThis.crypto.randomUUID(), onDenied = () => {}, onChange = () => {}, now = () => Date.now(), visible = () => true,
-  navigate = hash => { globalThis.location.hash = hash; } }) {
+  navigate = hash => { globalThis.location.hash = hash; }, activity = null, onNewData = () => {},
+  setTimer = (run, ms) => setTimeout(run, ms), clearTimer = id => clearTimeout(id) }) {
   const $ = id => document.getElementById(id);
   const node = (tag, props = {}, ...children) => { const item = Object.assign(document.createElement(tag), props); item.append(...children); return item; };
   let epoch = 0, list = null, unread = 0, available = false, current = null, openId = null, notice = '', creating = false, busy = false;
+  // #60: only redraw what changed (a redraw rebuilds every avatar, and their pictures are fetched again).
+  let listKey = '', conversationKey = '', lastChange = now(), pollDue = 0, seenSeq = 0;
   let pollTimer = null, polling = false, lastTyping = 0, replyTo = null, uploads = [], suggestions = [], suggestionIndex = 0, menuOpen = false;
   const photos = new Map(), photoRequests = new Map();
 
@@ -121,7 +127,7 @@ export function createGroupUI({ document, call = createGroupTransport(), fetchIm
   }
   function clear() {
     epoch++; list = null; unread = 0; available = false; current = null; openId = null; notice = ''; creating = false; busy = false;
-    clearTimeout(pollTimer); pollTimer = null; polling = false; replyTo = null; uploads = []; suggestions = []; menuOpen = false;
+    clearTimer(pollTimer); pollTimer = null; polling = false; replyTo = null; listKey = ''; conversationKey = ''; uploads = []; suggestions = []; menuOpen = false;
     photos.clear(); photoRequests.clear();
     for (const id of ['group-list', 'group-messages', 'group-members', 'group-create-owners', 'group-uploads', 'group-suggest']) $(id)?.replaceChildren();
     for (const id of ['group-note', 'group-chat-note', 'group-title', 'group-typing']) if ($(id)) $(id).textContent = '';
@@ -202,7 +208,9 @@ export function createGroupUI({ document, call = createGroupTransport(), fetchIm
     try {
       const result = await call({ action: 'list' });
       if (owner !== epoch) return;
-      list = result; unread = result.unread ?? 0; available = true; notice = '';
+      const key = JSON.stringify(result), same = key === listKey && !notice && available;
+      list = result; unread = result.unread ?? 0; available = true; notice = ''; listKey = key;
+      if (same) return;
     } catch (error) {
       if (owner !== epoch || denied(error)) return;
       // An older server has no groups: the tab stays hidden.
@@ -258,8 +266,11 @@ export function createGroupUI({ document, call = createGroupTransport(), fetchIm
     return node('li', { id: `group-message-${message.id}`, className: 'group-message' + (author.you ? ' mine' : '') + (author.kind === 'companion' ? ' companion' : '') },
       avatar(author), body);
   }
+  const keyOf = () => JSON.stringify([current.name, current.members, current.messages.map(item => [item.id, item.seq, item.text, item.attachments?.length ?? 0]),
+    current.typing, current.paused, current.notify, notice, menuOpen]);
   function renderConversation() {
     if (!current) return;
+    conversationKey = keyOf();
     if ($('group-title')) $('group-title').textContent = current.name;
     $('group-members')?.replaceChildren(...current.members.map(item => node('span', { className: 'group-member', title: item.kind === 'companion' ? `${item.name} (companion)` : item.name },
       avatar(item, 'tiny'), node('span', { textContent: item.name }))));
@@ -330,6 +341,7 @@ export function createGroupUI({ document, call = createGroupTransport(), fetchIm
       if (owner !== epoch || openId !== groupId) return;
       current = { id: groupId, name: result.group.name, members: result.group.members, notify: result.group.notify, messages: result.messages,
         cursor: result.cursor, typing: result.typing ?? [], paused: result.paused === true, readSeq: 0 };
+      seenSeq = current.messages.at(-1)?.seq ?? 0; lastChange = now();
       renderConversation(); markRead(); schedule();
     } catch (error) {
       if (owner !== epoch || denied(error)) return;
@@ -338,15 +350,28 @@ export function createGroupUI({ document, call = createGroupTransport(), fetchIm
       if (error.code !== 'NOT_FOUND') schedule();
     }
   }
-  function close() { if (current) sendTyping(false); openId = null; clearTimeout(pollTimer); pollTimer = null; }
-  function schedule() {
-    clearTimeout(pollTimer);
-    pollTimer = openId ? setTimeout(poll, POLL_MS) : null;
+  function close() { if (current) sendTyping(false); openId = null; clearTimer(pollTimer); pollTimer = null; }
+  // Fast while the group is lively or the owner uses the page, then 5 s → 15 s → 30 s; once a minute in a hidden tab.
+  function delay() {
+    if (document.visibilityState === 'hidden') return HIDDEN_POLL_MS;
+    if (current?.typing?.length) return POLL_MS;
+    return idleDelay(Math.min(now() - lastChange, activity?.quietMs() ?? Infinity), POLL_MS);
   }
+  function schedule() {
+    clearTimer(pollTimer); pollTimer = null;
+    if (!openId) return;
+    const ms = delay(); pollDue = now() + ms;
+    pollTimer = setTimer(poll, ms);
+  }
+  activity?.onWake(reason => {
+    if (!openId || polling) return;
+    if (reason === 'focus' || reason === 'visible') { if (pollTimer && pollDue - now() > POLL_MS) { clearTimer(pollTimer); pollTimer = null; void poll(); } }
+    else if (pollTimer && pollDue - now() > POLL_MS) schedule();
+  });
   async function poll() {
     pollTimer = null;
     if (!openId) return;
-    if (polling || document.visibilityState === 'hidden') return schedule();
+    if (polling) return schedule();
     if (!current) return open(openId);
     const owner = epoch, groupId = current.id;
     polling = true;
@@ -359,7 +384,14 @@ export function createGroupUI({ document, call = createGroupTransport(), fetchIm
         current.typing = result.typing ?? []; current.paused = result.paused === true;
         if (!result.hasMore) break;
       }
-      renderConversation(); markRead();
+      const lastSeq = current.messages.at(-1)?.seq ?? 0;
+      if (keyOf() !== conversationKey) {
+        lastChange = now();
+        if (lastSeq > seenSeq) onNewData(groupId);
+        renderConversation();
+      }
+      seenSeq = Math.max(seenSeq, lastSeq);
+      markRead();
     } catch (error) {
       if (owner !== epoch || denied(error)) return;
       if (error.code === 'NOT_FOUND') { notice = 'You are no longer in this group.'; renderConversation(); openId = null; }
@@ -386,7 +418,7 @@ export function createGroupUI({ document, call = createGroupTransport(), fetchIm
       const result = await call({ action: 'post', groupId, requestId: key, text, ...(replyTo ? { replyTo: replyTo.id } : {}), ...(files.length ? { attachments: files } : {}) });
       if (owner !== epoch || current?.id !== groupId) return;
       input.value = ''; replyTo = null; uploads = []; suggestions = []; lastTyping = 0; notice = '';
-      merge([result.message]);
+      merge([result.message]); lastChange = now();
       renderConversation(); markRead();
     } catch (error) {
       if (owner !== epoch || denied(error)) return;
