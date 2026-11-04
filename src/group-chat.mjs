@@ -697,7 +697,7 @@ export class GroupChat {
     const controller = new AbortController();
     this.#active.add(controller);
     state.busy.add(companionId);
-    let sessionId = resume;
+    let sessionId = resume, acted = false;
     const run = async (input, sessionResume) => {
       let streamed = '';
       const reply = await this.#runner.turn(companionId, { prompt: input, resume: sessionResume, systemPrompt, allowedTools: this.#allowedTools,
@@ -705,7 +705,10 @@ export class GroupChat {
         onEvent: event => {
           if (event.type === 'session' && typeof event.id === 'string') sessionId = event.id;
           else if (event.type === 'delta' && typeof event.text === 'string') streamed += event.text;
-          else if (event.type === 'tool' && WEB_TOOLS.includes(event.name)) this.#webBudget?.record(companionId);
+          else if (event.type === 'tool' || event.type === 'acting') {
+            acted = true;
+            if (event.type === 'tool' && WEB_TOOLS.includes(event.name)) this.#webBudget?.record(companionId);
+          }
         } });
       if (typeof reply?.sessionId === 'string') sessionId = reply.sessionId;
       return typeof reply?.text === 'string' && reply.text.length ? reply.text : streamed;
@@ -717,8 +720,9 @@ export class GroupChat {
     };
     try {
       let result = parse(await run(prompt, resume));
-      // A mention always gets an answer: one more try when the companion stayed silent anyway.
-      if (!result.text && mentioned && !this.#closing && !controller.signal.aborted) {
+      // A mention always gets an answer: one more try when the companion stayed silent anyway (never after it acted,
+      // so an action cannot run twice).
+      if (!result.text && mentioned && !acted && !this.#closing && !controller.signal.aborted) {
         const insist = '(App note: you were @mentioned, so the group is waiting for your answer. Reply now, even briefly; ' + NO_REPLY + ' is not possible this time.)';
         result = parse(await run(sessionId ? insist : prompt + '\n\n' + insist, sessionId));
       }
