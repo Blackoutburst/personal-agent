@@ -22,6 +22,7 @@ import { SchedulerStore, SchedulerService } from './src/scheduler.mjs';
 import { createSchedulerHttp, schedulerOperation } from './src/scheduler-http.mjs';
 import { Calendar } from './src/calendar.mjs';
 import { GitHub } from './src/github.mjs';
+import { Mail } from './src/mail.mjs';
 import { XPosts } from './src/x-posts.mjs';
 import { SecretBox } from './src/secrets.mjs';
 import { DiscordLinks, DiscordBridge } from './src/discord.mjs';
@@ -92,7 +93,7 @@ function androidRelease(dataDir) {
 }
 
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, githubOptions = {}, xOptions = {}, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {}, pushOptions = {} } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, githubOptions = {}, mailOptions = {}, xOptions = {}, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {}, pushOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -117,7 +118,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let conversationHttp;
   let agentsConfigured = false;
   let companionHttp;
-  let schedulerHttp, schedulerService, schedulerStore, calendar = null, github = null, x = null, discord = null;
+  let schedulerHttp, schedulerService, schedulerStore, calendar = null, github = null, mail = null, x = null, discord = null;
   let asr = null, files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
@@ -209,7 +210,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           return fail(415, 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json.');
         }
         const parsed = await readJsonBody(req, 16384);
-        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value, { calendar, github, x });
+        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value, { calendar, github, mail, x });
         if (result.closeConnection) res.setHeader('connection', 'close');
         return send(result.status, result.body);
       }
@@ -289,7 +290,8 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
               env: { COMPANION_SCHEDULER_URL: `http://127.0.0.1:${server.address().port}/internal/scheduler`,
                 COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'create_release_watch', 'create_topic_watch', 'update_release_watch',
                   'list_calendar', 'create_event', 'update_event', 'delete_event',
-                  'github_list_repos', 'github_repo', 'github_pulls', 'github_pull', 'github_create_repo', 'read_x_post', 'watch_x_video'] }];
+                  'github_list_repos', 'github_repo', 'github_pulls', 'github_pull', 'github_create_repo', 'read_x_post', 'watch_x_video',
+                  'mail_status', 'mail_inbox', 'mail_read', 'mail_send', 'mail_mark_handled', 'mail_opt_out'] }];
           } });
         agentsConfigured = true;
       }
@@ -363,7 +365,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       x = new XPosts({ store, files, secrets: new SecretBox({ keyFile: githubOptions.keyFile ?? process.env.COMPANION_SECRETS_KEY
         ?? join(process.env.HOME ?? '', '.config/personal-agent/connector-secrets.key') }), ...(xOptions.fetchImpl ? { fetchImpl: xOptions.fetchImpl } : {}),
         transcriber: xOptions.transcriber !== undefined ? xOptions.transcriber : asr });
-      connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
+      // Mail (#50, docs/MAIL.md): the mailbox from this owner's owners.json entry, read and sent on the server only.
+      mail = new Mail({ store, configFor: companionId => runner?.ownerFor(companionId)?.mail ?? null, ...mailOptions,
+        ...(schedulerOptions.now && !mailOptions.now ? { now: schedulerOptions.now } : {}) });
+      connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, mail: () => mail, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
       conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget: new WebBudget({ store }),
         linkContext: (companionId, text) => x.forTurn(companionId, text),
         turnNote: (companionId, requestId) => discord?.turnNote(companionId, requestId) ?? null,
@@ -397,6 +402,11 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         calendar.enqueueDue(companionId);
         const notice = github.expiryNotice(companionId);
         if (notice) try { schedulerStore.enqueueEvent(companionId, { requestId: notice.requestId, kind: 'connector', prompt: notice.prompt }); } catch { /* next tick */ }
+        const mailNotice = connectors.mailOn(companionId) ? mail.newMailNotice(companionId) : null;
+        if (mailNotice) try {
+          schedulerStore.enqueueEvent(companionId, { requestId: mailNotice.requestId, kind: 'connector', prompt: mailNotice.prompt });
+          mail.notified(companionId, mailNotice.ids);
+        } catch { /* next tick */ }
       },
         companions: () => [...new Set([...owners.map(owner => companionIdFor(store, owner)).filter(id => id && profiles.get(id)),
           ...schedulerStore.releaseCompanions()])],

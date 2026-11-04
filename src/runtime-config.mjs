@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { principalKey } from './provisioning.mjs';
 import { ISSUER } from './pilot-config.mjs';
 import { CLAUDE_FILE_TOOLS, WEB_TOOLS, normalizeToolPolicy } from './tool-policy.mjs';
+import { parseMailConfig } from './mail.mjs';
 
 export const PROVIDERS = ['claude', 'codex'];
 const LABEL = /^[a-z][a-z0-9-]{0,31}$/;
@@ -18,7 +19,7 @@ export function parseRuntimeConfig(text, env = process.env) {
   const labels = new Set(), subjects = new Set();
   return config.owners.map(owner => {
     if (!owner || typeof owner !== 'object' || Array.isArray(owner)
-        || Object.keys(owner).some(key => !['subject', 'label', 'provider', 'model', 'issuer', 'name', 'tools', 'board'].includes(key))) {
+        || Object.keys(owner).some(key => !['subject', 'label', 'provider', 'model', 'issuer', 'name', 'tools', 'board', 'mail'].includes(key))) {
       throw new Error('Invalid runtime owner fields');
     }
     const { subject, label, provider, model = null, issuer = ISSUER, name = null } = owner ?? {};
@@ -35,9 +36,11 @@ export function parseRuntimeConfig(text, env = process.env) {
         && (toolPolicy.tools.length !== WEB_TOOLS.length || !WEB_TOOLS.every(tool => toolPolicy.tools.includes(tool)))) {
       throw new Error(`Codex tools for ${label} must be the web pair or empty`);
     }
+    // "mail" (#50, docs/MAIL.md): the one mailbox this owner's companion handles; no secret, only the password file's path.
+    const mail = owner.mail === undefined ? null : parseMailConfig(owner.mail, label);
     if (labels.has(label) || subjects.has(subject)) throw new Error(`Duplicate owner ${label}`);
     labels.add(label); subjects.add(subject);
-    return Object.freeze({ subject, label, provider, model, issuer, ...(name !== null ? { name: name.trim() } : {}), ...toolPolicy });
+    return Object.freeze({ subject, label, provider, model, issuer, ...(name !== null ? { name: name.trim() } : {}), ...(mail ? { mail } : {}), ...toolPolicy });
   });
 }
 

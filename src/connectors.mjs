@@ -10,10 +10,10 @@ export class ConnectorError extends Error {
 }
 
 export class Connectors {
-  #db; #now; #discord; #boardConfigured; #github; #x;
+  #db; #now; #discord; #boardConfigured; #github; #x; #mail;
   // discord: () => the DiscordBridge or null (created after the conversations it serves).
-  constructor({ store, now = Date.now, discord = () => null, boardConfigured = () => false, github = () => null, x = () => null }) {
-    this.#db = store.db; this.#now = now; this.#discord = discord; this.#boardConfigured = boardConfigured; this.#github = github; this.#x = x;
+  constructor({ store, now = Date.now, discord = () => null, boardConfigured = () => false, github = () => null, x = () => null, mail = () => null }) {
+    this.#db = store.db; this.#now = now; this.#discord = discord; this.#boardConfigured = boardConfigured; this.#github = github; this.#x = x; this.#mail = mail;
     this.#db.exec(`CREATE TABLE IF NOT EXISTS connector_settings(companion_id TEXT NOT NULL, connector TEXT NOT NULL,
       enabled INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(companion_id, connector))`);
   }
@@ -23,6 +23,8 @@ export class Connectors {
   }
 
   boardOn(companionId) { return this.#boardConfigured(companionId) && this.enabled(companionId, 'board'); }
+  // The mailbox (#50) exists only for owners the admin set one up for; the owner can switch it off and on.
+  mailOn(companionId) { return Boolean(this.#mail()?.configured(companionId)) && this.enabled(companionId, 'mail'); }
 
   list(companionId) {
     const items = [];
@@ -40,6 +42,16 @@ export class Connectors {
       state: !configured ? 'unavailable' : on ? 'connected' : 'paused',
       detail: !configured ? 'Not set up for you yet. It takes a few steps on the Board, then the server admin finishes it on the server.' : on ? 'board.blackoutburst.com' : 'Switched off: the Board is untouched, I just stop using it.',
       actions: !configured ? [] : on ? ['disconnect'] : ['connect'] });
+    // Mail (#50): shown only to owners with a mailbox; set up by the server admin (docs/MAIL.md).
+    const mail = this.#mail();
+    if (mail?.configured(companionId)) {
+      const on = this.enabled(companionId, 'mail'), status = on ? (() => { try { return mail.status(companionId); } catch { return null; } })() : null;
+      items.push({ id: 'mail', name: 'Mail', purpose: 'Read and answer one dedicated mailbox, and write to contacts within the limits you authorised. Never your personal mail.',
+        state: !on ? 'paused' : status ? 'connected' : 'error',
+        detail: !on ? 'Switched off: no mail is read or sent.' : !status ? 'The mailbox cannot be read right now.'
+          : `${status.address} · ${status.companies}/${status.companiesLimit} companies contacted · ${status.unhandled} to handle`,
+        actions: on ? ['disconnect'] : ['connect'] });
+    }
     // GitHub (#45): the owner pastes their own token; linking and unlinking use githubLink / githubUnlink.
     const github = this.#github()?.status(companionId);
     if (github) {
@@ -65,10 +77,10 @@ export class Connectors {
     return { connectors: items };
   }
 
-  // Only connectors whose link is an on/off switch here; Discord uses its own link and unlink actions.
+  // Only connectors whose link is an on/off switch here (Board, Mail); Discord uses its own link and unlink actions.
   set(companionId, connector, enabled) {
-    if (connector !== 'board' || typeof enabled !== 'boolean') throw new ConnectorError('INVALID_REQUEST');
-    if (!this.#boardConfigured(companionId)) throw new ConnectorError('CONNECTOR_UNAVAILABLE', 409);
+    if (!['board', 'mail'].includes(connector) || typeof enabled !== 'boolean') throw new ConnectorError('INVALID_REQUEST');
+    if (connector === 'board' ? !this.#boardConfigured(companionId) : !this.#mail()?.configured(companionId)) throw new ConnectorError('CONNECTOR_UNAVAILABLE', 409);
     this.#db.prepare(`INSERT INTO connector_settings(companion_id, connector, enabled, updated_at) VALUES(?,?,?,?)
       ON CONFLICT(companion_id, connector) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at`)
       .run(companionId, connector, enabled ? 1 : 0, this.#now());
@@ -77,9 +89,10 @@ export class Connectors {
 
   // A turn's tool filter: drops the tools of switched-off connectors.
   toolFilter(companionId) {
-    const bridge = this.#github(), board = this.boardOn(companionId), github = bridge ? bridge.linked(companionId) : true;
-    if (board && github) return null;
+    const bridge = this.#github(), board = this.boardOn(companionId), github = bridge ? bridge.linked(companionId) : true,
+      mail = this.#mail() ? this.mailOn(companionId) : true;
+    if (board && github && mail) return null;
     return name => (board || (!name.startsWith('mcp__board__') && name !== 'mcp__files__attach_to_board'))
-      && (github || !name.startsWith('mcp__scheduler__github_'));
+      && (github || !name.startsWith('mcp__scheduler__github_')) && (mail || !name.startsWith('mcp__scheduler__mail_'));
   }
 }
