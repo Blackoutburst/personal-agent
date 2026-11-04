@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -27,6 +28,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -56,6 +61,19 @@ class UiGalleryActivity : ComponentActivity() {
             CompositionLocalProvider(LocalTones provides tones) { MaterialTheme(colorScheme = scheme) {
                 Column(Modifier.fillMaxSize().background(tones.top).statusBarsPadding().verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // The + menu, testable without signing in: what was picked shows next to it.
+                    var picked by remember { mutableStateOf("Nothing picked") }
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        AttachMenu(enabled = true, onLaunch = {}, onProblem = { picked = it }, onPicked = { uris ->
+                            picked = uris.joinToString("\n") { uri ->
+                                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                                    if (c.moveToFirst()) "${c.getString(0)} · ${c.getLong(1)} B · ${contentResolver.getType(uri)}" else "?"
+                                } ?: "?"
+                            }
+                        })
+                        Spacer(Modifier.size(8.dp))
+                        Text(picked, color = tones.ink)
+                    }
                     Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Bubble(model, Message("m1", "t", "user", "Can you **file** this as a bugfix?", attachments = listOf(file)), 0)
                         Bubble(model, Message("m2", "t", "assistant", reply), 0)

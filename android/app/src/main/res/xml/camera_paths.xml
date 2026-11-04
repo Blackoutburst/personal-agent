@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Photos taken from the chat's + menu: written by the camera app into the app cache, then uploaded. -->
+<paths>
+    <cache-path name="camera" path="camera/" />
+</paths>

@@ -879,6 +879,9 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         entries.forEach { startUpload(it.key, expectedScope) }
     }
 
+    /** A problem before any file was picked (e.g. no camera app), shown where upload errors show. */
+    fun attachProblem(message: String) { _state.update { it.copy(fileError = message) } }
+
     fun retryUpload(key: String) {
         if (failedSend != null || _state.value.sending || pendingArchive != null) return
         val entry = _state.value.uploads.firstOrNull { it.key == key && it.state == "error" } ?: return

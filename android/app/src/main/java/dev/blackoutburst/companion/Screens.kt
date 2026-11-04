@@ -86,6 +86,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.activity.result.PickVisualMediaRequest
+import android.net.Uri
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
@@ -205,7 +209,6 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
     var confirmNew by remember(state.scope) { mutableStateOf(false) }
     var showChats by remember(state.scope) { mutableStateOf(false) }
     var pickerScope by remember { mutableLongStateOf(state.scope) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> model.attachFiles(uris, pickerScope) }
     var tick by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) { while (true) { delay(1000); tick = System.currentTimeMillis() } }
     val mood = remember(state, draft.isNotBlank(), tick) { model.mood(draft.isNotBlank()) }
@@ -255,10 +258,8 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
             Text("Archived chat · ended ${chatDate(state.archivedAt)} · read-only", Modifier.weight(1f), color = Soft, fontSize = 14.sp)
             ActionButton(onClick = { model.backToCurrent() }) { Text("Back to chat") }
         } else Row(Modifier.fillMaxWidth().padding(12.dp, 6.dp), verticalAlignment = Alignment.Bottom) {
-            RoundButton("Attach files", "+",
-                enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.archiving && !state.archiveFailed && state.uploads.size < MAX_FILES) {
-                pickerScope = state.scope; picker.launch(arrayOf("*/*"))
-            }
+            AttachMenu(enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.archiving && !state.archiveFailed && state.uploads.size < MAX_FILES,
+                onLaunch = { pickerScope = state.scope }, onPicked = { uris -> model.attachFiles(uris, pickerScope) }, onProblem = model::attachProblem)
             Spacer(Modifier.size(8.dp))
             OutlinedTextField(draft, { if (it.length <= 8000) { draft = it; model.draftChanged(it) } }, Modifier.weight(1f),
                 placeholder = { Text("Write a message…") }, shape = RoundedCornerShape(24.dp), maxLines = 5,
@@ -342,6 +343,37 @@ private fun note(state: UiState): String? {
         else "$name isn't set up yet. Ask the server admin to finish the setup."
     }
     return null
+}
+
+/** The chat's + button: a menu like the iPhone's with photos and videos, a picture taken now, or any file. */
+@Composable
+internal fun AttachMenu(enabled: Boolean, onLaunch: () -> Unit, onPicked: (List<Uri>) -> Unit, onProblem: (String) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> if (uris.isNotEmpty()) onPicked(uris) }
+    val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_FILES)) { uris -> if (uris.isNotEmpty()) onPicked(uris) }
+    // Kept across the activity being recreated while the camera app is open.
+    var shot by rememberSaveable { mutableStateOf<String?>(null) }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { taken ->
+        val uri = shot?.let(Uri::parse); shot = null
+        if (taken && uri != null) onPicked(listOf(uri)) else uri?.let { CameraShots.discard(context, it) }
+    }
+    var open by remember { mutableStateOf(false) }
+    Box {
+        RoundButton("Attach files", "+", enabled = enabled) { open = true }
+        DropdownMenu(open, { open = false }) {
+            DropdownMenuItem(text = { Text("Photos & videos") }, onClick = {
+                open = false; onLaunch(); photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+            })
+            DropdownMenuItem(text = { Text("Take photo") }, onClick = {
+                open = false; onLaunch()
+                val uri = CameraShots.create(context); shot = uri.toString()
+                try { camera.launch(uri) } catch (_: android.content.ActivityNotFoundException) {
+                    shot = null; CameraShots.discard(context, uri); onProblem("No camera app is available.")
+                }
+            })
+            DropdownMenuItem(text = { Text("Files") }, onClick = { open = false; onLaunch(); files.launch(arrayOf("*/*")) })
+        }
+    }
 }
 
 @Composable
