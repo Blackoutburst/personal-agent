@@ -44,12 +44,28 @@ Events per thread are contiguous:
   and `INTERRUPTED`.
 
 `submit` is idempotent by `requestId`: a retry returns the same answer, while a different
-payload under the same id is `CONFLICT` (409). The owner can keep texting while a reply is open:
-a turn waits `gatherMs` (live: 5 s, `COMPANION_GATHER_MS`) after its message before it starts, and a
-message sent during that wait folds the waiting turn into its own (state `merged` in the DB; clients see
-it `complete`), so a burst of short texts gets one reply that sees them all, one per line. A message sent
-while a reply is already running is queued and answered right after it. Only a running background wake
-still answers `BUSY` (409). A new thread titled "New conversation" takes its title from its first message.
+payload under the same id is `CONFLICT` (409). A new thread titled "New conversation" takes its title from its first message.
+
+### Texting like a person (live: `texting`, `gatherMs` 3500, `COMPANION_TEXTING=off` turns it off)
+
+The owner can keep texting while a reply is on its way; only a running background wake still answers `BUSY` (409).
+
+1. **Waiting for the owner to finish.** An owner turn waits before it starts: `gatherMs` after a normal text, half
+   of it after one that looks finished (`?`, `!`, a full sentence, an emoji), double after a fragment (≤3 words without
+   punctuation, a trailing comma, "and", "so", "mais"…) or a file on its own (`quietWindow`, src/texting.mjs). While
+   the owner is typing it keeps waiting, at most 60 s after their last text. Typing comes from the apps (`typing`
+   action `{threadId, active}`, sent at most every 3 s while the message box has text, held 6 s; clearing the box
+   or sending ends it) and from Discord (`TYPING_START`, held 11 s). A text sent during the wait folds the waiting
+   turn into its own (DB state `merged`; clients see that turn `complete`).
+2. **Starting over while nothing is seen.** A running reply that has shown nothing yet and has not acted (no
+   tool call: the providers report `acting` when one starts) is stopped and merged into the new text's turn, so
+   one reply answers everything. A reply already shown, or one that acted, finishes; the new text is answered right
+   after it.
+3. **Bubble by bubble.** Each finished bubble (text before a blank line outside a code block) shows as soon as it
+   is written; the one being written never shows. Clients keep showing "typing" until the turn ends.
+4. **Silence and context.** The companion gets every text of the burst, one per line, with a note when there are
+   several, and a note when they were sent during or within 30 s of its last reply (add only what is new). A reply
+   of exactly `NO_REPLY` (or ending in a `NO_REPLY` line) sends nothing. A new thread titled "New conversation" takes its title from its first message.
 
 ## Server (`src/conversations.mjs`)
 

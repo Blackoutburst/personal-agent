@@ -314,6 +314,12 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
             if (decoded.any { it.direction != direction }) throw ApiException("INVALID_RESPONSE")
         }
     }
+    /** The owner is typing in this chat (or stopped): a reply still waiting for more texts keeps waiting. Only a hint. */
+    suspend fun typing(threadId: String, active: Boolean) {
+        if (!fileId(threadId)) throw ApiException("INVALID_REQUEST")
+        post(companion + "api/conversation", buildJsonObject { put("action", "typing"); put("threadId", threadId); put("active", active) })
+    }
+
     suspend fun cancel(requestId: String, threadId: String) {
         post(companion + "api/conversation", buildJsonObject {
             put("action", "cancel"); put("requestId", requestId); put("threadId", threadId)

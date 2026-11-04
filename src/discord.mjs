@@ -9,7 +9,9 @@ import { splitBubbles } from '../public/bubbles.mjs';
 
 const API = 'https://discord.com/api/v10';
 const GATEWAY = 'wss://gateway.discord.gg/?v=10&encoding=json';
-const INTENTS = 1 << 12; // DIRECT_MESSAGES. Message content is always delivered for DMs with the bot.
+// DIRECT_MESSAGES and DIRECT_MESSAGE_TYPING. Message content is always delivered for DMs with the bot; typing
+// events let a reply wait while the owner is still typing (neither intent is privileged).
+const INTENTS = (1 << 12) | (1 << 14);
 const TOKEN = /^[A-Za-z0-9._-]{50,100}$/;
 const SNOWFLAKE = /^[0-9]{5,25}$/;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -88,10 +90,10 @@ export function chunks(text, size = DISCORD_CHARS) {
 
 // One gateway connection for one bot: heartbeats, reconnects with backoff, stops for good on fatal close codes.
 class Gateway {
-  #token; #onMessage; #onState; #WebSocket; #socket = null; #beat = null; #acked = true; #seq = null;
+  #token; #onMessage; #onTyping; #onState; #WebSocket; #socket = null; #beat = null; #acked = true; #seq = null;
   #stopped = false; #retry = 0; #timer = null; botId = null;
-  constructor({ token, onMessage, onState, WebSocketImpl }) {
-    this.#token = token; this.#onMessage = onMessage; this.#onState = onState; this.#WebSocket = WebSocketImpl;
+  constructor({ token, onMessage, onTyping = () => {}, onState, WebSocketImpl }) {
+    this.#token = token; this.#onMessage = onMessage; this.#onTyping = onTyping; this.#onState = onState; this.#WebSocket = WebSocketImpl;
   }
   start() { this.#open(); }
   stop() {
@@ -142,6 +144,7 @@ class Gateway {
     else if (op === 9) { this.#seq = null; try { this.#socket?.close(4000); } catch { /* reconnects */ } }
     else if (op === 0 && t === 'READY') { this.#retry = 0; this.botId = d?.user?.id ?? null; this.#onState('online'); }
     else if (op === 0 && t === 'MESSAGE_CREATE') this.#onMessage(d);
+    else if (op === 0 && t === 'TYPING_START') this.#onTyping(d);
   }
 }
 
@@ -255,7 +258,8 @@ export class DiscordBridge {
         this.#states.set(companionId, state);
         if (problem) { this.#links.problem(companionId, problem); this.#gateways.delete(companionId); }
       },
-      onMessage: message => { if (this.#gateways.get(companionId) === gateway) this.#message(companionId, message).catch(() => {}); } });
+      onMessage: message => { if (this.#gateways.get(companionId) === gateway) this.#message(companionId, message).catch(() => {}); },
+      onTyping: typing => { if (this.#gateways.get(companionId) === gateway) this.#typing(companionId, typing); } });
     this.#gateways.set(companionId, gateway);
     this.#states.set(companionId, 'connecting');
     gateway.start();
@@ -265,6 +269,13 @@ export class DiscordBridge {
     this.#gateways.get(companionId)?.stop();
     this.#gateways.delete(companionId);
     this.#states.delete(companionId);
+  }
+
+  // The paired owner typing in the DM: a reply still waiting for them keeps waiting (texting, Conversations).
+  #typing(companionId, typing) {
+    const link = this.#links.get(companionId);
+    if (!link?.user_id || typing?.guild_id || typing?.user_id !== link.user_id || typing?.channel_id !== link.channel_id) return;
+    try { this.#conversations.discordTyping?.(companionId); } catch { /* typing is only a hint */ }
   }
 
   async #message(companionId, message) {

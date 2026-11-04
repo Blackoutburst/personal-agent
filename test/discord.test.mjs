@@ -52,12 +52,12 @@ function fakeDiscord({ me = BOT } = {}) {
   return { sent, sockets, fetchImpl, WebSocketImpl: Socket, PNG };
 }
 
-function fixture(t, { handler, me, withFiles = false, gatherMs = 0 } = {}) {
+function fixture(t, { handler, me, withFiles = false, gatherMs = 0, texting = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'discord-')), store = new BootstrapStore(dir, ROOT);
   const discord = fakeDiscord({ me }), companionId = randomUUID();
   const files = withFiles ? new FileStore({ store, dataDir: dir, workspaceFor: () => ({ dir }), limits: { normal: 1024 } }) : null;
   let bridge;
-  const conversations = new Conversations({ store, flushMs: 1, systemPrompt: () => 'persona', files, gatherMs,
+  const conversations = new Conversations({ store, flushMs: 1, systemPrompt: () => 'persona', files, gatherMs, texting,
     runner: { turn: async (id, turn) => (handler ?? (() => ({ text: 'Hello from Pip!' })))(id, turn) },
     onSettled: event => bridge.settled(event), turnNote: (id, requestId) => bridge.turnNote(id, requestId) });
   const links = new DiscordLinks({ store });
@@ -88,7 +88,7 @@ test('linking checks the token with Discord, never returns it, and gives an invi
   assert.equal(f.bridge.status(f.companionId).state, 'online');
   const identify = f.discord.sockets[0].out.find(packet => packet.op === 2);
   assert.equal(identify.d.token, TOKEN);
-  assert.equal(identify.d.intents, 4096);
+  assert.equal(identify.d.intents, 4096 | 16384, 'DMs and DM typing');
   assert.equal(f.bridge.status(f.companionId).pairing.code, status.pairing.code, 'The code stays the same until it expires');
 });
 
@@ -278,6 +278,26 @@ test('several short DMs sent close together get one reply that sees them all', a
   const thread = f.conversations.ongoingThread(f.companionId);
   const turns = f.store.db.prepare('SELECT state FROM conv_turns WHERE thread_id=? ORDER BY rowid').all(thread).map(row => row.state);
   assert.deepEqual(turns, ['merged', 'merged', 'complete']);
+});
+
+test('the owner typing in the DM keeps a waiting reply waiting; a stranger typing does not', async t => {
+  const prompts = [];
+  const f = await linked(t, { gatherMs: 40, texting: true, handler: (_id, turn) => { prompts.push(turn.prompt); return { text: 'yeah' }; } });
+  const typing = user_id => f.socket.emit({ op: 0, t: 'TYPING_START', s: 9, d: { channel_id: '444444444444444444', user_id, timestamp: 1 } });
+  f.socket.dm(OWNER, 'so');
+  await sleep(15);
+  typing(OWNER.id); // they start typing the next text
+  await sleep(250);
+  assert.equal(prompts.length, 0, 'waits while Discord says they are typing');
+  f.socket.dm(OWNER, 'did you see the patch notes');
+  await sleep(250); await f.conversations.idle();
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /^so\ndid you see the patch notes/);
+  f.socket.dm(OWNER, 'ok');
+  await sleep(15);
+  typing('999999999999999999');
+  await sleep(250); await f.conversations.idle();
+  assert.equal(prompts.length, 2, 'only the paired owner typing holds a reply');
 });
 
 test('proactive messages (reminders) are sent to the paired DM', async t => {

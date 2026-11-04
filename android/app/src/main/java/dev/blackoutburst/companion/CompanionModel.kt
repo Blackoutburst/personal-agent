@@ -979,6 +979,26 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var typingSentAt = 0L
+    private var typingOn = false
+
+    /** The draft changed: tells the server the owner is typing (at most every 3 s) or stopped, like the "typing…"
+     *  a person sees, so a reply still waiting for more texts keeps waiting. Only a hint; a failure is ignored. */
+    fun draftChanged(text: String) {
+        val state = _state.value
+        val threadId = state.threadId ?: return
+        if (state.gate != Gate.Ready || state.archivedAt != null || state.chatLoading) return
+        val writing = text.isNotBlank()
+        val now = System.currentTimeMillis()
+        val active = when {
+            writing && now - typingSentAt > 3000 -> true
+            !writing && typingOn -> false
+            else -> return
+        }
+        typingOn = active; typingSentAt = if (active) now else 0L
+        viewModelScope.launch { try { api.typing(threadId, active) } catch (_: ApiException) { } }
+    }
+
     fun send(text: String, expectedScope: Long = scope, onSent: () -> Unit) {
         if (!current(expectedScope)) return
         val now = _state.value
@@ -987,6 +1007,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         val retry = failedSend
         if (retry == null && (!validText(text, 8000, 32768) || text.isBlank() && files.isEmpty())) return
         val version = scope
+        typingOn = false; typingSentAt = 0L // sending ends typing on the server
         _state.update { it.copy(sending = true, sendFailed = false) }
         viewModelScope.launch {
             if (!current(version)) return@launch

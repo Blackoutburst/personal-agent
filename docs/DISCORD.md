@@ -50,3 +50,9 @@ The `companion_discord` table stores, per companion:
 - the DM channel id.
 
 The token is stored in the service's private SQLite database (mode 600), under the same trust model as the rest of the companion state (docs/RUNTIME.md). Disconnecting deletes the row and closes the gateway connection.
+
+## Typing
+
+The bot also asks for `DIRECT_MESSAGE_TYPING` (not a privileged intent). When the paired owner types in the DM,
+a reply still waiting for more texts keeps waiting (docs/CONVERSATION-UI.md, "Texting like a person"). Typing from
+anyone else is ignored. A reply is sent as one Discord message per bubble with a short typing pause in between.

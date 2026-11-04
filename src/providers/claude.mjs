@@ -51,6 +51,8 @@ export function parseLine(line) {
     case 'system':
       return value.subtype === 'init' && typeof value.session_id === 'string' ? [{ type: 'session', id: value.session_id }] : [];
     case 'stream_event': {
+      // A tool call starting: the earliest sign the companion is acting, before the tool runs.
+      if (value.event?.type === 'content_block_start' && ['tool_use', 'server_tool_use', 'mcp_tool_use'].includes(value.event.content_block?.type)) return [{ type: 'acting' }];
       const delta = value.event?.type === 'content_block_delta' ? value.event.delta : null;
       return delta?.type === 'text_delta' && typeof delta.text === 'string' ? [{ type: 'delta', text: delta.text }] : [];
     }

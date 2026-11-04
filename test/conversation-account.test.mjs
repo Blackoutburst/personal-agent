@@ -472,6 +472,7 @@ test('the browser client drives a real conversation: stream, stop, error and reo
   assert.deepEqual(state.runtime, { state: 'ready', provider: 'claude' });
   state = await client.create('New conversation');
   assert.equal(state.threads.length, 1);
+  assert.equal(await client.typing(true), true, 'the typing hint reaches the server'); assert.equal(await client.typing(false), true);
   await client.send('STREAM');
   state = await until(s => s.turn?.state === 'complete', 'stream complete');
   assert.equal(state.pending, null);
@@ -571,7 +572,7 @@ test('the feeling tag picks the face and never shows in the reply', async t => {
   assert.match(prompt, /Follow AGENTS\.md/);
   const agents = readFileSync(join(f.home('blackout'), '..', 'workspace', 'AGENTS.md'), 'utf8');
   assert.match(agents, /\[feeling:laugh\]/);
-  assert.match(agents, /version 21/);
+  assert.match(agents, /version 22/);
   assert.match(agents, /## Board work/);
   assert.match(agents, /## Following Board work/);
 });

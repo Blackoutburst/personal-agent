@@ -62,6 +62,8 @@ export function parseLine(line) {
     const text = value.item.text ?? '';
     return [{ type: 'delta', text }, { type: 'message', text }];
   }
+  // Any other item starting (a command, a tool or file change, a search): the companion is acting.
+  if (type === 'item.started' && value.item && !['agent_message', 'assistant_message', 'reasoning'].includes(value.item.type)) return [{ type: 'acting' }];
   // Codex's native web search, counted like Claude's WebSearch (#42).
   if (type === 'item.completed' && value.item?.type === 'web_search') return [{ type: 'tool', name: 'WebSearch' }];
   if (type === 'turn.completed') return [{ type: 'done', text: null, sessionId: null, usage: value.usage ?? null }];

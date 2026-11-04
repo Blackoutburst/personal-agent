@@ -81,9 +81,11 @@ export function parseAttachment(value) {
 function request(action, payload) {
   const selected = plain(payload, action === 'snapshot' ? [] : action === 'createThread' ? ['requestId', 'title'] :
     action === 'submit' ? ['requestId', 'threadId', 'text'] : action === 'events' ? ['threadId', 'cursor'] :
-    ['cancel', 'deleteThread', 'archiveThread'].includes(action) ? ['requestId', 'threadId'] : action === 'archivedThreads' ? [] : ['invalid-action'],
+    ['cancel', 'deleteThread', 'archiveThread'].includes(action) ? ['requestId', 'threadId'] : action === 'archivedThreads' ? [] :
+    action === 'typing' ? ['threadId', 'active'] : ['invalid-action'],
   action === 'snapshot' ? ['threadId'] : action === 'submit' ? ['attachments'] : [], 'INVALID_REQUEST');
-  check(['snapshot', 'createThread', 'submit', 'events', 'cancel', 'deleteThread', 'archiveThread', 'archivedThreads'].includes(action), 'INVALID_REQUEST');
+  check(['snapshot', 'createThread', 'submit', 'events', 'cancel', 'deleteThread', 'archiveThread', 'archivedThreads', 'typing'].includes(action), 'INVALID_REQUEST');
+  if (action === 'typing') check(typeof selected.active === 'boolean', 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'threadId')) identifier(selected.threadId, false, 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'requestId')) identifier(selected.requestId, true, 'INVALID_REQUEST');
   if (action === 'createThread') text(selected.title, 80, 80, false, 'INVALID_REQUEST');
@@ -448,6 +450,13 @@ export function createConversationClient({ transport = createConversationTranspo
       return row;
     });
   }
+  // The owner is typing (active) or stopped typing in the open chat: a reply still waiting for them keeps waiting.
+  // Only a hint: it changes no state here and a failure is ignored.
+  async function typing(active) {
+    check(typeof active === 'boolean', 'INVALID_REQUEST');
+    if (!state.opened || state.synthetic || state.connection !== 'ready' || state.threadId === null || state.archivedAt !== null) return false;
+    try { await transport('typing', { threadId: state.threadId, active }); return true; } catch { return false; }
+  }
   // Stop the running reply of the open thread. The final turn state arrives as an event.
   async function cancel() {
     const turn = state.turn;
@@ -500,7 +509,7 @@ export function createConversationClient({ transport = createConversationTranspo
   return Object.freeze({ getState: copy,
     subscribe(listener) { check(typeof listener === 'function', 'INVALID_REQUEST'); listeners.add(listener); listener(copy()); return () => listeners.delete(listener); },
     open, select(threadId) { identifier(threadId, false, 'INVALID_REQUEST'); return open({ threadId }); }, create, send, retry, poll,
-    cancel, refresh, deleteThread, archiveThread, archivedThreads,
+    cancel, refresh, deleteThread, archiveThread, archivedThreads, typing,
     setFiles(value) {
       check(state.opened && state.threadId !== null && state.connection === 'ready', 'NOT_READY');
       const selected = array(value, 8).map(parseAttachment); check(selected.every(file => file.direction === 'user') && new Set(selected.map(file => file.id)).size === selected.length, 'INVALID_REQUEST');

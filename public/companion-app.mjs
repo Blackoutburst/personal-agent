@@ -263,7 +263,8 @@ function renderMessages() {
   }
   for (const [id, node] of messageNodes) if (!keep.has(id)) { node.remove(); messageNodes.delete(id); }
   const busy = state.turn?.state === 'streaming' || Boolean(state.pending);
-  $('typing').hidden = !(busy && !(state.turn && lastAssistantFor(state.turn.requestId)?.text));
+  // The companion's reply arrives bubble by bubble: it keeps "typing" under them until the reply is done.
+  $('typing').hidden = !busy;
   $('welcome').hidden = index > 0 || state.connection === 'loading';
   $('welcome-text').textContent = `Say hi to ${companionName()} 👋 ${companionName()} remembers what matters to you, so tell them about your day.`;
   if (follow) history.scrollTop = history.scrollHeight;
@@ -643,7 +644,7 @@ $('composer').addEventListener('submit', async event => {
   if ($('send').disabled) return;
   const files = uploads.filter(item => item.status === 'ready').map(item => item.dto.id);
   const owner = ownerEpoch, threadId = state.threadId, edited = ++composerEpoch;
-  $('input').value = ''; grow();
+  $('input').value = ''; grow(); typingSentAt = 0; typingOn = false;
   try {
     syncFiles(); client.setDraft(''); const result = await client.send(text, files);
     if (result?.status === 'rejected' && result.text === text && ['BUSY', 'CONFLICT', 'INVALID_REQUEST'].includes(result.error)) keepRejected(text, owner, threadId, edited);
@@ -707,7 +708,16 @@ $('past-chats').addEventListener('click', async () => {
 });
 $('past-chats-close').addEventListener('click', () => pastDialog.close());
 $('back-to-chat').addEventListener('click', async () => { clearUploads(); await client.open(); schedulePoll(); });
-$('input').addEventListener('input', () => { composerEpoch++; grow(); try { client.setDraft($('input').value); } catch { /* too long: send stays disabled */ } renderAll(); });
+$('input').addEventListener('input', () => { composerEpoch++; grow(); try { client.setDraft($('input').value); } catch { /* too long: send stays disabled */ } noteTyping(); renderAll(); });
+// Tells the server the owner is typing (at most every 3 s while they type), like the "typing…" a person sees,
+// so a reply still waiting for more texts keeps waiting. Clearing the box says they stopped.
+let typingSentAt = 0, typingOn = false;
+function noteTyping() {
+  const writing = Boolean($('input').value.trim());
+  const signal = active => { try { Promise.resolve(client.typing?.(active)).catch(() => {}); } catch { /* only a hint */ } };
+  if (writing && Date.now() - typingSentAt > 3000) { typingSentAt = Date.now(); typingOn = true; signal(true); }
+  else if (!writing && typingOn) { typingSentAt = 0; typingOn = false; signal(false); }
+}
 $('input').addEventListener('keydown', event => {
   // Enter sends on computers; on phones the keyboard's Enter adds a line (send with the button).
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && matchMedia('(pointer: fine)').matches) {

@@ -27,3 +27,19 @@ export function splitBubbles(text, max = MAX_BUBBLES) {
   if (parts.length > max) parts.splice(max - 1, parts.length, parts.slice(max - 1).join('\n\n'));
   return parts;
 }
+
+// While a reply is still being written: the part made of finished bubbles, i.e. everything before the last blank
+// line that is not inside a code block. The bubble being written stays hidden until it is done, like a person
+// who sends one text and then types the next.
+export function finishedBubbles(text) {
+  if (typeof text !== 'string') return '';
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  let fenced = false, offset = 0, cut = 0, seenText = false;
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) fenced = !fenced;
+    if (!fenced && !line.trim()) { if (seenText) cut = offset; }
+    else seenText = true;
+    offset += line.length + 1;
+  }
+  return text.replace(/\r\n?/g, '\n').slice(0, cut).trim();
+}

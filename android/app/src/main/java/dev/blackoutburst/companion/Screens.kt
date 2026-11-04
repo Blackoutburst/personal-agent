@@ -6,6 +6,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.font.FontFamily
@@ -230,6 +235,8 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
                 Text("Say hello to ${state.name}!", Modifier.fillMaxWidth().padding(top = 40.dp), color = Soft, textAlign = TextAlign.Center, fontSize = 17.sp)
             }
             items(shown, key = { it.id }) { Bubble(model, it, state.scope) }
+            // The reply arrives bubble by bubble: the companion keeps "typing" under them until it is done.
+            if (state.replying) item(key = "typing") { TypingBubble() }
         }
         note(state)?.let {
             Text(it, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), color = Soft, fontSize = 14.sp, textAlign = TextAlign.Center)
@@ -253,7 +260,7 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
                 pickerScope = state.scope; picker.launch(arrayOf("*/*"))
             }
             Spacer(Modifier.size(8.dp))
-            OutlinedTextField(draft, { if (it.length <= 8000) draft = it }, Modifier.weight(1f),
+            OutlinedTextField(draft, { if (it.length <= 8000) { draft = it; model.draftChanged(it) } }, Modifier.weight(1f),
                 placeholder = { Text("Write a message…") }, shape = RoundedCornerShape(24.dp), maxLines = 5,
                 enabled = !state.chatLoading && !state.sending && !state.sendFailed && !state.archiving && !state.archiveFailed,
                 textStyle = TextStyle(fontSize = 17.sp, color = Ink),
@@ -335,6 +342,18 @@ private fun note(state: UiState): String? {
         else "$name isn't set up yet. Ask the server admin to finish the setup."
     }
     return null
+}
+
+@Composable
+internal fun TypingBubble() {
+    val pulse = rememberInfiniteTransition(label = "typing")
+    val alpha by pulse.animateFloat(0.35f, 1f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "dots")
+    Row(Modifier.fillMaxWidth()) {
+        Text("•••", Modifier.clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp))
+            .background(LocalTones.current.bubble).border(1.dp, LocalTones.current.bubbleLine, RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp))
+            .padding(horizontal = 16.dp, vertical = 8.dp).semantics { contentDescription = "Typing" },
+            color = Soft.copy(alpha = alpha), fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    }
 }
 
 @Composable

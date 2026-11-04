@@ -20,7 +20,10 @@ test('provider streams report tool calls by name only, so web use can be counted
     { type: 'text', text: 'Looking it up' }, { type: 'tool_use', name: 'WebSearch', input: { query: 'PRIVATE-QUERY' } }] } })),
   [{ type: 'tool', name: 'WebSearch' }]);
   assert.deepEqual(codexLine(JSON.stringify({ type: 'item.completed', item: { type: 'web_search', query: 'PRIVATE-QUERY' } })), [{ type: 'tool', name: 'WebSearch' }]);
-  assert.deepEqual(codexLine(JSON.stringify({ type: 'item.started', item: { type: 'web_search' } })), []);
+  // A search starting only says the companion is acting (no double count); text items are not acting.
+  assert.deepEqual(codexLine(JSON.stringify({ type: 'item.started', item: { type: 'web_search' } })), [{ type: 'acting' }]);
+  assert.deepEqual(codexLine(JSON.stringify({ type: 'item.started', item: { type: 'agent_message' } })), []);
+  assert.deepEqual(claudeLine(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'tool_use', name: 'Write' } } })), [{ type: 'acting' }]);
 });
 
 test('owner chat turns use web tools until the daily allowance is spent, then run without them and say so', async t => {

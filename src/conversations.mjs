@@ -3,6 +3,8 @@ import { RunnerError } from './runner.mjs';
 import { splitFeeling } from './wardrobe.mjs';
 import { READ_ONLY_BOARD_TOOLS, WEB_TOOLS } from './tool-policy.mjs';
 import { FileError } from './files.mjs';
+import { finishedBubbles } from '../public/bubbles.mjs';
+import { quietWindow, withoutSilence, maybeSilent, BURST_NOTE, FOLLOW_UP_NOTE } from './texting.mjs';
 
 // Real conversations (M1, ticket #8). Everything is scoped by the server-side companion ID;
 // nothing the browser sends selects another companion, provider home or session.
@@ -14,6 +16,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/;
 const DEFAULT_TITLE = 'New conversation';
 const FLUSH_MS = 400;
+// Texting (live): how long a typing signal holds a waiting reply, the longest a reply waits for the owner,
+// and how soon after a reply a new message counts as a follow-up to it.
+const TYPING_MS = { app: 6000, discord: 11000 }, MAX_HOLD_MS = 60_000, FOLLOW_UP_MS = 30_000;
 const BOARD_PREFIX = 'mcp__board__';
 // Background wakes read the Board only, except Board-triggered ("board") wakes: a Needs-you request or a mention needs
 // the companion to answer on the Board, so those keep every Board tool the owner configured.
@@ -101,7 +106,7 @@ function releaseDecision(raw) {
 }
 // Parse one protocol request. Actions: snapshot, events, createThread, submit, cancel.
 export function parseRequest(payload) {
-  const { action } = only(payload, ['action', 'threadId', 'cursor', 'requestId', 'title', 'text', 'attachments']);
+  const { action } = only(payload, ['action', 'threadId', 'cursor', 'requestId', 'title', 'text', 'attachments', 'active']);
   const id = value => { if (typeof value !== 'string' || !UUID.test(value)) throw invalid(); return value; };
   const request = value => { if (typeof value !== 'string' || !REQUEST.test(value)) throw invalid(); return value; };
   if (action === 'snapshot') { only(payload, ['action', 'threadId']); return { action, threadId: payload.threadId === undefined ? undefined : id(payload.threadId) }; }
@@ -129,6 +134,11 @@ export function parseRequest(payload) {
   if (action === 'deleteThread') { only(payload, ['action', 'requestId', 'threadId']); return { action, requestId: request(payload.requestId), threadId: id(payload.threadId) }; }
   if (action === 'archiveThread') { only(payload, ['action', 'requestId', 'threadId']); return { action, requestId: request(payload.requestId), threadId: id(payload.threadId) }; }
   if (action === 'archivedThreads') { only(payload, ['action']); return { action }; }
+  if (action === 'typing') {
+    only(payload, ['action', 'threadId', 'active']);
+    if (typeof payload.active !== 'boolean') throw invalid();
+    return { action, threadId: id(payload.threadId), active: payload.active };
+  }
   if (action === 'cancel') {
     only(payload, ['action', 'requestId', 'threadId']);
     return { action, requestId: request(payload.requestId), threadId: id(payload.threadId) };
@@ -142,7 +152,7 @@ function titleFrom(text) {
 }
 
 export class Conversations {
-  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote; #gatherMs; #gathering = new Map();
+  #db; #runner; #now; #systemPrompt; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote; #gatherMs; #texting; #gathering = new Map(); #typing = new Map(); #runs = new Map();
   // Both filters must keep a tool (connector switches, #43, on top of the wake or web-allowance filter).
   #filter(companionId, own) {
     const extra = this.#toolFilterFor(companionId);
@@ -158,7 +168,7 @@ export class Conversations {
   // Omitted tools inherit owner policy; [] is an explicit turn-level narrowing.
   constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools,
     session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 }, wakePolicy = {}, onSettled = () => {}, files = null,
-    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null, gatherMs = 0 }) {
+    fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null, gatherMs = 0, texting = false }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
     this.#session = session; this.#allowedTools = allowedTools; this.#onSettled = onSettled;
     this.#files = files; this.#fileToolsForTurn = fileToolsForTurn;
@@ -170,6 +180,10 @@ export class Conversations {
     // gatherMs: an owner message waits this long before the companion starts answering. Messages sent in the
     // meantime join the same turn, so a burst of short texts gets one reply, like talking to a person.
     this.#gatherMs = Number.isSafeInteger(gatherMs) && gatherMs > 0 ? gatherMs : 0;
+    // texting: replies arrive like texts from a person. Each finished bubble shows when it is done (never a half
+    // written one); a reply nobody has seen yet starts over when the owner sends another text; the companion may
+    // stay silent (NO_REPLY) and is told when a message is a burst or a follow-up to its last reply.
+    this.#texting = texting === true;
     this.#wakePolicy = { beforeStart: () => true, canDeliver: () => true, ...wakePolicy };
     if (['beforeStart', 'canDeliver'].some(key => typeof this.#wakePolicy[key] !== 'function')) throw invalid();
     if (['recordReleaseCheck', 'releaseDelivered'].some(key => this.#wakePolicy[key] !== undefined
@@ -257,6 +271,16 @@ export class Conversations {
   }
 
   // The owner's one ongoing chat (the thread the apps open by default), created when there is none yet.
+  // The owner is typing in their linked Discord DM: a reply that is still waiting for them keeps waiting.
+  discordTyping(companionId) {
+    if (this.#closing) return;
+    this.#setTyping(this.ongoingThread(companionId), true, TYPING_MS.discord);
+  }
+  #setTyping(threadId, active, ms) {
+    if (active) this.#typing.set(threadId, this.#now() + ms); else this.#typing.delete(threadId);
+    for (const [key, wake] of this.#gathering) if (key.startsWith(threadId + ':')) wake(false);
+  }
+
   ongoingThread(companionId) {
     if (typeof companionId !== 'string' || !UUID.test(companionId)) throw invalid();
     return this.#tx(() => this.#ongoing(companionId));
@@ -366,7 +390,7 @@ export class Conversations {
   // queued turns stay queued and run after the next start.
   async shutdown() {
     this.#closing = true;
-    for (const done of [...this.#gathering.values()]) done();
+    for (const done of [...this.#gathering.values()]) done(true);
     for (const controller of this.#active.values()) controller.abort();
     await this.idle();
   }
@@ -379,6 +403,7 @@ export class Conversations {
     if (op.action === 'deleteThread') return this.#deleteThread(companionId, op);
     if (op.action === 'archiveThread') return this.#archiveThread(companionId, op);
     if (op.action === 'archivedThreads') return this.#archivedThreads(companionId);
+    if (op.action === 'typing') { this.#thread(companionId, op.threadId); this.#setTyping(op.threadId, op.active, TYPING_MS.app); return { version: 1, synthetic: false, typing: op.active }; }
     return this.#write(companionId, op);
   }
 
@@ -482,8 +507,12 @@ export class Conversations {
         const thread = this.#thread(companionId, op.threadId);
         if (thread.archived_at !== null) throw new ConversationError('ARCHIVED', 409);
         if (this.#db.prepare("SELECT 1 FROM conv_wakes WHERE thread_id=? AND state='running'").get(thread.id)) throw new ConversationError('BUSY', 409);
-        // A reply that has not started yet is folded into this message's turn; a running reply finishes first.
-        for (const waiting of this.#db.prepare("SELECT * FROM conv_turns WHERE thread_id=? AND state='queued'").all(thread.id)) {
+        // A reply that has not started yet is folded into this message's turn. With texting, so is a running reply
+        // nobody has seen yet and that has not acted (no tool call): it stops and starts over with every text.
+        // Otherwise the running reply finishes first and this message is answered right after it.
+        const unseen = !this.#texting ? [] : this.#db.prepare("SELECT * FROM conv_turns WHERE thread_id=? AND state='running'").all(thread.id)
+          .filter(running => { const run = this.#runs.get(`${running.thread_id}:${running.request_id}`); return run && !run.shown && !run.acting; });
+        for (const waiting of [...unseen, ...this.#db.prepare("SELECT * FROM conv_turns WHERE thread_id=? AND state='queued'").all(thread.id)]) {
           this.#db.prepare("UPDATE conv_turns SET state='merged', updated_at=? WHERE thread_id=? AND request_id=?").run(now, thread.id, waiting.request_id);
           this.#append(thread.id, { type: 'turn', requestId: waiting.request_id, state: 'complete' });
           merged.push(waiting);
@@ -503,8 +532,10 @@ export class Conversations {
       this.#db.prepare('INSERT INTO conv_requests VALUES (?,?,?,?)').run(companionId, op.requestId, digest, JSON.stringify(body));
       return { replay: false, body };
     });
+    if (op.action === 'submit' && !result.replay) this.#typing.delete(op.threadId);
     for (const turn of merged) {
-      this.#gathering.get(`${turn.thread_id}:${turn.request_id}`)?.();
+      this.#gathering.get(`${turn.thread_id}:${turn.request_id}`)?.(true);
+      this.#runs.get(`${turn.thread_id}:${turn.request_id}`)?.controller.abort();
       this.#settled({ companionId, threadId: turn.thread_id, requestId: turn.request_id, state: 'merged', text: '', proactive: false });
     }
     if (op.action === 'submit' && !result.replay) this.#enqueue(companionId, op.threadId, op.requestId);
@@ -598,19 +629,27 @@ export class Conversations {
     next.finally(() => { if (this.#queues.get(companionId) === next) this.#queues.delete(companionId); });
   }
 
-  // Waits until the owner has been quiet for gatherMs after this message; a newer message or shutdown ends the wait early.
+  // Waits until the owner seems done: quiet for a while after this message (shorter when it looks finished, longer
+  // for a fragment) and not typing, at most MAX_HOLD_MS. A newer message, a typing change or shutdown re-checks.
   async #gather(threadId, requestId) {
-    if (!this.#gatherMs || this.#closing) return;
-    const turn = this.#db.prepare('SELECT state, created_at FROM conv_turns WHERE thread_id=? AND request_id=?').get(threadId, requestId);
-    const wait = turn?.state === 'queued' ? turn.created_at + this.#gatherMs - this.#now() : 0;
-    if (!(wait > 0)) return;
     const key = `${threadId}:${requestId}`;
-    await new Promise(resolve => {
-      const timer = setTimeout(done, Math.min(wait, this.#gatherMs));
-      function done() { clearTimeout(timer); resolve(); }
-      this.#gathering.set(key, done);
-    });
-    this.#gathering.delete(key);
+    for (;;) {
+      if (!this.#gatherMs || this.#closing) return;
+      const turn = this.#db.prepare(`SELECT t.state, t.created_at, t.user_message_id, m.text FROM conv_turns t JOIN conv_messages m ON m.id=t.user_message_id
+        WHERE t.thread_id=? AND t.request_id=?`).get(threadId, requestId);
+      if (turn?.state !== 'queued') return;
+      const files = this.#files?.list(turn.user_message_id).length ?? 0;
+      const quiet = turn.created_at + quietWindow(turn.text, { files, base: this.#gatherMs });
+      const until = Math.min(turn.created_at + MAX_HOLD_MS, Math.max(quiet, this.#typing.get(threadId) ?? 0));
+      const wait = until - this.#now();
+      if (!(wait > 0)) return;
+      const ended = await new Promise(resolve => {
+        const timer = setTimeout(() => done(false), Math.min(wait, MAX_HOLD_MS));
+        const done = stop => { clearTimeout(timer); this.#gathering.delete(key); resolve(stop); };
+        this.#gathering.set(key, done);
+      });
+      if (ended) return;
+    }
   }
 
   #finish(turn, state, error = null) {
@@ -836,30 +875,46 @@ export class Conversations {
     if (!this.#runner) { this.#finish(turn, 'error', describe(new RunnerError('NO_RUNTIME'))); return; }
     const thread = this.#db.prepare('SELECT * FROM conv_threads WHERE id=?').get(threadId);
     // The owner's messages folded into this turn (sent while it waited), oldest first, then its own.
-    const burst = [...this.#db.prepare(`SELECT t.request_id, t.user_message_id, m.text FROM conv_turns t JOIN conv_messages m ON m.id=t.user_message_id
+    const burst = [...this.#db.prepare(`SELECT t.request_id, t.user_message_id, t.created_at, m.text FROM conv_turns t JOIN conv_messages m ON m.id=t.user_message_id
       WHERE t.thread_id=? AND t.state='merged' AND t.rowid < (SELECT rowid FROM conv_turns WHERE thread_id=? AND request_id=?)
         AND t.rowid > COALESCE((SELECT MAX(rowid) FROM conv_turns WHERE thread_id=? AND state<>'merged'
           AND rowid < (SELECT rowid FROM conv_turns WHERE thread_id=? AND request_id=?)), 0)
       ORDER BY t.rowid`).all(threadId, threadId, requestId, threadId, threadId, requestId),
-      { request_id: requestId, user_message_id: turn.user_message_id, text: this.#db.prepare('SELECT text FROM conv_messages WHERE id=?').get(turn.user_message_id).text }];
+      { request_id: requestId, user_message_id: turn.user_message_id, created_at: turn.created_at, text: this.#db.prepare('SELECT text FROM conv_messages WHERE id=?').get(turn.user_message_id).text }];
     const user = { text: burst.map(item => item.text).filter(Boolean).join('\n') };
     const burstIds = burst.map(item => item.user_message_id);
+    // Texting: was this sent while the last reply ran, or right after it? Then it is a follow-up to that reply.
+    const before = this.#texting ? this.#db.prepare(`SELECT state, updated_at, assistant_message_id FROM conv_turns WHERE thread_id=? AND state<>'merged'
+      AND rowid < (SELECT MIN(rowid) FROM conv_turns WHERE thread_id=? AND request_id IN (SELECT value FROM json_each(?))) ORDER BY rowid DESC LIMIT 1`)
+      .get(threadId, threadId, JSON.stringify(burst.map(item => item.request_id))) : null;
+    const followUp = Boolean(before?.state === 'complete' && before.assistant_message_id && burst[0].created_at <= before.updated_at + FOLLOW_UP_MS);
+    const notes = !this.#texting ? '' : (burst.length > 1 ? BURST_NOTE(burst.length) : '') + (followUp ? FOLLOW_UP_NOTE : '');
     const controller = new AbortController(), key = `${threadId}:${requestId}`;
+    const run = { controller, shown: false, acting: false };
+    this.#runs.set(key, run);
     const sessionEpoch = this.#sessionEpoch.get(companionId) ?? 0;
     const currentSession = () => sessionEpoch === (this.#sessionEpoch.get(companionId) ?? 0);
     this.#active.set(key, controller);
-    let assistantId = null, text = '', written = '', timer = null, fileTools = null, nativeAttempted = false;
+    let assistantId = null, text = '', written = '', shownText = null, timer = null, fileTools = null, nativeAttempted = false;
     const live = () => !this.#closing && !controller.signal.aborted && Boolean(this.#db.prepare(`SELECT 1 FROM conv_turns t JOIN conv_threads h ON h.id=t.thread_id
       WHERE t.thread_id=? AND t.request_id=? AND t.state='running' AND h.companion_id=?`).get(threadId, requestId, companionId));
     // The reply may start with a feeling tag ([feeling:laugh], AGENTS.md): it is kept apart and never shown.
     const flush = (final = false) => {
       timer = null;
       if (!live()) return;
-      if (text === written) return;
+      if (text === written && !(this.#texting && final)) return;
       const split = splitFeeling(text);
       if (split.pending && !final) return;
-      const value = (split.pending ? text : split.text).slice(0, LIMITS.assistantChars), feeling = split.feeling;
+      let value = split.pending ? text : split.text;
+      // Texting: only finished bubbles show while writing, and a reply that may be NO_REPLY shows nothing.
+      if (this.#texting) value = withoutSilence(final ? value : maybeSilent(value) ? '' : finishedBubbles(value));
+      value = value.slice(0, LIMITS.assistantChars);
+      const feeling = split.feeling;
+      written = text;
       if (!assistantId && !value) return;
+      if (value === shownText) return;
+      if (value) run.shown = true;
+      shownText = value;
       this.#tx(() => {
         if (!assistantId) {
           assistantId = randomUUID();
@@ -869,7 +924,6 @@ export class Conversations {
         } else this.#db.prepare('UPDATE conv_messages SET text=?, feeling=? WHERE id=?').run(value, feeling, assistantId);
         this.#append(threadId, { type: 'message', messageId: assistantId });
       });
-      written = text;
     };
     const schedule = () => { if (!timer) timer = setTimeout(flush, this.#flushMs); };
     const resume = this.#resume(thread);
@@ -894,6 +948,7 @@ export class Conversations {
             this.#db.prepare('UPDATE conv_turns SET assistant_message_id=? WHERE thread_id=? AND request_id=?').run(assistantId, threadId, requestId);
           }
           this.#files.bindInTransaction(companionId, threadId, assistantId, [file.id], 'companion');
+          run.shown = true;
           this.#append(threadId, { type: 'message', messageId: assistantId });
         });
       } });
@@ -908,13 +963,17 @@ export class Conversations {
       }
       const webSpent = this.#webBudget ? !this.#webBudget.available(companionId) : false;
       const turnInput = {
-        prompt: user.text + filePrompt + burst.map(item => this.#turnNote?.(companionId, item.request_id) ?? '').join('') + (linked?.prompt ?? '') + (requestId.startsWith('discord-') ? DISCORD_NOTE : '') + (webSpent ? WEB_SPENT_NOTE : ''),
+        prompt: user.text + filePrompt + burst.map(item => this.#turnNote?.(companionId, item.request_id) ?? '').join('') + (linked?.prompt ?? '') + notes + (requestId.startsWith('discord-') ? DISCORD_NOTE : '') + (webSpent ? WEB_SPENT_NOTE : ''),
         ...((filter => filter ? { toolFilter: filter } : {})(this.#filter(companionId, webSpent ? withoutWeb : null))), images: [...incoming.filter(file => file.mime.startsWith('image/')).map(file => file.path), ...(linked?.images ?? [])].slice(0, 8), appServers: fileTools.servers,
         resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }), allowedTools: this.#allowedTools, signal: controller.signal,
         onEvent: event => {
           if (event.type === 'session' && live() && currentSession()) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(event.id, threadId);
           else if (event.type === 'delta') { text += event.text; schedule(); }
-          else if (event.type === 'tool' && WEB_TOOLS.includes(event.name)) this.#webBudget?.record(companionId);
+          else if (event.type === 'tool' || event.type === 'acting') {
+            // Once the companion acts (any tool), its reply is never restarted: the action must not run twice.
+            run.acting = true;
+            if (event.type === 'tool' && WEB_TOOLS.includes(event.name)) this.#webBudget?.record(companionId);
+          }
         }
       };
       nativeAttempted = true;
@@ -940,7 +999,7 @@ export class Conversations {
       else this.#finish(turn, 'error', describe(error));
     } finally {
       try { fileTools?.dispose(); }
-      finally { this.#active.delete(key); if (nativeAttempted) this.#nativeSettled(companionId); }
+      finally { this.#active.delete(key); this.#runs.delete(key); if (nativeAttempted) this.#nativeSettled(companionId); }
     }
   }
 }

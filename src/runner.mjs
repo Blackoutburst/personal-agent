@@ -92,7 +92,7 @@ export class CompanionRunner {
   }
 
   // prompt: user text. resume: provider session id from a previous turn of the same thread.
-  // onEvent receives {type:'session'|'delta'|'rate'} events while the reply streams.
+  // onEvent receives {type:'session'|'delta'|'rate'|'tool'|'acting'} events while the reply streams ('acting': a tool call started).
   turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal } = {}) {
     return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, images, appServers, onEvent, signal });
   }
@@ -149,7 +149,7 @@ export class CompanionRunner {
       else if (event.type === 'delta') { streamed += event.text; onEvent(event); }
       else if (event.type === 'message') text = event.text;
       else if (event.type === 'rate') { rate = event; onEvent(event); }
-      else if (event.type === 'tool') onEvent(event);
+      else if (event.type === 'tool' || event.type === 'acting') onEvent(event);
       else if (event.type === 'done') { done = true; if (event.text !== null) text = event.text; if (event.sessionId) sessionId = event.sessionId; usage = event.usage; }
       else if (event.type === 'error') failure ??= event;
     };
