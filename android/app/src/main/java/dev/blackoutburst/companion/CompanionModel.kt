@@ -24,6 +24,10 @@ import kotlinx.coroutines.sync.withLock
 
 enum class Gate { Loading, SignedOut, Ready }
 
+/** #59: the app counts as in active use for this long after the last touch; reported this often while it is. */
+private const val ACTIVE_INPUT_MS = 120_000L
+private const val ACTIVE_BEAT_MS = 20_000L
+
 data class UiState(
     val scope: Long = 0,
     val gate: Gate = Gate.Loading,
@@ -233,6 +237,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     fun signOut() {
         val previousSession = store.session
+        endActive(Api { previousSession })
         // Stop this phone's notifications for that account before the session goes away.
         viewModelScope.launch { Push.unregister(Api { previousSession }) }
         // Fence the display immediately, even while logout is in flight.
@@ -247,6 +252,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun signedOut() {
+        endActive(null)
         invalidateFiles(); groups.reset()
         store.session = null
         poller?.cancel()
@@ -419,8 +425,70 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     fun setVisible(value: Boolean) {
         visible = value
+        if (value) lastInput = System.currentTimeMillis()
+        reportActive()
         groups.setVisible(value)
         if (value && _state.value.gate == Gate.Ready) { viewModelScope.launch { guarded { resync() }; refreshWearing() }; startPolling() }
+    }
+
+    // ---- #59: active client. While the app is in front and was touched in the last 2 minutes it tells the server every
+    // 20 s (with the conversation on screen), so the owner's other devices get no push for a message read here. ----
+    private val activeClient = java.util.UUID.randomUUID().toString()
+    @Volatile private var lastInput = 0L
+    private var chatShown = false
+    private var activeJob: Job? = null
+    private var activeReported = false
+    private var activeThread: String? = null
+    /** An older server without the action: stop asking until the app restarts. */
+    private var activeUnsupported = false
+
+    private fun activeNow() = !activeUnsupported && visible && _state.value.gate == Gate.Ready &&
+        System.currentTimeMillis() - lastInput < ACTIVE_INPUT_MS
+    private fun threadOnScreen() = _state.value.let { if (chatShown && !it.chatLoading) it.threadId else null }
+
+    /** Any touch or key in the app (MainActivity.onUserInteraction). */
+    fun userInput() {
+        lastInput = System.currentTimeMillis()
+        if (!activeReported) reportActive()
+    }
+
+    /** The Chat (or a Board sub-conversation) is on screen, or not. */
+    fun setChatShown(value: Boolean) {
+        if (chatShown == value) return
+        chatShown = value; reportActive()
+    }
+
+    private fun reportActive() {
+        if (activeNow()) {
+            if (activeJob?.isActive != true) activeJob = viewModelScope.launch {
+                while (isActive && activeNow()) { activeBeat(); delay(ACTIVE_BEAT_MS) }
+                if (activeReported) activeIdle(api, activeThread)
+            } else if (activeReported && threadOnScreen() != activeThread) viewModelScope.launch { activeBeat() }
+        } else if (activeReported) {
+            activeJob?.cancel(); activeJob = null
+            val thread = activeThread
+            viewModelScope.launch { activeIdle(api, thread) }
+        }
+    }
+
+    private suspend fun activeBeat() {
+        val thread = threadOnScreen()
+        activeReported = true; activeThread = thread
+        try { api.clientActive(activeClient, true, thread) }
+        catch (error: ApiException) { if (error.status == 400) { activeUnsupported = true; activeReported = false } }
+    }
+
+    private suspend fun activeIdle(api: Api, thread: String?) {
+        activeReported = false; activeThread = null
+        try { api.clientActive(activeClient, false, thread) } catch (_: ApiException) { /* the server forgets it on its own */ }
+    }
+
+    /** Sign-out: tell the server with the old session (if any), then forget. */
+    private fun endActive(previous: Api?) {
+        activeJob?.cancel(); activeJob = null
+        val thread = activeThread
+        if (activeReported && previous != null) viewModelScope.launch { activeIdle(previous, thread) }
+        activeReported = false; activeThread = null
     }
 
     private var wearingAt = 0L

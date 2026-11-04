@@ -40,6 +40,7 @@ import { BoardCompanion } from './src/board-companion.mjs';
 import { BoardInbox } from './src/board-inbox.mjs';
 import { PushDevices, FcmSender, PushNotifier } from './src/push.mjs';
 import { WebPushSubscriptions, WebPushSender, WebPushNotifier, loadVapidKeys } from './src/web-push.mjs';
+import { ActiveClients, PushHold } from './src/active-clients.mjs';
 
 const BOARD_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CONTENT_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
@@ -68,6 +69,7 @@ const STATIC = new Map([
   ['/group-ui.mjs', ['group-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/owner-profile-ui.mjs', ['owner-profile-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/web-push-ui.mjs', ['web-push-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/active-client.mjs', ['active-client.mjs', 'text/javascript; charset=utf-8']],
   ['/bubbles.mjs', ['bubbles.mjs', 'text/javascript; charset=utf-8']],
   ['/voice-ui.mjs', ['voice-ui.mjs', 'text/javascript; charset=utf-8']],
   // The character handbook zip (Look page; built by ops/build-character-kit.py from character-kit/).
@@ -132,6 +134,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let schedulerHttp, schedulerService, schedulerStore, calendar = null, github = null, mail = null, x = null, discord = null;
   let groupChat = null, groupHttp = null;
   let asr = null, files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
+  let activeClients = null, pushHold = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
   const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
@@ -402,6 +405,14 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       studioHttp = createStudioHttp({ access, studio: new Studio({ store, owners, ...(mailOptions.now ? { now: mailOptions.now } : {}) }) });
       connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, mail: () => mail, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
       // Board inbox (#55, docs/BOARD-INBOX.md): one sub-conversation per Board thread or ticket, out of the main chat.
+      // #59 (docs/PUSH.md): while the owner actively uses a client, a finished message waits a short while before it is
+      // pushed (Android, Web Push) or mirrored to Discord, and is dropped if that client showed it.
+      activeClients = new ActiveClients();
+      pushHold = new PushHold({ store, clients: activeClients,
+        deliver: event => { discord?.settled(event); pushNotifier?.settled(event); webPushNotifier?.settled(event); },
+        deliverGroup: event => { pushNotifier?.group(event); webPushNotifier?.group(event); },
+        groupRead: (companionId, groupId, messageId) => groupChat?.readBy(companionId, groupId, messageId) ?? false,
+        ...(pushOptions.holdMs ? { holdMs: pushOptions.holdMs } : {}), log: message => console.error(message) });
       const boardInbox = new BoardInbox({ store, ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
       const webBudget = new WebBudget({ store });
       conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, webBudget, boardInbox,
@@ -414,7 +425,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id),
         recordReleaseCheck: (companionId, id, check, text) => schedulerStore.recordReleaseCheck(companionId, id, check, text),
         releaseDelivered: (companionId, id) => schedulerStore.releaseDelivered(companionId, id) },
-        onSettled: event => { discord?.settled(event); pushNotifier?.settled(event); webPushNotifier?.settled(event); },
+        onSettled: event => pushHold.settled(event),
         onNativeSettled: companionId => {
           try { if (workspaceFor(companionId)) personality.observe(companionId); }
           catch { console.error('Personality history observation unavailable.'); }
@@ -450,7 +461,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
             outfit: look.outfit && look.outfit !== 'auto' ? look.outfit : outfitFor(look, new Date(), weather.current(companionId)) } : null;
         },
         toolFilterFor: companionId => connectors.toolFilter(companionId), quiet: companionId => schedulerStore.quietNow(companionId),
-        onMessage: event => { pushNotifier?.group(event); webPushNotifier?.group(event); },
+        onMessage: event => pushHold.group(event),
         filesDir: join(dataDir, 'group-files'), log: message => console.error(message),
         ...(conversationOptions.allowedTools ? { allowedTools: conversationOptions.allowedTools } : {}),
         ...(conversationOptions.gatherMs ? { gatherMs: conversationOptions.gatherMs } : {}), ...groupOptions });
@@ -496,7 +507,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         log: message => console.error(message) });
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality, contacts, weather,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
-        discord, push: pushDevices, webPush, connectors, github, x,
+        discord, push: pushDevices, webPush, activeClients, connectors, github, x,
         assertMemoryIdle: companionId => conversations.assertMemoryIdle(companionId),
         onForget: companionId => conversations.resetSessions(companionId),
         // Claude reads the look every turn; Codex keeps its first instructions, so it starts afresh.
@@ -524,7 +535,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     if (weatherOptions.poll !== false) weather?.start();
     if (boardOptions.poll !== false) boardCompanion?.start();
     if (discordOptions.connect !== false) discord?.start();
+    // Pushes a previous run still held go out now (fail open).
+    pushHold?.recover();
   } catch (error) {
+    pushHold?.stop();
     weather?.stop(); boardCompanion?.stop();
     discord?.stop();
     await schedulerService?.stop();
@@ -537,6 +551,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     server, store, url: `http://127.0.0.1:${server.address().port}`,
     conversations, files, scheduler: schedulerService, discord, groupChat,
     async close() {
+      pushHold?.stop();
       weather?.stop(); boardCompanion?.stop();
       discord?.stop();
       await schedulerService?.stop();

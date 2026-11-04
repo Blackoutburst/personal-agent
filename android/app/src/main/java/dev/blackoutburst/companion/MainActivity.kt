@@ -44,6 +44,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() { super.onStart(); Push.foreground = true; Push.clearShown(this); model.setVisible(true) }
     override fun onStop() { super.onStop(); Push.foreground = false; model.setVisible(false) }
+    /** Any touch or key: the app is in active use (#59). */
+    override fun onUserInteraction() { super.onUserInteraction(); model.userInput() }
 
     override fun onResume() {
         super.onResume()

@@ -1,7 +1,8 @@
 # Push notifications (Android and the installed web app)
 
 When a companion message is delivered (a reply, or a proactive message such as a reminder, check-in or watch
-result), the owner's Android devices get a notification, unless the app is open.
+result), the owner's Android devices get a notification, unless the app is open. While the owner is actively using any client, pushes to the
+other devices wait briefly and are dropped if read there ([Active client](#active-client-59)).
 
 ## How it works
 
@@ -63,6 +64,35 @@ needs no review and updates with every deploy. The same works on Android Chrome 
 - **Key**: the VAPID key pair lives at `~/.config/personal-agent/web-push-vapid.json` (chmod 600, or
   `COMPANION_WEB_PUSH_KEY`). It is created on first use, but the live unit has `ProtectHome=read-only`, so on the
   server it was created ahead of time (3 Nov 2026). Replacing it invalidates every web subscription: each device turns notifications on again.
+
+## Active client (#59)
+
+While the owner is actively using any client, a companion message is not pushed to their other devices at once.
+
+- **Active** means a web or PWA tab that is visible, focused and had input (pointer, key, wheel, touch; not scrolling,
+  which the chat does by itself) in the last 2 minutes, or the Android app in the foreground and touched in the last
+  2 minutes. Such a client sends `POST api/companion {action: "clientActive", client, active: true, threadId?}` every
+  20 s and at once when the conversation on screen changes; `client` is a random id per tab or app run, `threadId` the
+  conversation shown (main chat or a Board sub-conversation), absent on other tabs. Blur, hiding, closing the tab, idleness,
+  the app going to the background and sign-out send `active: false` (keepalive on the web). The server
+  (`src/active-clients.mjs`) forgets a client 50 s after its last report, so a closed laptop or killed app stops
+  counting on its own. Presence is kept in memory only, per owner.
+- **Hold**: a finished reply, proactive or wake message, or Board sub-conversation message for an owner with an active
+  client is held for 90 s instead of going to Android (FCM), Web Push and the Discord DM mirror. Then: if an active
+  client reported that conversation on screen at or after the message arrived, it was read and nothing is sent;
+  otherwise everything goes out as usual. When the owner's last active client reports inactive, held messages are
+  decided at once (pushed if not seen) instead of waiting out the delay. No active client: pushed at once, as before.
+- **Not held**: replies to messages the owner sent from Discord (answered in the DM at once; never pushed anyway),
+  failed, stopped and merged turns.
+- **Group chat**: a group push for a member with an active client is held the same way and dropped if the member
+  read the group (its read marker reached the message) within the 90 s. The existing rule still applies first: no
+  push to a member who read or posted in the group in the last 30 s, and none in quiet hours.
+- **Fail open**: held messages are also written to `push_holds` in the store (removed when decided). On start, whatever
+  a previous run still held is delivered at once (presence does not survive a restart), so a restart can make a push
+  late but never loses it. Nothing new goes into any push payload.
+- #49's per-device Web Push presence (below) still applies on top: a device open on the chat gets no Web Push at all.
+- Older clients just never report; an older server answers `clientActive` with 400, and the web and Android clients
+  then stop asking until reloaded or restarted.
 
 ## Group chat (#53)
 

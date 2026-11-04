@@ -188,7 +188,9 @@ private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExpo
     val groups by model.groups.state.collectAsStateWithLifecycle()
     LaunchedEffect(groups.request) { if (groups.request > 0) tab = Tab.Group }
     LaunchedEffect(tab) { model.groups.setShown(tab == Tab.Group) }
-    DisposableEffect(Unit) { onDispose { model.groups.setShown(false) } }
+    val chatOnScreen = tab == Tab.Chat || (tab == Tab.Board && state.boardThread != null && state.threadId == state.boardThread)
+    LaunchedEffect(chatOnScreen) { model.setChatShown(chatOnScreen) }
+    DisposableEffect(Unit) { onDispose { model.groups.setShown(false); model.setChatShown(false) } }
     // Notifications (docs/PUSH.md): asked once, right after the first message the owner sends.
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { model.notificationsAsked() }
     LaunchedEffect(state.askNotifications) { if (state.askNotifications) askPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS) }

@@ -393,6 +393,13 @@ export class GroupChat {
       .reduce((sum, row) => sum + this.#unread(row.group_id, companionId, row.read_seq), 0);
   }
 
+  // #59: whether this member has read (or written past) a message, so a held push for it can be dropped.
+  readBy(companionId, groupId, messageId) {
+    const row = this.#db.prepare(`SELECT m.seq, g.read_seq FROM group_messages m JOIN group_members g ON g.group_id=m.group_id
+      WHERE m.id=? AND m.group_id=? AND g.companion_id=?`).get(messageId, groupId, companionId);
+    return Boolean(row && row.read_seq >= row.seq);
+  }
+
   #list(companionId) {
     const rows = this.#db.prepare(`SELECT g.*, m.read_seq, m.notify FROM group_chats g JOIN group_members m ON m.group_id=g.id
       WHERE m.companion_id=? AND m.left_at IS NULL ORDER BY g.updated_at DESC, g.id LIMIT ?`).all(companionId, GROUP_LIMITS.groups);

@@ -21,7 +21,7 @@ const EMPTY_MEMORY_REVISION = createHash('sha256').update('[]').digest('hex');
 // onForget(companionId): durable session reset BEFORE any memory bytes are replaced.
 // onLook(companionId): called when the name or look changed, so the agent's next session knows.
 // discord: the DiscordBridge (docs/DISCORD.md), or null when connections are unavailable.
-export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null, contacts = null, weather = null, push = null, webPush = null, connectors = null, github = null, x = null }) {
+export function createCompanionHttp({ access, profiles, workspaceFor, runtimeStatus, assertMemoryIdle = () => {}, onForget = () => {}, onLook = () => {}, now = () => new Date(), discord = null, personality = null, contacts = null, weather = null, push = null, webPush = null, activeClients = null, connectors = null, github = null, x = null }) {
   const weatherNow = companionId => weather?.current(companionId) ?? null;
   return async function companion(request) {
     const parsed = await access.read(request, PERSONALITY_LIMITS.requestBytes);
@@ -157,6 +157,11 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
         case 'webPushPresence': {
           if (!only(['action', 'endpoint', 'present']) || !webPush) break;
           return { status: 200, body: webPush.subscriptions.presence(companionId, payload.endpoint, payload.present) };
+        }
+        // #59: a client in active use (visible, focused, recent input) holds pushes to the owner's other devices.
+        case 'clientActive': {
+          if (!only(['action', 'client', 'active', 'threadId']) || !activeClients) break;
+          return { status: 200, body: activeClients.report(companionId, { client: payload.client, active: payload.active, threadId: payload.threadId ?? null }) };
         }
         case 'webPushUnsubscribe': {
           if (!only(['action', 'endpoint']) || !webPush) break;

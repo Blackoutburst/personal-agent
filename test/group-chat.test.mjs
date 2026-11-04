@@ -106,7 +106,12 @@ test('posting, idempotent retries, cursors, replies and unread counts', async t 
   await rejects(f.as('screamer', { action: 'events', groupId, cursor: String(reply.seq + 5) }), 'INVALID_REQUEST');
   assert.equal((await f.as('blackout', { action: 'list' })).groups[0].unread, 1, 'Only messages by others count as unread');
   assert.equal(f.groups.unread(f.ids.screamer), 0, 'Posting reads up to your own message');
+  assert.equal(f.groups.readBy(f.ids.blackout, groupId, reply.id), false, '#59: unread, so a held push still goes out');
+  assert.equal(f.groups.readBy(f.ids.screamer, groupId, reply.id), true, 'Its author has read it');
   assert.equal((await f.as('blackout', { action: 'read', groupId, seq: reply.seq })).unread, 0);
+  assert.equal(f.groups.readBy(f.ids.blackout, groupId, reply.id), true, 'Read: a held push is dropped');
+  assert.equal(f.groups.readBy(f.ids.third, groupId, reply.id), false, 'Not a member');
+  assert.equal(f.groups.readBy(f.ids.blackout, randomUUID(), reply.id), false);
 });
 
 test('a mention always gets a reply; an unmentioned companion may stay silent', async t => {

@@ -10,6 +10,7 @@ import { createContactUI, renderPeerCard } from './contact-ui.mjs';
 import { createOwnerProfileUI } from './owner-profile-ui.mjs';
 import { createWeatherUI } from './weather-ui.mjs';
 import { createWebPushUI, createPushPresence, registerServiceWorker } from './web-push-ui.mjs';
+import { createActiveClient } from './active-client.mjs';
 import { splitBubbles } from './bubbles.mjs';
 import { createVoiceRecorder, voiceView } from './voice-ui.mjs';
 import { createBoardUI } from './board-ui.mjs';
@@ -67,6 +68,8 @@ const companionName = () => profile?.name ?? 'Your companion';
 registerServiceWorker();
 const webPushUI = createWebPushUI({ document, api });
 const pushPresence = createPushPresence({ api, onChat: () => view === 'chat' });
+// #59: this tab in active use holds pushes to the owner's other devices; the conversation on screen counts as read.
+const activeClient = createActiveClient({ api, threadOnScreen: () => profile && view === 'chat' && state.opened && state.connection === 'ready' ? state.threadId : null });
 const providerName = () => ({ claude: 'Claude', codex: 'ChatGPT' })[runtime?.provider] ?? 'AI';
 function applyColors(look) {
   const colors = COLORS[look?.color] ?? COLORS.peach, root = document.documentElement.style;
@@ -149,7 +152,7 @@ function show(next) {
   if (next === 'calendar') void calendarUI.show();
   if (next === 'studio') void studioUI.show();
   if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); void webPushUI.show(); }
-  pushPresence.update();
+  pushPresence.update(); activeClient.update();
   renderAll();
 }
 
@@ -690,6 +693,7 @@ client.subscribe(next => {
     const key = selectedBoard + ':' + ([...next.messages].reverse().find(item => item.role === 'assistant' && item.text)?.id ?? '');
     if (key !== boardReadMarked) { boardReadMarked = key; void boardUI.markRead(selectedBoard); }
   }
+  activeClient.update();
   renderAll();
   if (!polling) schedulePoll();
 });

@@ -256,6 +256,12 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
     }
     suspend fun pushRegister(token: String) { post(companion + "api/companion", buildJsonObject { put("action", "pushRegister"); put("token", token) }) }
     suspend fun pushUnregister(token: String) { post(companion + "api/companion", buildJsonObject { put("action", "pushUnregister"); put("token", token) }) }
+    /** #59: this app is in active use (foreground, touched recently), with the conversation on screen, or no longer is. */
+    suspend fun clientActive(client: String, active: Boolean, threadId: String?) {
+        post(companion + "api/companion", buildJsonObject {
+            put("action", "clientActive"); put("client", client); put("active", active); threadId?.let { put("threadId", it) }
+        })
+    }
 
     suspend fun snapshot(threadId: String? = null): Snapshot {
         val raw = post(companion + "api/conversation", buildJsonObject {
