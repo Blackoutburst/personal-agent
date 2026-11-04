@@ -5,8 +5,11 @@ import { createHash, randomUUID } from 'node:crypto';
 // identity, supplies its write transaction and applies quiet hours, spacing, the daily cap and cooldown.
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/;
-const HOUR = 3600000, DAY = 24 * HOUR, GRACE = DAY, HORIZON = 60 * DAY, FOLLOWUP_CAP = 20;
-export const PER_DAY = Object.freeze([2, 4, 6, 8]);
+const MINUTE = 60000, HOUR = 3600000, DAY = 24 * HOUR, GRACE = DAY, HORIZON = 60 * DAY, FOLLOWUP_CAP = 20;
+// Own wakes per day: any whole number the owner types, from 1 to 1440 (about one a minute). Owner decision
+// 2026-11-04: free input instead of the 2/4/6/8 picker, whatever the cost. Spacing, quiet hours and the daily cap still apply.
+export const MAX_PER_DAY = 1440;
+export const validPerDay = value => Number.isSafeInteger(value) && value >= 1 && value <= MAX_PER_DAY;
 const DEFAULTS = Object.freeze({ enabled: true, perDay: 4 });
 const TERMINAL = ['message', 'silent', 'cancelled', 'interrupted', 'error', 'missed'];
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -49,11 +52,11 @@ export class ProactiveWakes {
   #interval(perDay) {
     let factor = this.#random();
     if (typeof factor !== 'number' || !(factor >= 0 && factor < 1)) factor = 0.5;
-    return Math.max(HOUR, Math.round(DAY / perDay * (0.5 + factor)));
+    return Math.max(MINUTE, Math.round(DAY / perDay * (0.5 + factor)));
   }
   #row(companionId, identity) {
     const row = this.#db.prepare('SELECT * FROM scheduler_proactive_settings WHERE companion_id=?').get(companionId);
-    if (row) this.#need(row.identity_key === identity && [0, 1].includes(row.enabled) && PER_DAY.includes(row.per_day)
+    if (row) this.#need(row.identity_key === identity && [0, 1].includes(row.enabled) && validPerDay(row.per_day)
       && Number.isSafeInteger(row.generation) && row.generation >= 1 && (row.next_at === null || Number.isSafeInteger(row.next_at)), 'UNAVAILABLE');
     return row ?? null;
   }

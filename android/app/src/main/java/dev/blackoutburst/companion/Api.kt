@@ -74,9 +74,10 @@ import kotlinx.serialization.json.put
     val boardCapLimit: Int? get() = (boardWakeCap as? JsonPrimitive)?.takeUnless { it is kotlinx.serialization.json.JsonNull }?.content?.toIntOrNull()
 }
 val BOARD_CAP_ABSENT = JsonObject(emptyMap())
-/** #54: the companion's own wakes (perDay 2, 4, 6 or 8); null on an older server, which then hides the setting. */
+/** #54: the companion's own wakes (perDay 1 to 1440); null on an older server, which then hides the setting. */
 @Serializable data class Proactive(val enabled: Boolean, val perDay: Int)
-val PROACTIVE_FREQUENCIES = listOf(2 to "Rarely", 4 to "Sometimes", 6 to "Often", 8 to "A lot")
+/** #54: own wakes per day, any whole number the owner types (server accepts 1 to 1440). */
+const val PROACTIVE_MAX_PER_DAY = 1440
 /** A follow-up the companion scheduled for itself (#54); shown read-only with a cancel button. */
 @Serializable data class Followup(val id: String, val note: String, val dueAt: String, val state: String = "active", val canCancel: Boolean = true)
 const val BOARD_CAP_DEFAULT = 200

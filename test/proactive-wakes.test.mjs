@@ -63,7 +63,7 @@ test('owners are on by default at four a day, and every next wake is jittered wi
   assert.deepEqual(f.scheduler.list(f.a).settings.proactive, { enabled: true, perDay: 4 });
   f.randoms.push(0); f.scheduler.prepareDue(f.a);
   assert.equal(f.nextAt(), f.clock + 3 * HOUR, 'The lowest factor is half of the six-hour spacing');
-  for (const perDay of [2, 4, 6, 8]) for (const random of [0, 0.25, 0.5, 0.999999]) {
+  for (const perDay of [2, 4, 6, 8, 3, 50]) for (const random of [0, 0.25, 0.5, 0.999999]) {
     f.scheduler.configure(f.a, { proactive: { perDay: perDay === 4 ? 2 : 4 } });
     f.randoms.push(random); f.scheduler.configure(f.a, { proactive: { perDay } });
     const spacing = DAY / perDay, delta = f.nextAt() - f.clock;
@@ -122,7 +122,10 @@ test('the off switch and frequency changes bump the generation, cancel queued ow
   assert.deepEqual(on.settings.proactive, { enabled: true, perDay: 8 }); assert.ok(f.nextAt() > f.clock);
   // Older clients that never send the group keep the owner's choice.
   assert.deepEqual(service.configure(f.a, { heartbeatEnabled: false, quietStart: '22:00', quietEnd: '08:00' }).settings.proactive, { enabled: true, perDay: 8 });
-  for (const bad of [{ perDay: 3 }, { perDay: '4' }, { enabled: 'yes' }, { enabled: true, every: 2 }, null, []])
+  // Any whole number from 1 to 1440 (owner decision: free input, whatever the cost).
+  for (const perDay of [1, 3, 37, 1440]) assert.equal(service.configure(f.a, { proactive: { perDay } }).settings.proactive.perDay, perDay);
+  service.configure(f.a, { proactive: { perDay: 8 } });
+  for (const bad of [{ perDay: 0 }, { perDay: 1441 }, { perDay: 2.5 }, { perDay: -4 }, { perDay: '4' }, { enabled: 'yes' }, { enabled: true, every: 2 }, null, []])
     denied(() => f.scheduler.configure(f.a, { proactive: bad }), 'INVALID_REQUEST');
   assert.deepEqual(f.scheduler.list(f.b).settings.proactive, { enabled: true, perDay: 4 }, 'Another owner keeps the default');
 });

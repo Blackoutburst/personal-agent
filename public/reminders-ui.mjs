@@ -59,7 +59,7 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
   let proactiveEdited = 0;
   const proactiveOffered = () => {
     const value = schedules?.settings?.proactive;
-    return Boolean(value && typeof value.enabled === 'boolean' && [2, 4, 6, 8].includes(value.perDay)
+    return Boolean(value && typeof value.enabled === 'boolean' && Number.isInteger(value.perDay) && value.perDay >= 1
       && $('schedule-proactive') && $('schedule-proactive-enabled') && $('schedule-proactive-frequency'));
   };
   const followupsOffered = () => Array.isArray(schedules?.followups) && Boolean($('followups-block') && $('followup-list'));
@@ -430,7 +430,10 @@ export function createRemindersUI({ document, fetchImpl = fetch, requestId = () 
     }
     if (proactiveEdited && proactiveOffered()) {
       const perDay = Number($('schedule-proactive-frequency').value);
-      input.proactive = { enabled: $('schedule-proactive-enabled').checked, ...([2, 4, 6, 8].includes(perDay) ? { perDay } : {}) };
+      if (!(Number.isInteger(perDay) && perDay >= 1 && perDay <= 1440)) {
+        message = 'Own wakes per day must be a whole number from 1 to 1440.'; render(); return;
+      }
+      input.proactive = { enabled: $('schedule-proactive-enabled').checked, perDay };
     }
     return change({ action: 'configure', input });
   });

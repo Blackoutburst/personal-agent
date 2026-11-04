@@ -58,6 +58,6 @@ class WatchesTest {
         val older = json.decodeFromString<Schedules>("{\"timezone\":\"UTC\",\"settings\":{$base}}")
         assertEquals(null, older.settings.proactive)
         assertTrue(older.followups.isEmpty())
-        assertEquals(listOf(2, 4, 6, 8), PROACTIVE_FREQUENCIES.map { it.first })
+        assertEquals(1440, PROACTIVE_MAX_PER_DAY)
     }
 }

@@ -578,6 +578,18 @@ test('the proactive companion toggle and frequency show when offered and are sen
   assert.deepEqual(f.requests.at(-1).body.input.proactive, { enabled: false, perDay: 8 });
   f.requests.at(-1).reply(proactiveData({ enabled: false, perDay: 8 })); await nextTick();
   assert.equal(f.$('schedule-proactive-enabled').checked, false); assert.equal(f.$('schedule-proactive-frequency').value, '8');
+  // Free input: any whole number from 1 to 1440 is sent; anything else is refused before a request.
+  f.$('schedule-proactive-enabled').checked = true; await f.$('schedule-proactive-enabled').emit('input');
+  f.$('schedule-proactive-frequency').value = '37'; await f.$('schedule-proactive-frequency').emit('input');
+  f.$('schedule-settings').emit('submit');
+  assert.deepEqual(f.requests.at(-1).body.input.proactive, { enabled: true, perDay: 37 });
+  f.requests.at(-1).reply(proactiveData({ enabled: true, perDay: 37 })); await nextTick();
+  const sent = f.requests.length;
+  for (const bad of ['0', '1441', '2.5', '']) {
+    f.$('schedule-proactive-frequency').value = bad; await f.$('schedule-proactive-frequency').emit('input');
+    f.$('schedule-settings').emit('submit');
+    assert.equal(f.requests.length, sent, bad + ' is refused');
+  }
 });
 
 test('an older server without proactive settings keeps the controls hidden and never sends the group', async t => {

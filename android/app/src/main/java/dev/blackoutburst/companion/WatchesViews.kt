@@ -269,18 +269,18 @@ fun ScheduleSettingsSection(model: CompanionModel, state: UiState) {
     }
     settings.proactive?.let { proactive ->
         ScheduleSwitch("Proactive companion", proactive.enabled, !busy) { value -> save { put("proactive", buildJsonObject { put("enabled", value) }) } }
-        if (proactive.enabled) FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            PROACTIVE_FREQUENCIES.forEach { (perDay, label) ->
-                val selected = proactive.perDay == perDay
-                Text("$label · $perDay a day", Modifier.clip(RoundedCornerShape(50))
-                    .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
-                    .clickable(enabled = !busy && !selected, role = Role.RadioButton) {
-                        save { put("proactive", buildJsonObject { put("perDay", perDay) }) }
-                    }.padding(horizontal = 10.dp, vertical = 6.dp),
-                    color = if (selected) ink else soft, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal, fontSize = 14.sp)
+        if (proactive.enabled) {
+            var text by remember(proactive.perDay) { mutableStateOf(proactive.perDay.toString()) }
+            val value = text.toIntOrNull()?.takeIf { it in 1..PROACTIVE_MAX_PER_DAY }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(text, { if (it.length <= 4) text = it.filter(Char::isDigit) }, Modifier.weight(1f),
+                    label = { Text("Wakes per day") }, singleLine = true, isError = value == null,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                ActionButton(onClick = { value?.let { perDay -> save { put("proactive", buildJsonObject { put("perDay", perDay) }) } } },
+                    Modifier.padding(start = 8.dp), enabled = !busy && value != null && value != proactive.perDay) { Text("Save") }
             }
         }
-        Text("${state.name} wakes on its own a few times a day and writes only when it has something worth saying. At night it works quietly; messages wait for the morning.",
+        Text("${state.name} wakes on its own that many times a day (1 to $PROACTIVE_MAX_PER_DAY) and writes only when it has something worth saying. At night it works quietly; messages wait for the morning.",
             color = soft, fontSize = 13.sp)
     }
     ScheduleSwitch("Occasional check-ins", settings.heartbeatEnabled, !busy) { value -> save { put("heartbeatEnabled", value) } }

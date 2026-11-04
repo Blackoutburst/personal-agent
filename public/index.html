@@ -276,10 +276,7 @@
           </div>
           <div id="schedule-proactive" class="schedule-routine" hidden>
             <label class="checkin-option"><input id="schedule-proactive-enabled" type="checkbox"> Proactive companion</label>
-            <label class="routine-field">How often <select id="schedule-proactive-frequency">
-              <option value="2">Rarely (2 a day)</option><option value="4">Sometimes (4 a day)</option>
-              <option value="6">Often (6 a day)</option><option value="8">A lot (8 a day)</option>
-            </select></label>
+            <label class="routine-field">Wakes per day <input id="schedule-proactive-frequency" type="number" min="1" max="1440" step="1" inputmode="numeric"></label>
           </div>
           <label class="checkin-option"><input id="schedule-checkins" type="checkbox"> Occasional check-ins</label>
           <div id="schedule-board" class="quiet-times" hidden>

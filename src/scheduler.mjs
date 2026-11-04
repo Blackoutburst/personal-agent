@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { latestRoutineSlot } from './routines.mjs';
 import { ReleaseWatches } from './release-watches.mjs';
-import { ProactiveWakes, PER_DAY } from './proactive.mjs';
+import { ProactiveWakes, validPerDay } from './proactive.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/, HASH = /^[a-f0-9]{64}$/, CLOCK = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -322,7 +322,7 @@ export class SchedulerStore {
     if (Object.hasOwn(value, 'proactive')) {
       value.proactive = shape(value.proactive, [], ['enabled', 'perDay']);
       if (Object.hasOwn(value.proactive, 'enabled')) requireSchedule(typeof value.proactive.enabled === 'boolean');
-      if (Object.hasOwn(value.proactive, 'perDay')) requireSchedule(PER_DAY.includes(value.proactive.perDay));
+      if (Object.hasOwn(value.proactive, 'perDay')) requireSchedule(validPerDay(value.proactive.perDay));
     }
     if (Object.hasOwn(value, 'boardWakeCap')) requireSchedule(value.boardWakeCap === null || integer(value.boardWakeCap, 1, MAX_BOARD_WAKE_CAP));
     for (const key of ['enabled', 'heartbeatEnabled']) if (Object.hasOwn(value, key)) requireSchedule(typeof value[key] === 'boolean');

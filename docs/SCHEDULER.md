@@ -115,8 +115,11 @@ The companion also wakes on its own, so it can speak first without an owner remi
 ping or mail. Two kinds share the ordinary wake path and its strict `{"action":"message","text":…}` /
 `{"action":"silent"}` envelope:
 
-- `proactive`: the companion's own wakes. Owner setting `settings.proactive` = `{ enabled, perDay }`, `perDay` one of
-  2, 4, 6 or 8 (Me › Settings: "Proactive companion" with Rarely/Sometimes/Often/A lot). Owners who never chose are on
+- `proactive`: the companion's own wakes. Owner setting `settings.proactive` = `{ enabled, perDay }`, `perDay` any whole
+  number from 1 to 1440, typed freely (Me › Settings: "Proactive companion", Wakes per day; owner decision 2026-11-04,
+  whatever the cost). The interval floor is one minute. The 5-minute spacing and the 24 turns/day cap still apply to
+  own wakes, so above about 20 a day some wakes are held. Rollback: releases before this change only accept 2/4/6/8 and
+  report the scheduler UNAVAILABLE for any other stored value; set it back to 2/4/6/8 before rolling back. Owners who never chose are on
   at four a day. The next wake is `now + (24 h / perDay) × factor`, with a uniform random factor in [0.5, 1.5), so the
   times vary from day to day. After downtime there is at most one pending own wake (no backlog replay) and the next one
   is drawn from the moment it was noticed. Any change of the setting bumps a generation, cancels queued/admitted own
