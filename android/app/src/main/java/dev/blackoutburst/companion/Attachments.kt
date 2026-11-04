@@ -54,7 +54,19 @@ internal fun checkedFiles(files: List<Attachment>): List<Attachment> {
 internal fun checkedFileIds(ids: List<String>) {
     if (ids.size > MAX_FILES || ids.toSet().size != ids.size || ids.any { !fileId(it) }) throw ApiException("INVALID_REQUEST")
 }
+/** Message roles this app shows. A newer server's other roles are skipped, never a failed chat (#61b). */
+internal val KNOWN_ROLES = setOf("user", "assistant", "peer", "app")
+
 internal fun checkedMessage(message: Message, threadId: String): Message {
+    if (message.role == "app") {
+        // #61b: an app activity line in a Board conversation: app text, an optional Board link and Board quote.
+        if (!fileId(message.id) || message.threadId != threadId || message.text.isBlank() || !validText(message.text, 300, 1200) ||
+            message.requestId != null || message.feeling != null || message.attachments.isNotEmpty() || message.peer != null ||
+            message.preview?.let { it.isBlank() || !validText(it, 200, 800) } == true ||
+            message.url?.let { boardLink(it) == null } == true) throw ApiException("INVALID_RESPONSE")
+        return message
+    }
+    if (message.url != null || message.preview != null) throw ApiException("INVALID_RESPONSE")
     if (message.role == "peer") {
         if (!fileId(message.id) || message.threadId != threadId || message.text.isBlank() ||
             !validText(message.text, 4000, 16000) || message.requestId != null || message.feeling != null ||
@@ -78,8 +90,9 @@ internal fun checkedSnapshot(snapshot: Snapshot, requested: String?): Snapshot {
         requested != null && snapshot.threadId != requested ||
         snapshot.threadId == null && (snapshot.messages.isNotEmpty() || snapshot.threads.isNotEmpty()) ||
         snapshot.threadId != null && snapshot.threads.none { it.id == snapshot.threadId }) throw ApiException("INVALID_RESPONSE")
-    snapshot.threadId?.let { thread -> snapshot.messages.forEach { checkedMessage(it, thread) } }
-    return snapshot
+    val known = snapshot.copy(messages = snapshot.messages.filter { it.role in KNOWN_ROLES })
+    known.threadId?.let { thread -> known.messages.forEach { checkedMessage(it, thread) } }
+    return known
 }
 internal fun checkedEventPage(page: EventPage, threadId: String, from: String): EventPage {
     val start = from.toLongOrNull()?.takeIf { it >= 0 } ?: throw ApiException("INVALID_REQUEST")
@@ -87,7 +100,10 @@ internal fun checkedEventPage(page: EventPage, threadId: String, from: String): 
     if (page.threadId != threadId || page.events.size > 100 || end < start || page.lastSeq < end ||
         end != (page.events.lastOrNull()?.seq ?: start) || page.hasMore != (end < page.lastSeq) ||
         page.events.isEmpty() && page.hasMore) throw ApiException("INVALID_RESPONSE")
-    page.events.forEachIndexed { index, event ->
+    // A message in a role this app does not know (a newer server) is passed over like a no-op.
+    val known = page.copy(events = page.events.map { event ->
+        if (event.type == "message" && event.message != null && event.message.role !in KNOWN_ROLES) event.copy(type = "noop", message = null) else event })
+    known.events.forEachIndexed { index, event ->
         if (event.threadId != threadId || event.seq < 1 || event.seq != start + index + 1) throw ApiException("INVALID_RESPONSE")
         when (event.type) {
             "message" -> checkedMessage(event.message ?: throw ApiException("INVALID_RESPONSE"), threadId)
@@ -96,7 +112,7 @@ internal fun checkedEventPage(page: EventPage, threadId: String, from: String): 
             else -> throw ApiException("INVALID_RESPONSE")
         }
     }
-    return page
+    return known
 }
 
 /** A copied picker file and stable key survive a lost upload ACK; no URI is reopened on retry. */

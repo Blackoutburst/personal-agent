@@ -24,32 +24,34 @@ const tableShape = (db, name) => db.prepare(`PRAGMA table_info(${name})`).all().
 
 // The Board as the companion's paired bridge sees it: ticket #15's thread th1, a plain discussion thread th2.
 function fakeBoard() {
-  let inbox = [], requests = [];
+  let inbox = [], requests = [], posts = {};
   const calls = [];
   const client = { close() {}, async call(name, args) {
     calls.push([name, args]);
     if (name === 'read_inbox') { const page = inbox; inbox = []; return { session: { owner_id: 'blackoutburst', agent_id: 'me' }, messages: page, cursor: 'c' + calls.length }; }
     if (name === 'list_human_requests') return requests;
     if (name === 'update_companion_profile') return {};
-    if (name === 'get_thread' && args.thread_id === 'th1') return { thread: { id: 'th1', title: '[Agent #15] Fix login', ticket: { id: 'tk15', number: 15, title: 'Fix login' } } };
-    if (name === 'get_thread' && args.thread_id === 'th2') return { thread: { id: 'th2', title: 'Design chat', ticket: null } };
+    if (name === 'get_thread' && args.thread_id === 'th1') return { thread: { id: 'th1', title: '[Agent #15] Fix login', url: 'https://board.example/?thread=th1',
+      ticket: { id: 'tk15', number: 15, title: 'Fix login' } }, messages: posts.th1 ?? [] };
+    if (name === 'get_thread' && args.thread_id === 'th2') return { thread: { id: 'th2', title: 'Design chat', ticket: null }, messages: posts.th2 ?? [] };
     if (name === 'get_ticket' && args.ticket_id === 'tk15') return { ticket: { id: 'tk15', number: 15, title: 'Fix login', thread_id: 'th1' } };
     throw Object.assign(new Error('unavailable'), { code: 'BOARD_ERROR' });
   } };
-  return { client, calls, setInbox(value) { inbox = value; }, setRequests(value) { requests = value; } };
+  return { client, calls, setInbox(value) { inbox = value; }, setRequests(value) { requests = value; }, setPosts(thread, value) { posts[thread] = value; } };
 }
 
 function fixture(t, { handler } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'board-inbox-')), store = new BootstrapStore(dir, ROOT);
-  const f = { clock: Date.UTC(2026, 10, 4, 12), turns: [], settled: [], board: fakeBoard() };
+  const f = { clock: Date.UTC(2026, 10, 4, 12), turns: [], settled: [], prompts: [], board: fakeBoard() };
   f.now = () => f.clock;
   for (const label of ['A', 'B']) f[label] = store.getOrInsert('companion-identity-v1', principalKey({ issuer: 'https://synthetic.invalid', subject: 'board-inbox-' + label }), { companionId: randomUUID() }).companionId;
   f.store = store; f.db = store.db;
   f.scheduler = new SchedulerStore({ store, now: f.now, minSpacingMs: 0, boardSpacingMs: 0, proactiveByDefault: false });
-  f.inbox = new BoardInbox({ store, now: f.now });
+  f.inbox = new BoardInbox({ store, now: f.now, nameFor: id => id === f.A ? 'Claude' : null,
+    lookup: (companionId, boardThreadId, since) => f.companion.ownPost(companionId, boardThreadId, since) });
   f.handler = handler ?? ((companionId, turn) => turn.prompt.startsWith('This is a private background')
     ? wakeReply('Board news: ' + (turn.prompt.match(/thread (th\d)/)?.[1] ?? turn.prompt.match(/request (\S+)/)?.[1])) : { text: 'On it.' });
-  f.conv = new Conversations({ store, now: f.now, flushMs: 1, boardInbox: f.inbox, systemPrompt: () => 'persona',
+  f.conv = new Conversations({ store, now: f.now, flushMs: 1, boardInbox: f.inbox, systemPrompt: (companionId, options) => { f.prompts.push(options); return 'persona'; },
     runner: { turn: async (companionId, turn) => { f.turns.push({ companionId, ...turn }); return f.handler(companionId, turn); } },
     wakePolicy: { beforeStart: (companionId, id) => f.scheduler.startInTransaction(companionId, id), canDeliver: (companionId, id) => f.scheduler.canDeliver(companionId, id) },
     onSettled: event => f.settled.push(event) });
@@ -228,6 +230,102 @@ test('push payloads carry the sub-conversation and a Board flag, never Board tex
   web.settled({ companionId: randomUUID(), threadId, requestId: 'wake-x', state: 'complete', text: 'secret body', messageId, board: { label: '#15 · Private title' } });
   await sleep(5);
   assert.deepEqual(webSent[0], { type: 'message', threadId, messageId, title: 'Claude', board: true, body: 'New message' });
+});
+
+// #61b: a Board wake that ends silent (the companion acted on the Board, or did nothing, without messaging the owner).
+const silent = (tools = []) => (companionId, turn) => {
+  if (!turn.prompt.startsWith('This is a private background')) return { text: 'On it.' };
+  for (const name of tools) turn.onEvent({ type: 'tool', name });
+  return { text: '{"action":"silent"}' };
+};
+const withoutId = ({ id, ...rest }) => rest;
+
+test('#61b: a silent Board wake leaves an activity line: unread, on the badge, never model history or a push; read and Done clear it', async t => {
+  const f = fixture(t);
+  await f.companion.tick();
+  f.handler = silent(['mcp__board__get_thread', 'mcp__board__post_message']);
+  const at = f.clock / 1000;
+  f.board.setPosts('th1', [
+    { id: 'old', body: 'An older post', author: { agent_id: 'me' }, created_at: at - 3600, url: 'https://board.example/?thread=th1&message=old' },
+    { id: 'p1', body: 'Fixed in\n\nthe <b>login</b> page.\u0007', author: { agent_id: 'me' }, created_at: at + 2, url: 'https://board.example/?thread=th1&message=p1' },
+    { id: 'p2', body: 'Not the companion', author: { agent_id: 'codex' }, created_at: at + 3, url: 'https://board.example/?thread=th1&message=p2' }]);
+  f.board.setInbox([mention('m1', 'th1')]); await f.companion.tick(); await f.drain();
+  assert.equal(f.db.prepare("SELECT state, message_id FROM conv_wakes WHERE kind='board'").get().state, 'silent');
+  let listed = await f.list();
+  assert.equal(listed.threads.length, 1);
+  const topic = listed.threads[0];
+  assert.equal(topic.unread, 1, 'The silent wake is unread activity');
+  assert.equal(listed.unread, 1, 'and moves the tab badge');
+  assert.equal(topic.preview, 'Claude answered on the Board. “Fixed in the <b>login</b> page.”');
+  assert.equal(topic.previewRole, 'assistant');
+  // The conversation is not empty: one app line with the companion's own post (plain text) and its Board link.
+  const messages = await f.messages(topic.threadId);
+  assert.equal(messages.length, 1);
+  assert.deepEqual(withoutId(messages[0]), { threadId: topic.threadId, role: 'app', text: 'Claude answered on the Board.',
+    url: 'https://board.example/?thread=th1&message=p1', preview: 'Fixed in the <b>login</b> page.' });
+  const lookups = f.board.calls.filter(([name, args]) => name === 'get_thread' && args.limit === 20);
+  assert.equal(lookups.length, 1, 'One read-only lookup for the quote');
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM conv_messages WHERE thread_id=?').get(topic.threadId).n, 0, 'The line is not a conversation message');
+  assert.deepEqual(f.settled, [], 'No push, Discord or PushHold event for an activity line');
+  // Clients following events get the line (its latest form) as a message event.
+  const events = (await f.conv.handle(f.A, { action: 'events', threadId: topic.threadId, cursor: '0' })).events.filter(event => event.type === 'message');
+  assert.deepEqual(events.map(event => event.message), messages);
+  // Opening marks it read.
+  const read = await f.conv.handle(f.A, { action: 'boardRead', threadId: topic.threadId });
+  assert.equal(read.unread, 0);
+  assert.equal((await f.list()).threads[0].unread, 0);
+  // Another silent wake: unread again; Done clears it.
+  f.board.setInbox([mention('m2', 'th1')]); await f.companion.tick(); await f.drain();
+  listed = await f.list();
+  assert.equal(listed.threads[0].unread, 1); assert.equal(listed.unread, 1);
+  await f.conv.handle(f.A, { action: 'boardArchive', threadId: topic.threadId, archived: true });
+  assert.equal((await f.list()).unread, 0);
+  assert.equal((await f.list(true)).threads[0].unread, 0);
+  // A silent wake on an archived topic reopens it. No tool names (Codex) and no post found: a plain line with the thread link.
+  f.handler = silent([]); f.board.setPosts('th1', []);
+  f.board.setInbox([mention('m3', 'th1')]); await f.companion.tick(); await f.drain();
+  listed = await f.list();
+  assert.equal(listed.threads[0]?.threadId, topic.threadId, 'The archived topic reopened');
+  assert.equal(listed.threads[0].unread, 1); assert.equal(listed.unread, 1);
+  const lines = (await f.messages(topic.threadId)).filter(message => message.role === 'app');
+  assert.equal(lines.length, 3);
+  assert.deepEqual(withoutId(lines[2]), { threadId: topic.threadId, role: 'app', text: 'Claude handled this on the Board.', url: 'https://board.example/?thread=th1' });
+  assert.deepEqual(f.settled, []);
+  // The owner replies there: the model never gets the activity lines as history or as the owner's words.
+  await f.conv.handle(f.A, { action: 'submit', requestId: 'reply-1', threadId: topic.threadId, text: 'Thanks!' }); await f.conv.idle();
+  const turn = f.turns.at(-1), prompt = f.prompts.at(-1);
+  assert.ok(turn.prompt.startsWith('Thanks!'));
+  assert.ok(!turn.prompt.includes('on the Board.') && !turn.prompt.includes('Fixed in'), 'The owner turn carries only the owner text and the app note');
+  assert.ok(!JSON.stringify(prompt.recent).includes('on the Board.'), JSON.stringify(prompt.recent));
+  assert.deepEqual(prompt.recent, [], 'A fresh session starts with no activity line in its recent history');
+  // Deleting the topic removes its lines.
+  await f.conv.handle(f.A, { action: 'deleteThread', requestId: 'delete-1', threadId: topic.threadId });
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM board_inbox_notes').get().n, 0);
+});
+
+test('#61b: open Board topics are ordered by latest activity, activity lines included; a request answered without a thread says so', async t => {
+  const f = fixture(t);
+  await f.companion.tick();
+  f.board.setInbox([mention('m1', 'th1')]); await f.companion.tick(); await f.drain();
+  f.board.setInbox([mention('m2', 'th2')]); await f.companion.tick(); await f.drain();
+  let listed = await f.list();
+  assert.deepEqual(listed.threads.map(item => item.label), ['Design chat', '#15 · Fix login']);
+  f.handler = silent(['mcp__board__post_message']);
+  f.board.setInbox([mention('m3', 'th1')]); await f.companion.tick(); await f.drain();
+  listed = await f.list();
+  assert.deepEqual(listed.threads.map(item => item.label), ['#15 · Fix login', 'Design chat'], 'The silent wake is the newest activity');
+  assert.ok(listed.threads[0].updatedAt > listed.threads[1].updatedAt);
+  assert.equal(listed.threads[0].unread, 2, 'One companion message and one activity line');
+  assert.equal(listed.unread, 2);
+  // A Needs-you request with no ticket goes to the general Board conversation: no Board thread to look up.
+  f.handler = silent(['mcp__board__resolve_human_request']);
+  const before = f.board.calls.length;
+  f.board.setRequests([{ id: 'req7', status: 'open', owner_id: 'blackoutburst' }]); await f.companion.tick(); await f.drain();
+  listed = await f.list();
+  assert.equal(listed.threads[0].label, 'Board');
+  assert.deepEqual((await f.messages(listed.threads[0].threadId)).map(withoutId), [{ threadId: listed.threads[0].threadId, role: 'app', text: 'Claude answered the Board request.' }]);
+  assert.ok(!f.board.calls.slice(before).some(([name, args]) => name === 'get_thread' && args.limit === 20));
+  assert.deepEqual(f.settled.filter(event => event.threadId === listed.threads[0].threadId), []);
 });
 
 test('rollback: legacy tables keep their shape and an older release sees Board topics only as read-only past chats', async t => {

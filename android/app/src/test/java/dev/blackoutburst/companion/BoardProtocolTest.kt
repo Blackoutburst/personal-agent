@@ -23,6 +23,28 @@ class BoardProtocolTest {
         assertEquals("You: Codex asks whether to ship.", boardPreview(result.threads[1]))
     }
 
+    // #61b: a silent Board wake's activity line (role "app") in a Board conversation.
+    @Test fun appActivityLinesParseAndUnknownRolesAreSkippedNotFatal() {
+        val note = "8b3b0f0e-8f7a-4c55-9a43-2f0c1c7a9d10"
+        val line = Message(note, thread, "app", "Claude answered on the Board.", url = "https://board.example/?thread=th1&message=p1", preview = "Fixed <b>it</b>.")
+        val unknown = Message("a9e1c3b4-1d2e-4f5a-8b6c-7d8e9f0a1b2c", thread, "event", "Something new")
+        val snapshot = Snapshot(listOf(ChatThread(thread, "#15 · Fix login")), thread, listOf(line, unknown), "2", Runtime("ready", "claude"))
+        val decoded = Json { ignoreUnknownKeys = true }.decodeFromString(Snapshot.serializer(), Json.encodeToString(Snapshot.serializer(), snapshot))
+        assertEquals(listOf(line), checkedSnapshot(decoded, thread).messages)
+        val page = EventPage(thread, listOf(Event(1, thread, "message", message = line), Event(2, thread, "message", message = unknown)), "2", 2, false)
+        val checked = checkedEventPage(page, thread, "0")
+        assertEquals(line, checked.events[0].message)
+        assertEquals("noop", checked.events[1].type); assertNull(checked.events[1].message)
+        assertEquals(line.copy(url = null, preview = null), checkedMessage(line.copy(url = null, preview = null), thread))
+        for (bad in listOf(line.copy(url = "javascript:alert(1)"), line.copy(url = "https://user:pw@board.example/"), line.copy(url = "https://board.example/ x"),
+            line.copy(requestId = "wake-x"), line.copy(feeling = "happy"), line.copy(text = ""), line.copy(text = "x".repeat(301)),
+            line.copy(preview = "x".repeat(201)), line.copy(role = "assistant"))) {
+            try { checkedMessage(bad, thread); fail("Expected INVALID_RESPONSE for $bad") } catch (error: ApiException) { assertEquals("INVALID_RESPONSE", error.code) }
+        }
+        assertEquals("https://board.example/?thread=th1", boardLink("https://board.example/?thread=th1"))
+        assertNull(boardLink("file:///etc/passwd"))
+    }
+
     @Test fun badgeReadsOneToNineThenNinePlus() {
         assertEquals("1", badgeText(1)); assertEquals("9", badgeText(9))
         assertEquals("9+", badgeText(10)); assertEquals("9+", badgeText(250))

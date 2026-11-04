@@ -402,7 +402,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         val state = _state.value
         val threadId = state.boardThread ?: return
         if (!visible || state.threadId != threadId || state.chatLoading) return
-        val key = threadId + ":" + (state.messages.lastOrNull { it.role == "assistant" && it.text.isNotEmpty() }?.id ?: "")
+        val key = threadId + ":" + (state.messages.lastOrNull { (it.role == "assistant" || it.role == "app") && it.text.isNotEmpty() }?.id ?: "")
         if (key == boardReadKey) return
         boardReadKey = key
         val version = scope

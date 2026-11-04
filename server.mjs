@@ -443,7 +443,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         deliverGroup: event => { pushNotifier?.group(event); webPushNotifier?.group(event); },
         groupRead: (companionId, groupId, messageId) => groupChat?.readBy(companionId, groupId, messageId) ?? false,
         ...(pushOptions.holdMs ? { holdMs: pushOptions.holdMs } : {}), log: message => console.error(message) });
-      const boardInbox = new BoardInbox({ store, ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
+      // #61b: a silent Board wake's activity line names the companion and quotes its own Board post when it can.
+      const boardInbox = new BoardInbox({ store, ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}),
+        nameFor: companionId => profiles.get(companionId)?.name ?? null,
+        lookup: (companionId, boardThreadId, since) => boardCompanion?.ownPost(companionId, boardThreadId, since) ?? null });
       const webBudget = new WebBudget({ store });
       conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, wakeTools, webBudget, boardInbox,
         // #53: the companion's own wakes may choose to look in on a group chat it is in.

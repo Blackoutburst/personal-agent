@@ -235,10 +235,26 @@ function thread(value) {
   const selected = plain(value, ['id', 'title']);
   return { id: identifier(selected.id), title: text(selected.title, 80, 80) };
 }
+// A Board link from the server: absolute http(s), no credentials, else null.
+export function boardLink(value) {
+  if (typeof value !== 'string' || value.length > 2048 || /[\s\x00-\x1f\x7f]/.test(value)) return null;
+  try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && url.hostname && !url.username && !url.password ? url.href : null; }
+  catch { return null; }
+}
 function feeling(value, role) { check(role === 'assistant' && typeof value === 'string' && /^[a-z-]{1,20}$/.test(value)); return value; }
 function message(value, threadId) {
-  const selected = plain(value, ['id', 'threadId', 'role', 'text'], ['requestId', 'feeling', 'attachments', 'peer']);
+  const selected = plain(value, ['id', 'threadId', 'role', 'text'], ['requestId', 'feeling', 'attachments', 'peer', 'url', 'preview']);
   check(selected.threadId === threadId, 'RESYNC_REQUIRED');
+  // #61b: an app activity line in a Board conversation (a silent Board wake). App text, an optional Board link and an
+  // optional quote of the companion's Board post (untrusted Board text: shown as text only).
+  if (selected.role === 'app') {
+    check(!['requestId', 'feeling', 'attachments', 'peer'].some(key => Object.hasOwn(selected, key)));
+    if (Object.hasOwn(selected, 'url')) check(boardLink(selected.url) !== null);
+    if (Object.hasOwn(selected, 'preview')) text(selected.preview, 200, 800);
+    return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: 'app', text: text(selected.text, 300, 1200),
+      ...(Object.hasOwn(selected, 'url') ? { url: selected.url } : {}), ...(Object.hasOwn(selected, 'preview') ? { preview: selected.preview } : {}) };
+  }
+  check(!Object.hasOwn(selected, 'url') && !Object.hasOwn(selected, 'preview'));
   if (selected.role === 'peer') {
     check(Object.hasOwn(selected, 'peer') && !['requestId', 'feeling', 'attachments'].some(key => Object.hasOwn(selected, key)));
     const peer = plain(selected.peer, ['direction', 'companionId', 'name', 'ownerLabel', 'sentAtISO']);

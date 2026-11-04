@@ -85,7 +85,7 @@ export function ownerMentionPrompt(threadId, messageIds) {
 
 export class BoardCompanion {
   #db; #owners; #profiles; #scheduler; #companionIdFor; #clientFor; #timer = null; #running = false; #clients = new Map();
-  #log; #synced = new Map(); #active; #inbox;
+  #log; #synced = new Map(); #active; #inbox; #selves = new Map();
   // The app's Board session id is stable per owner so the Board keeps its inbox position across restarts.
   // active(companionId): false while the owner switched the Board connector off (#43).
   constructor({ store, owners, profiles, scheduler, companionIdFor, active = () => true,
@@ -157,6 +157,8 @@ export class BoardCompanion {
       }
       const session = inbox?.session;
       if (typeof session?.owner_id === 'string' && session.owner_id) boardOwner = session.owner_id;
+      // Who the companion is on the Board (its posts are recognised by ownPost, #61b).
+      if (boardOwner) this.#selves.set(companionId, { ownerId: boardOwner, agentId: typeof session?.agent_id === 'string' ? session.agent_id : null });
       const messages = Array.isArray(inbox?.messages) ? inbox.messages : [];
       // One wake per thread and addressee: messages for the companion, and messages that only ping its owner
       // (the Board puts both in a companion's inbox).
@@ -242,6 +244,24 @@ export class BoardCompanion {
       } catch (error) { this.#log(`Board companion: topic lookup failed (${error.code ?? 'ERROR'}); grouped by what the wake carries`); }
     }
     this.#inbox.route(companionId, requestId, value);
+  }
+
+  // #61b: after a silent Board wake, the companion's own latest post on that Board thread since the wake started
+  // (one read-only get_thread), for the activity line in the owner's Board conversation. Board text is untrusted: the
+  // caller keeps a short plain-text quote. A post is the companion's when its author is this app's Board agent or the
+  // owner's companion profile.
+  async ownPost(companionId, boardThreadId, sinceMs) {
+    const owner = this.#owners.find(item => this.#companionIdFor(item) === companionId);
+    if (!owner || !this.#active(companionId) || typeof boardThreadId !== 'string' || !ID.test(boardThreadId)) return null;
+    const result = await this.#client(owner).call('get_thread', { thread_id: boardThreadId, limit: 20, view: 'full' });
+    const self = this.#selves.get(companionId);
+    const mine = author => Boolean(author && typeof author === 'object' && self
+      && ((self.agentId && author.agent_id === self.agentId) || (author.profile_kind === 'companion' && author.companion_for === self.ownerId)));
+    const messages = Array.isArray(result?.messages) ? result.messages : [];
+    const post = messages.filter(message => message && mine(message.author) && typeof message.body === 'string'
+      && Number.isFinite(message.created_at) && message.created_at * 1000 >= sinceMs).at(-1) ?? null;
+    return { threadUrl: typeof result?.thread?.url === 'string' ? result.thread.url : null,
+      post: post ? { body: post.body, url: typeof post.url === 'string' ? post.url : null } : null };
   }
 
   // Keep the companion's Board profile in step with its Look (name and character). Skips unchanged values.

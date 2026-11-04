@@ -463,6 +463,8 @@ internal fun TypingBubble() {
 @Composable
 internal fun Bubble(model: CompanionModel, message: Message, scope: Long) {
     if (message.role == "peer") { PeerCard(message); return }
+    if (message.role == "app") { AppNote(message); return }
+    if (message.role != "user" && message.role != "assistant") return
     val mine = message.role == "user"
     // A companion reply shows as several short bubbles, one per paragraph (splitBubbles); files go in the last one.
     val texts = if (mine) listOf(message.text) else splitBubbles(message.text).ifEmpty { listOf("") }

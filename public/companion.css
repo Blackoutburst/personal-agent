@@ -250,6 +250,12 @@ main { flex: 1; min-height: 0; display: flex; }
 .peer-heading, .peer-owner { white-space: normal; overflow-wrap: anywhere; }
 .peer-owner, .peer-time { color: var(--soft); font-size: 12px; }
 .peer-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* #61b: an app activity line in a Board conversation (the companion acted on the Board without messaging). */
+.app-note { align-self: center; display: grid; justify-items: center; gap: 3px; max-width: 92%; padding: 6px 12px; list-style: none;
+  color: var(--soft); font-size: 13px; text-align: center; overflow-wrap: anywhere; }
+.app-note-text { font-weight: 600; }
+.app-note-quote { color: var(--ink); font-style: italic; white-space: normal; }
+.app-note-link { color: var(--soft); font-size: 12px; text-decoration: underline; }
 .confirm { display: flex; gap: 6px; align-items: center; flex: none; font-size: 13px; color: var(--danger); }
 .confirm button { border: 0; border-radius: 999px; padding: 6px 12px; font-weight: 700; cursor: pointer; font-size: 13px; }
 .confirm .yes { background: var(--yes-bg); color: var(--yes-ink); } .confirm .no { background: var(--card); }

@@ -1,5 +1,5 @@
 // The companion web app: one ongoing chat with your companion, what it remembers, and how it looks.
-import { createConversationClient, createFileTransport, AttachmentError, USER_CHARS } from './conversation-client.mjs';
+import { createConversationClient, createFileTransport, AttachmentError, USER_CHARS, boardLink } from './conversation-client.mjs';
 import { renderCharacter, CHARACTERS, COLORS, OUTFITS, HAS_OUTFITS } from './companion-character.mjs';
 import { createRemindersUI } from './reminders-ui.mjs';
 import { createCalendarUI } from './calendar-ui.mjs';
@@ -311,6 +311,15 @@ function dayLabel(date) {
   return date.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
 }
 
+// #61b: an app activity line (a silent Board wake): app text, the companion's Board post quoted as plain text, a link.
+function appNote(message) {
+  const parts = [el('span', { className: 'app-note-text', textContent: message.text })];
+  if (message.preview) parts.push(el('q', { className: 'app-note-quote', textContent: message.preview }));
+  const href = boardLink(message.url);
+  if (href) parts.push(el('a', { className: 'app-note-link', href, target: '_blank', rel: 'noopener noreferrer', textContent: 'Open on the Board' }));
+  return parts;
+}
+
 function renderMessages() {
   const list = $('messages'), history = $('history');
   const follow = history.scrollHeight - history.scrollTop - history.clientHeight < 120;
@@ -322,7 +331,8 @@ function renderMessages() {
     let node = messageNodes.get(message.id);
     if (!node) {
       node = document.createElement('li');
-      node.className = message.role === 'peer' ? `bubble peer-card ${message.peer.direction}` : message.role === 'user' ? 'bubble user' : 'companion bubble-group';
+      node.className = message.role === 'peer' ? `bubble peer-card ${message.peer.direction}` : message.role === 'user' ? 'bubble user'
+        : message.role === 'app' ? 'app-note' : 'companion bubble-group';
       if (message.role === 'peer') node.append(renderPeerCard(document, message));
       else if (message.role === 'user') node.append(el('div', { className: 'message-text' }), el('div', { className: 'message-files' }));
       messageNodes.set(message.id, node);
@@ -333,6 +343,9 @@ function renderMessages() {
       if (node.dataset.files !== filesKey) {
         node.querySelector('.message-files').replaceChildren(...(message.attachments ?? []).map(fileView)); node.dataset.files = filesKey;
       }
+    } else if (message.role === 'app') {
+      const noteKey = JSON.stringify([message.text, message.preview ?? '', message.url ?? '']);
+      if (node.dataset.note !== noteKey) { node.replaceChildren(...appNote(message)); node.dataset.note = noteKey; }
     } else if (message.role !== 'peer') renderCompanionBubbles(node, message);
     if (list.children[index] !== node) list.insertBefore(node, list.children[index] ?? null);
     index++;
@@ -731,7 +744,7 @@ client.subscribe(next => {
   if (previousThread !== next.threadId) { heldDraft = null; composerEpoch++; }
   // A Board sub-conversation on screen is read: mark it when it opens and whenever a new companion message arrives.
   if (selectedBoard && next.threadId === selectedBoard && next.opened && view === 'chat' && document.visibilityState !== 'hidden') {
-    const key = selectedBoard + ':' + ([...next.messages].reverse().find(item => item.role === 'assistant' && item.text)?.id ?? '');
+    const key = selectedBoard + ':' + ([...next.messages].reverse().find(item => ['assistant', 'app'].includes(item.role) && item.text)?.id ?? '');
     if (key !== boardReadMarked) { boardReadMarked = key; void boardUI.markRead(selectedBoard); }
   }
   // #60: something changed in the conversation (a message, a reply starting or ending): reads stay fast for a while.

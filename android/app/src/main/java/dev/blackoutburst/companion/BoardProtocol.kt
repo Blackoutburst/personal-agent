@@ -39,6 +39,15 @@ internal fun parseBoardChange(value: JsonElement, threadId: String): BoardChange
 /** "You: …" for the owner's own last message, else the companion's words. */
 fun boardPreview(topic: BoardTopic): String? = topic.preview?.let { if (topic.previewRole == "user") "You: $it" else it }
 
+/** #61b: a Board link from the server that the app may open: absolute http(s), a host, no credentials; else null. */
+internal fun boardLink(value: String): String? {
+    if (value.length > 2048 || value.any { it.isWhitespace() || it.code < 32 || it.code == 127 }) return null
+    return try {
+        val uri = java.net.URI(value)
+        if (uri.scheme?.lowercase() in setOf("http", "https") && !uri.host.isNullOrEmpty() && uri.rawUserInfo == null) value else null
+    } catch (_: Exception) { null }
+}
+
 /** A push for a Board sub-conversation carries board = "1" (src/push.mjs): the tap opens it in the Board tab. */
 fun boardPush(data: Map<String, String>): Boolean = data["board"] == "1"
 

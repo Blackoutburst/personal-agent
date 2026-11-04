@@ -6,12 +6,16 @@
 // Rollback: nothing here alters a legacy table. A Board sub-conversation row in conv_threads carries archived_at
 // from the moment it is made, so an older release (which knows nothing of these tables) shows it as a read-only
 // past chat and never as the ongoing chat or in its open chat list.
+import { randomUUID } from 'node:crypto';
 import { stripFeelingTags } from './wardrobe.mjs';
 import { previewText } from './web-push.mjs';
+import { READ_ONLY_BOARD_TOOLS } from './tool-policy.mjs';
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ROUTE_DAYS = 30, DISCORD_DAYS = 90, DAY_MS = 86_400_000, LIST = 200, PREVIEW = 140;
+// #61b: an activity line's quote of the companion's Board post, and how early (clock slack) a post may predate its wake.
+const POST_PREVIEW = 200, POST_SLACK_MS = 5000, BOARD_PREFIX = 'mcp__board__';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS board_inbox_threads(thread_id TEXT PRIMARY KEY, companion_id TEXT NOT NULL,
@@ -26,6 +30,10 @@ CREATE TABLE IF NOT EXISTS board_inbox_routes(companion_id TEXT NOT NULL, reques
 CREATE INDEX IF NOT EXISTS board_inbox_routes_wake ON board_inbox_routes(companion_id, wake_id);
 CREATE TABLE IF NOT EXISTS board_inbox_discord(companion_id TEXT NOT NULL, message_id TEXT NOT NULL, thread_id TEXT NOT NULL,
   created_at INTEGER NOT NULL, PRIMARY KEY(companion_id, message_id));
+CREATE TABLE IF NOT EXISTS board_inbox_notes(seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, thread_id TEXT NOT NULL,
+  companion_id TEXT NOT NULL, wake_id TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, preview TEXT, url TEXT,
+  since_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(companion_id, wake_id));
+CREATE INDEX IF NOT EXISTS board_inbox_notes_thread ON board_inbox_notes(thread_id, seq);
 `;
 
 export class BoardInboxError extends Error {
@@ -50,17 +58,57 @@ export function topicLabel(row) {
   if (title) return title;
   return row.general ? 'Board' : 'Board thread';
 }
+// What a silent Board wake did, from the provider's tool events (names only, Claude reports them; Codex does not).
+export function noteKind(tools = []) {
+  const board = tools.filter(name => typeof name === 'string' && name.startsWith(BOARD_PREFIX)).map(name => name.slice(BOARD_PREFIX.length));
+  if (board.includes('post_message')) return 'posted';
+  if (board.includes('resolve_human_request')) return 'resolved';
+  if (board.some(name => !READ_ONLY_BOARD_TOOLS.includes(name))) return 'updated';
+  return tools.length ? 'read' : 'handled';
+}
+// The activity line itself: app text, never the companion's or the owner's words.
+export function noteText(kind, name) {
+  const who = cleanTitle(name)?.slice(0, 60) || 'Your companion';
+  return kind === 'posted' ? `${who} answered on the Board.` : kind === 'resolved' ? `${who} answered the Board request.`
+    : kind === 'updated' ? `${who} updated the Board.` : kind === 'read' ? `${who} checked this on the Board and had nothing to ask you.`
+      : `${who} handled this on the Board.`;
+}
+// A Board link the apps may open: absolute http(s), no credentials.
+export function boardUrl(value) {
+  if (typeof value !== 'string' || value.length > 2048 || /[\s\x00-\x1f\x7f]/.test(value)) return null;
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && url.hostname && !url.username && !url.password && url.href.length <= 2048 ? url.href : null;
+  } catch { return null; }
+}
+// Board text is shared-workspace content: one plain line, shown as text only.
+function postPreview(value) {
+  if (typeof value !== 'string') return null;
+  let text = value.replace(/[\x00-\x1f\x7f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  if (text.length > POST_PREVIEW) text = text.slice(0, POST_PREVIEW - 1).trimEnd() + '…';
+  return text.isWellFormed() ? text : text.toWellFormed();
+}
+
 const threadTitle = label => {
   let title = label.slice(0, 80);
   if (!title.isWellFormed()) title = title.slice(0, -1);
   return title.trim() || 'Board';
 };
 
+const noteMessage = row => ({ id: row.id, threadId: row.thread_id, role: 'app', text: row.text,
+  ...(row.url ? { url: row.url } : {}), ...(row.preview ? { preview: row.preview } : {}) });
+
 export class BoardInbox {
-  #db; #now;
-  constructor({ store, now = Date.now }) {
-    this.#db = store.db; this.#now = now;
+  #db; #now; #nameFor; #lookup;
+  // nameFor(companionId): the companion's display name for activity lines. lookup(companionId, boardThreadId, sinceMs)
+  // -> { threadUrl, post: { body, url } | null } | null (BoardCompanion.ownPost): the companion's latest post there.
+  constructor({ store, now = Date.now, nameFor = () => null, lookup = null }) {
+    this.#db = store.db; this.#now = now; this.#nameFor = nameFor; this.#lookup = lookup;
     this.#db.exec(SCHEMA);
+    // #61b: the read marker for activity lines (a board_inbox_notes seq). Additive: older releases ignore it.
+    const columns = new Set(this.#db.prepare('PRAGMA table_info(board_inbox_threads)').all().map(column => column.name));
+    if (!columns.has('read_note_seq')) this.#db.exec('ALTER TABLE board_inbox_threads ADD COLUMN read_note_seq INTEGER NOT NULL DEFAULT 0');
   }
 
   // Before a Board wake is queued: what it is about, keyed by its scheduler request id (BoardCompanion).
@@ -145,7 +193,63 @@ export class BoardInbox {
   reopen(threadId) {
     this.#db.prepare('UPDATE board_inbox_threads SET archived_at=NULL,updated_at=? WHERE thread_id=? AND archived_at IS NOT NULL').run(this.#now(), threadId);
   }
-  forget(threadId) { this.#db.prepare('DELETE FROM board_inbox_threads WHERE thread_id=?').run(threadId); }
+  forget(threadId) {
+    this.#db.prepare('DELETE FROM board_inbox_notes WHERE thread_id=?').run(threadId);
+    this.#db.prepare('DELETE FROM board_inbox_threads WHERE thread_id=?').run(threadId);
+  }
+
+  // #61b: inside Conversations' transaction, when a Board wake ends silent (the companion acted on the Board, or chose
+  // to do nothing, without messaging the owner): one activity line in that sub-conversation. It is unread activity,
+  // reopens an archived topic, and is never a conv_messages row, so it is not model history, push or Discord.
+  silentWake(companionId, threadId, { wakeId, since, tools = [] }) {
+    if (!this.isBoard(threadId) || typeof wakeId !== 'string') return null;
+    const prior = this.#db.prepare('SELECT id FROM board_inbox_notes WHERE companion_id=? AND wake_id=?').get(companionId, wakeId);
+    if (prior) return null;
+    let name = null;
+    try { name = this.#nameFor(companionId); } catch { name = null; }
+    const kind = noteKind(tools), id = randomUUID(), now = this.#now();
+    this.#db.prepare(`INSERT INTO board_inbox_notes(id,thread_id,companion_id,wake_id,kind,text,preview,url,since_at,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,NULL,NULL,?,?,?)`).run(id, threadId, companionId, wakeId, kind, noteText(kind, name),
+      Number.isSafeInteger(since) ? since : now, now, now);
+    this.reopen(threadId);
+    return { id, threadId };
+  }
+
+  // After the transaction: the companion's own post on that Board thread (one read-only get_thread), for a link and a
+  // short quote. Null when there is no lookup, no Board thread or nothing usable.
+  async lookupNote(noteId) {
+    if (!this.#lookup) return null;
+    const note = this.#db.prepare(`SELECT n.*, b.board_thread_id FROM board_inbox_notes n JOIN board_inbox_threads b ON b.thread_id=n.thread_id
+      WHERE n.id=?`).get(noteId);
+    if (!note?.board_thread_id) return null;
+    const found = await this.#lookup(note.companion_id, note.board_thread_id, note.since_at - POST_SLACK_MS);
+    if (!found || typeof found !== 'object') return null;
+    const post = found.post && typeof found.post === 'object' ? found.post : null;
+    const preview = post ? postPreview(post.body) : null;
+    const url = boardUrl(post?.url) ?? boardUrl(found.threadUrl);
+    return preview || url ? { posted: Boolean(preview), preview, url } : null;
+  }
+  // Stores what lookupNote found; true when the line changed (Conversations then re-sends it to the clients).
+  applyNote(noteId, detail) {
+    const note = this.#db.prepare('SELECT * FROM board_inbox_notes WHERE id=?').get(noteId);
+    if (!note || !detail) return false;
+    let name = null;
+    try { name = this.#nameFor(note.companion_id); } catch { name = null; }
+    const kind = detail.posted ? 'posted' : note.kind, text = kind === note.kind ? note.text : noteText(kind, name);
+    const preview = typeof detail.preview === 'string' ? postPreview(detail.preview) : note.preview, url = boardUrl(detail.url) ?? note.url;
+    if (kind === note.kind && preview === note.preview && url === note.url) return false;
+    this.#db.prepare('UPDATE board_inbox_notes SET kind=?,text=?,preview=?,url=?,updated_at=? WHERE id=?').run(kind, text, preview, url, this.#now(), noteId);
+    return true;
+  }
+  // Activity lines as conversation messages (role "app"): newest `limit` of a thread, or one by id.
+  notes(threadId, limit = 60) {
+    return this.#db.prepare('SELECT * FROM (SELECT * FROM board_inbox_notes WHERE thread_id=? ORDER BY seq DESC LIMIT ?) ORDER BY seq')
+      .all(threadId, limit).map(row => ({ createdAt: row.created_at, message: noteMessage(row) }));
+  }
+  note(noteId) {
+    const row = typeof noteId === 'string' ? this.#db.prepare('SELECT * FROM board_inbox_notes WHERE id=?').get(noteId) : null;
+    return row ? noteMessage(row) : null;
+  }
 
   #owned(companionId, threadId) {
     if (typeof threadId !== 'string' || !UUID.test(threadId)) throw new BoardInboxError('INVALID_REQUEST', 400);
@@ -156,14 +260,21 @@ export class BoardInbox {
 
   // The Board tab: open (or archived) sub-conversations, newest activity first, with unread counts and a preview.
   list(companionId, { archived = false } = {}) {
-    const rows = this.#db.prepare(`SELECT b.*, COALESCE((SELECT MAX(created_at) FROM conv_messages WHERE thread_id=b.thread_id), b.created_at) AS active_at,
-        (SELECT COUNT(*) FROM conv_messages m WHERE m.thread_id=b.thread_id AND m.role='assistant' AND m.text<>'' AND m.rowid>b.read_rowid) AS unread
+    // Latest activity: a message or an activity line (#61b: a silent Board wake), else when the topic was made.
+    const rows = this.#db.prepare(`SELECT b.*, MAX(COALESCE((SELECT MAX(created_at) FROM conv_messages WHERE thread_id=b.thread_id), b.created_at),
+          COALESCE((SELECT MAX(created_at) FROM board_inbox_notes WHERE thread_id=b.thread_id), b.created_at)) AS active_at,
+        (SELECT COUNT(*) FROM conv_messages m WHERE m.thread_id=b.thread_id AND m.role='assistant' AND m.text<>'' AND m.rowid>b.read_rowid)
+          + (SELECT COUNT(*) FROM board_inbox_notes n WHERE n.thread_id=b.thread_id AND n.seq>b.read_note_seq) AS unread
       FROM board_inbox_threads b JOIN conv_threads t ON t.id=b.thread_id
       WHERE b.companion_id=? AND (b.archived_at IS NOT NULL)=? ORDER BY active_at DESC, b.thread_id LIMIT ?`).all(companionId, archived ? 1 : 0, LIST);
-    const last = this.#db.prepare(`SELECT role,text FROM conv_messages WHERE thread_id=? AND role IN ('user','assistant') AND text<>''
+    const last = this.#db.prepare(`SELECT role,text,created_at FROM conv_messages WHERE thread_id=? AND role IN ('user','assistant') AND text<>''
       ORDER BY created_at DESC, rowid DESC LIMIT 1`);
+    const lastNote = this.#db.prepare('SELECT text,preview,created_at FROM board_inbox_notes WHERE thread_id=? ORDER BY seq DESC LIMIT 1');
     return { threads: rows.map(row => {
-      const message = last.get(row.thread_id);
+      let message = last.get(row.thread_id);
+      const note = lastNote.get(row.thread_id);
+      // A newer activity line is the row's preview, as the companion's side (older clients know only user/assistant).
+      if (note && (!message || note.created_at >= message.created_at)) message = { role: 'assistant', text: note.preview ? `${note.text} “${note.preview}”` : note.text };
       let preview = message ? previewText(message.role === 'assistant' ? stripFeelingTags(message.text).text : message.text) : '';
       if (preview.length > PREVIEW) preview = preview.slice(0, PREVIEW - 1).trimEnd() + '…';
       if (!preview.isWellFormed()) preview = preview.toWellFormed();
@@ -175,17 +286,21 @@ export class BoardInbox {
     any: Boolean(this.#db.prepare('SELECT 1 FROM board_inbox_threads WHERE companion_id=? LIMIT 1').get(companionId)) };
   }
 
-  // The tab badge (#61): open sub-conversations with at least one unread companion message (each row carries its own
-  // message count). Opening a conversation marks it read (markRead), so it leaves the badge.
+  // The tab badge (#61): open sub-conversations with unread activity, a companion message or an activity line (#61b)
+  // after the read markers (each row carries its own count of both). Opening a conversation marks it read (markRead).
   unread(companionId) {
     return this.#db.prepare(`SELECT COUNT(*) AS n FROM board_inbox_threads b WHERE b.companion_id=? AND b.archived_at IS NULL
-      AND EXISTS (SELECT 1 FROM conv_messages m WHERE m.thread_id=b.thread_id AND m.role='assistant' AND m.text<>'' AND m.rowid>b.read_rowid)`).get(companionId).n;
+      AND (EXISTS (SELECT 1 FROM conv_messages m WHERE m.thread_id=b.thread_id AND m.role='assistant' AND m.text<>'' AND m.rowid>b.read_rowid)
+        OR EXISTS (SELECT 1 FROM board_inbox_notes n WHERE n.thread_id=b.thread_id AND n.seq>b.read_note_seq))`).get(companionId).n;
   }
 
+  #markRead(threadId) {
+    this.#db.prepare(`UPDATE board_inbox_threads SET read_rowid=MAX(read_rowid, COALESCE((SELECT MAX(rowid) FROM conv_messages WHERE thread_id=?),0)),
+      read_note_seq=MAX(read_note_seq, COALESCE((SELECT MAX(seq) FROM board_inbox_notes WHERE thread_id=?),0)) WHERE thread_id=?`).run(threadId, threadId, threadId);
+  }
   markRead(companionId, threadId) {
     this.#owned(companionId, threadId);
-    this.#db.prepare(`UPDATE board_inbox_threads SET read_rowid=MAX(read_rowid, COALESCE((SELECT MAX(rowid) FROM conv_messages WHERE thread_id=?),0))
-      WHERE thread_id=? AND companion_id=?`).run(threadId, threadId, companionId);
+    this.#markRead(threadId);
     return { threadId, unread: this.unread(companionId) };
   }
 
@@ -194,8 +309,8 @@ export class BoardInbox {
     if (typeof archived !== 'boolean') throw new BoardInboxError('INVALID_REQUEST', 400);
     const row = this.#owned(companionId, threadId);
     if (archived && row.archived_at === null) {
-      this.#db.prepare(`UPDATE board_inbox_threads SET archived_at=?, updated_at=?, read_rowid=MAX(read_rowid, COALESCE((SELECT MAX(rowid) FROM conv_messages WHERE thread_id=?),0))
-        WHERE thread_id=?`).run(this.#now(), this.#now(), threadId, threadId);
+      this.#db.prepare('UPDATE board_inbox_threads SET archived_at=?, updated_at=? WHERE thread_id=?').run(this.#now(), this.#now(), threadId);
+      this.#markRead(threadId);
     } else if (!archived && row.archived_at !== null) this.reopen(threadId);
     return { threadId, archived, unread: this.unread(companionId) };
   }

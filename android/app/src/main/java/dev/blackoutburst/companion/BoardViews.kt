@@ -24,7 +24,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -93,6 +97,21 @@ private fun BoardRow(model: CompanionModel, state: UiState, topic: BoardTopic) {
             Text(if (topic.archived) "↺" else "✓", fontSize = 14.sp)
             Text(if (topic.archived) "Reopen" else "Done", maxLines = 1, softWrap = false)
         }
+    }
+}
+
+/** #61b: an app activity line in a Board conversation (the companion acted on the Board without messaging): the app's
+ *  text, the companion's Board post quoted as plain text (untrusted Board content, never Markdown or links), a link. */
+@Composable
+internal fun AppNote(message: Message) {
+    val tones = LocalTones.current
+    val uri = LocalUriHandler.current
+    val link = message.url?.let(::boardLink)
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(message.text, color = tones.soft, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+        message.preview?.let { Text("“$it”", Modifier.padding(top = 2.dp), color = tones.ink, fontSize = 14.sp, fontStyle = FontStyle.Italic, textAlign = TextAlign.Center) }
+        if (link != null) Text("Open on the Board", Modifier.clip(RoundedCornerShape(50)).clickable(role = Role.Button) { runCatching { uri.openUri(link) } }
+            .padding(horizontal = 8.dp, vertical = 4.dp), color = tones.soft, fontSize = 12.sp, textDecoration = TextDecoration.Underline)
     }
 }
 

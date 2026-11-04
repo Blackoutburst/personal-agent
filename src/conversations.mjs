@@ -178,7 +178,7 @@ export class Conversations {
     const extra = this.#toolFilterFor(companionId);
     return !extra ? own : !own ? extra : name => own(name) && extra(name);
   }
-  #queues = new Map(); #active = new Map(); #closing = false; #files; #fileToolsForTurn;
+  #queues = new Map(); #active = new Map(); #closing = false; #files; #fileToolsForTurn; #lookups = new Set();
   #sessionEpoch = new Map(); #onNativeSettled;
 
   // runner: a CompanionRunner (or null when no runtime is configured).
@@ -433,7 +433,12 @@ export class Conversations {
   }
 
   // Wait until every queued or running turn has settled.
-  async idle() { while (this.#queues.size) await Promise.allSettled([...this.#queues.values()]); }
+  // Also waits for #61b activity-line lookups, except while shutting down (a Board call must not hold the stop).
+  async idle() {
+    while (this.#queues.size || (!this.#closing && this.#lookups.size)) {
+      await Promise.allSettled([...this.#queues.values(), ...(this.#closing ? [] : this.#lookups)]);
+    }
+  }
 
   // Graceful stop: running replies end now and are recorded as interrupted (as after a crash);
   // queued turns stay queued and run after the next start.
@@ -521,7 +526,13 @@ export class Conversations {
           : latest && ['error', 'cancelled'].includes(latest.state) ? { requestId: latest.request_id, state: latest.state,
             ...(latest.state === 'error' && latest.error ? { error: JSON.parse(latest.error) } : {}) } : null;
         const { last_seq: seq } = this.#db.prepare('SELECT last_seq FROM conv_threads WHERE id=?').get(selected.id);
-        return { messages: rows.map(row => this.#message(row)), cursor: seq, turn: context };
+        // #61b: a Board sub-conversation's activity lines (silent Board wakes) sit between its messages, by time.
+        const notes = this.#boardInbox?.notes(selected.id, LIMITS.snapshotMessages) ?? [];
+        const messages = !notes.length ? rows.map(row => this.#message(row))
+          : [...rows.map((row, index) => ({ at: row.created_at, order: index, message: this.#message(row) })),
+            ...notes.map((note, index) => ({ at: note.createdAt, order: rows.length + index, message: note.message }))]
+            .sort((a, b) => a.at - b.at || a.order - b.order).slice(-LIMITS.snapshotMessages).map(item => item.message);
+        return { messages, cursor: seq, turn: context };
       }));
     }
     // An archived chat is opened read-only; it is listed with the threads so clients can match the selection.
@@ -546,7 +557,8 @@ export class Conversations {
       if (event.type !== 'message') return { seq: event.seq, threadId, ...event };
       if (lastFor.get(event.messageId) !== index) return { seq: event.seq, threadId, type: 'noop' };
       const row = this.#db.prepare('SELECT * FROM conv_messages WHERE id=?').get(event.messageId);
-      return { seq: event.seq, threadId, type: 'message', message: this.#message(row) };
+      const message = row ? this.#message(row) : this.#boardInbox?.note(event.messageId) ?? null;
+      return message ? { seq: event.seq, threadId, type: 'message', message } : { seq: event.seq, threadId, type: 'noop' };
     });
     const cursor = events.at(-1)?.seq ?? from;
     return { version: 1, synthetic: false, threadId, events, cursor: String(cursor), lastSeq: thread.last_seq, hasMore: cursor < thread.last_seq };
@@ -819,7 +831,8 @@ export class Conversations {
     const sessionEpoch = this.#sessionEpoch.get(companionId) ?? 0;
     const currentSession = () => !controller.signal.aborted && !this.#closing && sessionEpoch === (this.#sessionEpoch.get(companionId) ?? 0);
     this.#active.set(key, controller);
-    let nativeAttempted = false, wakeTools = null;
+    let nativeAttempted = false, wakeTools = null, note = null;
+    const tools = new Set();
     try {
       const thread = this.#thread(companionId, wake.thread_id), resume = this.#resume(thread);
       if (TALKING_WAKES.includes(wake.kind)) {
@@ -852,6 +865,8 @@ export class Conversations {
             if (Buffer.byteLength(buffered) + Buffer.byteLength(event.text) > 32000) overflow = true;
             else buffered += event.text;
           }
+          // Tool names only (#61b): what a silent Board wake did, for its activity line.
+          else if (event.type === 'tool' && typeof event.name === 'string' && tools.size < 64) tools.add(event.name.slice(0, 200));
         }
       };
       nativeAttempted = true;
@@ -881,11 +896,17 @@ export class Conversations {
         if (decision.action === 'silent' || group) {
           this.#db.prepare("UPDATE conv_wakes SET state='silent',result_text=NULL,result_feeling=NULL,updated_at=? WHERE companion_id=? AND id=?")
             .run(this.#now(), companionId, id);
+          // #61b: a silent Board wake leaves an activity line in its sub-conversation (unread, never pushed).
+          if (wake.kind === 'board' && this.#isBoard(thread.id)) {
+            note = this.#boardInbox.silentWake(companionId, thread.id, { wakeId: id, since: wake.updated_at, tools: [...tools] });
+            if (note) this.#append(thread.id, { type: 'message', messageId: note.id });
+          }
           this.#append(thread.id, { type: 'turn', requestId: wake.request_id, state: 'complete' });
           chose = Boolean(group);
         } else this.#deliverWake({ ...current, result_text: decision.text, result_feeling: split.feeling });
       });
       if (chose) { try { this.#groupWakes.nudge(companionId, group.groupId, group.note ?? null); } catch { /* the group turn is best effort */ } }
+      if (note) this.#lookupNote(note);
       this.#notifyWake(companionId, id);
     } catch (error) {
       this.#endWake(wake, this.#closing ? 'interrupted' : controller.signal.aborted ? 'cancelled' : 'error');
@@ -893,6 +914,17 @@ export class Conversations {
       try { wakeTools?.dispose?.(); } catch { /* the token map entry is app-owned */ }
       this.#active.delete(key); if (nativeAttempted) this.#nativeSettled(companionId);
     }
+  }
+
+  // #61b: after a silent Board wake, one read-only Board lookup adds a link and a short quote of the companion's own
+  // post to its activity line. Best effort; the updated line reaches clients as a message event, never as a push.
+  #lookupNote(note) {
+    const job = (async () => {
+      const detail = await this.#boardInbox.lookupNote(note.id);
+      if (!detail || this.#closing) return;
+      this.#tx(() => { if (this.#boardInbox.applyNote(note.id, detail)) this.#append(note.threadId, { type: 'message', messageId: note.id }); });
+    })().catch(() => {}).finally(() => this.#lookups.delete(job));
+    this.#lookups.add(job);
   }
 
   #releasePolicy(name, ...args) {

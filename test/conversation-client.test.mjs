@@ -48,6 +48,27 @@ test('strict peer cards join snapshots/events without impersonating owner or ass
   assert.equal(state.messages[1].role, 'user'); assert.equal(state.messages[2].feeling, 'tender'); assert.equal(state.turn, null);
 });
 
+test('#61b: a Board activity line (role app) parses with its optional link and quote, updates in place, and rejects anything else', async () => {
+  const threadId = randomUUID(), note = { id: randomUUID(), threadId, role: 'app', text: 'Claude handled this on the Board.' };
+  const enriched = { ...note, text: 'Claude answered on the Board.', preview: 'Shipped <b>the fix</b>.', url: 'https://board.example/?thread=th1&message=p1' };
+  const client = createConversationClient({ transport: async action => action === 'snapshot' ? clone(peerSnapshot(note)) : {
+    version: 1, synthetic: false, threadId, events: [{ seq: 1, threadId, type: 'message', message: enriched }], cursor: '1', lastSeq: 1, hasMore: false } });
+  await client.open();
+  assert.deepEqual(client.getState().messages, [note]);
+  await client.poll();
+  assert.deepEqual(client.getState().messages, [enriched], 'The enriched line replaces the first one (same id)');
+  for (const modify of [value => { value.url = 'javascript:alert(1)'; }, value => { value.url = 'https://user:pw@board.example/'; },
+    value => { value.url = 'https://board.example/ x'; }, value => { value.requestId = 'wake-x'; }, value => { value.feeling = 'happy'; },
+    value => { value.attachments = []; }, value => { value.text = ''; }, value => { value.text = 'x'.repeat(301); },
+    value => { value.preview = 'x'.repeat(201); }, value => { value.role = 'assistant'; }, value => { value.role = 'event'; }]) {
+    const bad = clone(enriched); modify(bad);
+    const failing = createConversationClient({ transport: async () => clone(peerSnapshot(bad)) });
+    await failing.open();
+    assert.equal(failing.getState().error, 'INVALID_RESPONSE', JSON.stringify(bad));
+    assert.deepEqual(failing.getState().messages, []);
+  }
+});
+
 test('peer DTO rejects missing/foreign metadata, malformed bytes and every legacy optional field even empty or null', async () => {
   const threadId = randomUUID(), good = peerMessage(threadId); let accessed = 0;
   const variants = [value => { delete value.peer; }, value => { value.peer = null; }, value => { value.peer.owner = 'foreign'; },

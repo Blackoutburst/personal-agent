@@ -32,7 +32,9 @@ import kotlinx.serialization.json.put
 @Serializable data class WeatherSnapshot(val place: String? = null, val current: WeatherNow? = null, val wearing: String? = null)
 @Serializable data class ChatThread(val id: String, val title: String)
 @Serializable data class Message(val id: String, val threadId: String, val role: String, val text: String, val requestId: String? = null,
-    val feeling: String? = null, val attachments: List<Attachment> = emptyList(), val peer: PeerMessage? = null)
+    val feeling: String? = null, val attachments: List<Attachment> = emptyList(), val peer: PeerMessage? = null,
+    /** #61b: an "app" activity line's Board link and its quote of the companion's Board post (untrusted, plain text). */
+    val url: String? = null, val preview: String? = null)
 @Serializable data class TurnError(val code: String, val message: String, val resetsAt: String? = null)
 @Serializable data class Turn(val requestId: String, val state: String, val error: TurnError? = null)
 @Serializable data class Snapshot(
