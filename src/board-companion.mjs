@@ -103,6 +103,11 @@ export class BoardCompanion {
       PRIMARY KEY (companion_id, message_id));
       CREATE TABLE IF NOT EXISTS board_inbox_state (
       companion_id TEXT PRIMARY KEY, cursor TEXT, updated_at INTEGER NOT NULL)`);
+    // 2026-11-05 (#63): a newly connected companion skips its whole Board backlog, not only the first page, so it never
+    // replays days of old pings. Existing rows (default 0) are past their baseline.
+    if (!this.#db.prepare('PRAGMA table_info(board_inbox_state)').all().some(column => column.name === 'baseline_pending')) {
+      this.#db.exec('ALTER TABLE board_inbox_state ADD COLUMN baseline_pending INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   get enabled() { return this.#owners.length > 0; }
@@ -139,8 +144,10 @@ export class BoardCompanion {
   // Drains the companion's Board inbox (mentions and replies to it). Returns the Board owner id of the paired session.
   async #checkMentions(companionId, owner) {
     const client = this.#client(owner);
-    const state = this.#db.prepare('SELECT cursor FROM board_inbox_state WHERE companion_id=?').get(companionId);
-    const baseline = !state;
+    const state = this.#db.prepare('SELECT cursor, baseline_pending FROM board_inbox_state WHERE companion_id=?').get(companionId);
+    // Baseline: the first check, and every later one until the backlog that was waiting at connection is read through.
+    const baseline = !state || Boolean(state.baseline_pending);
+    let drained = false;
     let cursor = state?.cursor ?? null, boardOwner = null;
     const seen = this.#db.prepare('SELECT 1 FROM board_mentions_seen WHERE companion_id=? AND message_id=?');
     const mark = this.#db.prepare('INSERT OR IGNORE INTO board_mentions_seen (companion_id, message_id, seen_at) VALUES (?,?,?)');
@@ -191,10 +198,17 @@ export class BoardCompanion {
         }
         for (const id of ids) mark.run(companionId, id, now);
       }
-      if (typeof inbox?.cursor !== 'string' || !inbox.cursor) break;
+      if (typeof inbox?.cursor !== 'string' || !inbox.cursor) { drained = true; break; }
       cursor = inbox.cursor;
       save.run(companionId, cursor, now);
-      if (messages.length < INBOX_PAGE) break;
+      // The Board bounds compact pages by size, so a short page does not mean the inbox is read through: keep reading
+      // while it reports a backlog (Board #56), up to INBOX_PAGES pages per check.
+      const remaining = Number(inbox?.backlog?.remaining_after_page ?? 0);
+      if (!messages.length || (messages.length < INBOX_PAGE && !(remaining > 0))) { drained = true; break; }
+    }
+    if (baseline) {
+      this.#db.prepare(`INSERT INTO board_inbox_state (companion_id, cursor, updated_at, baseline_pending) VALUES (?,?,?,?)
+        ON CONFLICT(companion_id) DO UPDATE SET baseline_pending=excluded.baseline_pending`).run(companionId, cursor, Date.now(), drained ? 0 : 1);
     }
     return boardOwner;
   }

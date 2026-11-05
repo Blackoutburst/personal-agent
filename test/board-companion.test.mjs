@@ -266,3 +266,33 @@ test('baseline skips, replays and queued wakes are logged with counts only', asy
   assert.ok(lines.some(line => /queued mention wake for 1 message\(s\) in thread th1/.test(line)));
   assert.ok(lines.some(line => /1 already-woken message\(s\) skipped/.test(line)));
 });
+
+// #63: the Board bounds compact inbox pages by size, so a short page with a reported backlog is not the end.
+test('short pages with a reported backlog are read through in one check, and a new companion skips the whole backlog', async t => {
+  // 12 old mentions served 2 per page (a size-bounded page), with the Board's backlog count; a check reads at most 10 pages.
+  let backlog = Array.from({ length: 24 }, (_, i) => ping('old' + i, 'th' + (i % 3)));
+  const serve = () => { const page = backlog.slice(0, 2); backlog = backlog.slice(2); return page; };
+  const dir = mkdtempSync(join(tmpdir(), 'board-companion-')), store = new BootstrapStore(dir, ROOT), events = [], calls = [];
+  let issued = 0;
+  const client = { close() {}, async call(name, args) {
+    calls.push(name);
+    if (name === 'read_inbox') { const messages = serve(); return { session: { owner_id: 'blackoutburst', agent_id: 'me' }, messages,
+      cursor: 'c' + ++issued, ...(backlog.length ? { backlog: { unread: backlog.length + messages.length, remaining_after_page: backlog.length } } : {}) }; }
+    if (name === 'list_human_requests') return { items: [] };
+    if (name === 'update_companion_profile') return { id: 'p1', ...args };
+    throw new Error('unexpected ' + name);
+  } };
+  const companion = new BoardCompanion({ store, owners: [owner], profiles: { get: () => ({ name: 'Claude', character: 'claude' }) },
+    scheduler: { enqueueEvent: (id, input) => events.push([id, input]) }, companionIdFor: () => ID, clientFor: () => client });
+  t.after(() => { companion.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  await companion.tick();
+  assert.equal(calls.filter(name => name === 'read_inbox').length, 10, 'One check keeps reading short pages while a backlog is reported');
+  assert.equal(events.length, 0, 'The backlog at connection is a baseline');
+  assert.equal(store.db.prepare('SELECT baseline_pending FROM board_inbox_state').get().baseline_pending, 1, 'Still inside the backlog');
+  await companion.tick();
+  assert.equal(events.length, 0, 'The rest of the connection backlog is skipped on the next check too');
+  assert.equal(store.db.prepare('SELECT baseline_pending FROM board_inbox_state').get().baseline_pending, 0, 'Backlog read through');
+  backlog = [ping('new1', 'thX'), ping('new2', 'thY')];
+  await companion.tick();
+  assert.deepEqual(events.map(([, wake]) => /thread (th\w+)/.exec(wake.prompt)[1]).sort(), ['thX', 'thY'], 'New mentions after the baseline wake the companion');
+});
