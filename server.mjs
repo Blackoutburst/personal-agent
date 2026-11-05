@@ -430,7 +430,13 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         ?? join(process.env.HOME ?? '', '.config/personal-agent/connector-secrets.key') }), ...(xOptions.fetchImpl ? { fetchImpl: xOptions.fetchImpl } : {}),
         transcriber: xOptions.transcriber !== undefined ? xOptions.transcriber : asr });
       // Mail (#50, docs/MAIL.md): the mailbox from this owner's owners.json entry, read and sent on the server only.
-      mail = new Mail({ store, configFor: companionId => runner?.ownerFor(companionId)?.mail ?? null, ...mailOptions,
+      // #64: owners sharing one address share one mailbox state, kept under the first such owner's companion id.
+      mail = new Mail({ store, configFor: companionId => runner?.ownerFor(companionId)?.mail ?? null,
+        mailboxFor: companionId => {
+          const address = runner?.ownerFor(companionId)?.mail?.address;
+          const canonical = address && owners.find(owner => owner.mail?.address === address);
+          return (canonical && companionIdFor(store, canonical)) || companionId;
+        }, ...mailOptions,
         ...(schedulerOptions.now && !mailOptions.now ? { now: schedulerOptions.now } : {}) });
       studioHttp = createStudioHttp({ access, studio: new Studio({ store, owners, ...(mailOptions.now ? { now: mailOptions.now } : {}) }) });
       connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, mail: () => mail, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
@@ -582,7 +588,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   }
   return {
     server, store, url: `http://127.0.0.1:${server.address().port}`,
-    conversations, files, scheduler: schedulerService, discord, groupChat,
+    conversations, files, scheduler: schedulerService, discord, groupChat, mail,
     async close() {
       pushHold?.stop();
       weather?.stop(); boardCompanion?.stop();

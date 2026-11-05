@@ -1,6 +1,7 @@
 # Mail connector (#50)
 
-One dedicated mailbox per owner, handled by that owner's companion only. First use: studio@blackoutburst.com for Swarm
+A dedicated project mailbox, handled by the companion of each owner it is configured for (#64: it may be shared by
+several owners, see "Shared mailbox" below). First use: studio@blackoutburst.com for Swarm
 Dev Studio (Board project "Swarm Dev Studio", ticket #3). Board agents never get mail access: they @mention the
 companion on the Board with the target and draft, and the companion sends, then answers on the Board with a status.
 
@@ -67,6 +68,25 @@ The owner's entry in `owners.json`:
 ```
 
 Restart the service after editing. The owner can switch Mail off and on in Me › Connectors.
+
+## Shared mailbox (#64)
+
+Several owners may list the same `mail` block (for studio@: blackout with C-chan and screamer with Cirno). Copy the
+block as is, without `studioViewers` (that field stays on one entry). The runtime file is rejected when owners share an
+address but not the same `maildir` and `smtp` (`port`, `servername`, `user`, `passwordFile`).
+
+- The mailbox state is kept under the companion id of the **first** owner in `owners.json` with that address (the
+  canonical owner; `mailboxFor` in `src/mail.mjs`, wired in `server.mjs`). Existing rows already sit there, so no
+  migration. Until the canonical owner has a companion, another owner's companion keeps state under its own id.
+- Shared: the daily cap, the company limit and contacted companies (a second `first` to the same company is
+  `MAIL_ALREADY_CONTACTED`), follow-ups, opt-outs, received mail and its handled state (a mail handled by one companion
+  leaves the other's unhandled list). Limits are read from the caller's own block, which is a copy of the same one.
+- One reply per received email: `mail_sent.reply_to` (added in place) records what a reply answers, and another reply to
+  it is refused with `MAIL_ALREADY_REPLIED`. Replaying the same `requestId` still returns the first result. A
+  non-canonical companion's `requestId`s are stored prefixed with its companion id so the two never collide.
+- New-mail wakes are per companion: the canonical one keeps `mail_messages.notified`, any other uses `mail_notices`.
+  Each companion hears once about each new unhandled mail; nothing about mail already handled by either.
+- Board agents still never get mail access. The Studio view shows the shared state.
 
 To check by hand: `sudo grep postfix/studio /var/log/mail.log | tail` (addresses only; never copy mail text out).
 

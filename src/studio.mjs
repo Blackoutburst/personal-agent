@@ -21,7 +21,9 @@ export class Studio {
   scope(viewerId) {
     const viewer = this.owners.find(owner => companionIdFor(this.store, owner) === viewerId);
     const source = viewer && this.owners.find(owner => owner.mail?.studioViewers.includes(viewer.label));
-    const id = source && companionIdFor(this.store, source);
+    // #64: a shared mailbox's state sits under the first owner configured with that address.
+    const canonical = source && this.owners.find(owner => owner.mail?.address === source.mail.address);
+    const id = source && (companionIdFor(this.store, canonical) ?? companionIdFor(this.store, source));
     if (!id) throw new StudioError('STUDIO_FORBIDDEN', 403);
     return { id, config: source.mail };
   }

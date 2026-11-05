@@ -36,12 +36,23 @@ export function parseRuntimeConfig(text, env = process.env) {
         && (toolPolicy.tools.length !== WEB_TOOLS.length || !WEB_TOOLS.every(tool => toolPolicy.tools.includes(tool)))) {
       throw new Error(`Codex tools for ${label} must be the web pair or empty`);
     }
-    // "mail" (#50, docs/MAIL.md): the one mailbox this owner's companion handles; no secret, only the password file's path.
+    // "mail" (#50, docs/MAIL.md): the mailbox this owner's companion handles (may be shared, #64); no secret, only the password file's path.
     const mail = owner.mail === undefined ? null : parseMailConfig(owner.mail, label);
     if (labels.has(label) || subjects.has(subject)) throw new Error(`Duplicate owner ${label}`);
     labels.add(label); subjects.add(subject);
     return Object.freeze({ subject, label, provider, model, issuer, ...(name !== null ? { name: name.trim() } : {}), ...(mail ? { mail } : {}), ...toolPolicy });
   });
+  // #64: owners may share one mailbox (their companions share its state); the same address must mean the same mailbox.
+  const mailboxes = new Map();
+  for (const owner of owners) {
+    if (!owner.mail) continue;
+    const first = mailboxes.get(owner.mail.address);
+    if (!first) { mailboxes.set(owner.mail.address, owner); continue; }
+    const a = first.mail, b = owner.mail;
+    if (a.maildir !== b.maildir || ['port', 'servername', 'user', 'passwordFile'].some(key => a.smtp[key] !== b.smtp[key])) {
+      throw new Error(`Owners ${first.label} and ${owner.label} share the mail address ${b.address} but not its maildir and smtp settings`);
+    }
+  }
   const viewers = new Set();
   for (const owner of owners) for (const label of owner.mail?.studioViewers ?? []) {
     if (!labels.has(label) || viewers.has(label)) throw new Error('Studio viewers must name configured owners and select only one mailbox');
