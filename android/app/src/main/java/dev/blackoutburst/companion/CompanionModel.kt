@@ -275,8 +275,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 _state.update { it.copy(gate = Gate.Ready, username = session.username, profile = info.profile, wearing = info.wearing, runtime = info.runtime, offline = false) }
                 Push.register(getApplication(), api)
                 pendingThread?.let { id -> pendingThread = null
-                    if (pendingBoard) { pendingBoard = false; _state.update { it.copy(threadId = id, boardThread = id) } }
-                    else if (id != _state.value.threadId) _state.update { it.copy(threadId = id) } }
+                    val board = pendingBoard; pendingBoard = false
+                    if (pushOpensThread(_state.value, id, board)) { cursor = "0"; _state.update { it.showingThread(id, if (board) id else null) } } }
                 resync()
                 refreshBoard(version)
                 startPolling()
@@ -297,14 +297,31 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         if (board) {
             _state.update { it.copy(boardRequest = it.boardRequest + 1) }
             if (_state.value.gate != Gate.Ready) { pendingThread = threadId; pendingBoard = true; return }
-            if (threadId != _state.value.threadId || _state.value.boardThread != threadId) openBoardTopic(threadId, force = true)
+            if (pushOpensThread(_state.value, threadId, board = true)) openBoardTopic(threadId, force = true)
             return
         }
         _state.update { it.copy(chatRequest = it.chatRequest + 1) }
         if (_state.value.gate != Gate.Ready) { pendingThread = threadId; pendingBoard = false; return }
-        if (threadId == _state.value.threadId) return
-        _state.update { it.copy(threadId = threadId, boardThread = null, messages = emptyList(), turn = null) }
-        viewModelScope.launch { guarded { resync() } }
+        // #66: the same id shown as a Board topic or read-only is still a switch (it used to return early and stay there).
+        if (!fileId(threadId) || !pushOpensThread(_state.value, threadId, board = false)) return
+        switchTo(threadId)
+    }
+
+    /** The tab a notification asked for, taken once (see NavRequests). */
+    private val navRequests = NavRequests()
+    fun takeNavRequest(kind: String, value: Long): Boolean = navRequests.take(kind, value)
+
+    /**
+     * #66: shows another conversation (null: the ongoing main chat), like the web client's select(): files picked for the
+     * previous one are dropped, an unconfirmed send is forgotten (its text stays in the box), and responses still on their
+     * way for the previous conversation are ignored (they check the thread id).
+     */
+    private fun switchTo(threadId: String?, boardTopic: String? = null, archivedAt: Long? = null, then: suspend () -> Unit = {}) {
+        dropUploads(); failedSend = null; pendingPick = null
+        cursor = "0"; boardReadKey = null
+        val topic = boardTopic?.let { boardTopics[it] }
+        _state.update { it.showingThread(threadId, boardTopic, topic?.label, topic?.archived == true, archivedAt) }
+        viewModelScope.launch { guarded { resync() }; then() }
     }
 
     /** A group notification was tapped (#53): the Group tab on that group. */
@@ -347,25 +364,18 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     fun openBoardTopic(threadId: String, force: Boolean = false) {
         val now = _state.value
         if (!fileId(threadId)) return
-        if (!force && (now.sending || now.archiving || pendingArchive != null || now.uploads.isNotEmpty())) return
-        // A notification tap wins over files picked for another chat: they are dropped, never sent here.
-        if (now.uploads.isNotEmpty()) dropUploads()
-        cursor = "0"; boardReadKey = null
-        val topic = boardTopics[threadId]
-        _state.update { it.copy(threadId = threadId, boardThread = threadId, boardLabel = topic?.label, boardArchivedTopic = topic?.archived == true,
-            archivedAt = null, messages = emptyList(), turn = null, waitingFor = null, fileError = null, uploads = emptyList()) }
-        viewModelScope.launch { guarded { resync() } }
+        // #66: picked files or a send in flight no longer make the tap do nothing: files are dropped, never sent here.
+        if (!force && !canSwitchThread(now, pendingArchive != null)) return
+        switchTo(threadId, boardTopic = threadId)
     }
 
     /** Leaves a Board sub-conversation for the main chat (the Board tab shows its list again). */
     fun leaveBoardTopic() {
         val now = _state.value
-        if (now.boardThread == null || now.sending || now.archiving || now.uploads.isNotEmpty()) return
-        cursor = "0"; boardReadKey = null
-        _state.update { it.copy(threadId = null, boardThread = null, boardLabel = null, boardArchivedTopic = false, archivedAt = null,
-            messages = emptyList(), turn = null, waitingFor = null, uploads = emptyList(), fileError = null) }
+        // #66: it used to refuse with picked files or a send in flight, leaving the Board topic in the Chat tab with no way out.
+        if (now.boardThread == null || !canSwitchThread(now, pendingArchive != null)) return
         val version = scope
-        viewModelScope.launch { guarded { resync() }; refreshBoard(version) }
+        switchTo(null) { refreshBoard(version) }
     }
 
     /** Done (archived) or reopened. A new Board message or a reply reopens an archived topic by itself. */
@@ -1311,10 +1321,12 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 pending = pending.copy(threadId = threadId); failedVoice = pending
                 val file = pending.file ?: api.upload(threadId, pending.key, "Voice message.m4a", pending.local, TransferCancellation(), voice = true) { }
                 pending = pending.copy(file = file); failedVoice = pending
-                if (!current(version, threadId)) return@launch
+                // #66: the recording goes to the conversation it was recorded in, even if another one opened meanwhile.
+                if (!current(version)) return@launch
                 val messageId = api.submit(pending.requestId, threadId, "", listOf(file.id))
-                if (!current(version, threadId)) return@launch
+                if (!current(version)) return@launch
                 failedVoice = null; pending.local.delete()
+                if (_state.value.threadId != threadId) { _state.update { it.copy(voiceSending = false) }; startPolling(); return@launch }
                 _state.update { state ->
                     val mine = Message(messageId, threadId, "user", "", pending.requestId, attachments = listOf(file))
                     val finished = state.turn?.let { it.requestId == pending.requestId && it.state != "streaming" } == true
@@ -1348,12 +1360,22 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(sending = true, sendFailed = false) }
         viewModelScope.launch {
             if (!current(version)) return@launch
+            var target: String? = null
             try {
                 val threadId = retry?.threadId ?: ensureThread(version)
+                target = threadId
                 val pending = retry ?: PendingSend(Pkce.randomToken(16), threadId, text, files)
                 failedSend = pending
                 val messageId = api.submit(pending.requestId, threadId, pending.text, pending.files.map { it.id })
-                if (!current(version, threadId)) return@launch
+                if (!current(version)) return@launch
+                if (_state.value.threadId != threadId) {
+                    // #66: sent to the conversation it was written in while another one opened: Send must not stay busy
+                    // (it used to, and that blocked every later switch and the composer).
+                    if (failedSend === pending) failedSend = null
+                    _state.update { it.copy(sending = false) }
+                    now.uploads.forEach { it.local?.delete(); uploadSources.remove(it.key) }
+                    onSent(); return@launch
+                }
                 failedSend = null
                 val app = getApplication<Application>()
                 if (Push.configured && Push.enabled(app) && !Push.asked(app) && !Push.permitted(app)) _state.update { it.copy(askNotifications = true) }
@@ -1370,6 +1392,10 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             } catch (error: ApiException) {
                 if (!current(version)) return@launch
                 if (error.signedOut) { signedOut(); return@launch }
+                if (target != null && _state.value.threadId != target) {
+                    // #66: another conversation is on screen; its composer is not the place to retry this one.
+                    failedSend = null; _state.update { it.copy(sending = false) }; return@launch
+                }
                 val recoverable = error.code == "NETWORK" || error.status >= 500
                 val uncertain = recoverable || error.code in setOf("INVALID_RESPONSE", "TOO_LARGE")
                 val committed = failedSend?.let { pending -> _state.value.messages.any { matchesSubmission(it, pending) } } == true
@@ -1402,7 +1428,12 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             try {
                 val fresh = api.archiveThread(request.threadId, request.requestId)
                 if (!current(version)) return@launch
-                pendingArchive = null; cursor = "0"
+                pendingArchive = null
+                // A notification tap may have opened another conversation meanwhile (#66): it stays on screen.
+                if (_state.value.threadId != request.threadId) {
+                    _state.update { it.copy(archiving = false, archiveFailed = false, pastChats = null) }; return@launch
+                }
+                cursor = "0"
                 _state.update { it.copy(threadId = fresh, archivedAt = null, messages = emptyList(), turn = null, waitingFor = null,
                     sending = false, sendFailed = false, archiving = false, archiveFailed = false, pastChats = null) }
                 guarded { resync() }; startPolling()
@@ -1438,18 +1469,17 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     /** Opens an archived chat read-only. */
     fun openArchived(threadId: String) {
         val now = _state.value
-        if (!fileId(threadId) || now.sending || now.archiving || pendingArchive != null || now.uploads.isNotEmpty()) return
-        cursor = "0"
-        _state.update { it.copy(threadId = threadId, archivedAt = null, messages = emptyList(), turn = null, waitingFor = null, fileError = null) }
-        viewModelScope.launch { guarded { resync() } }
+        // #66: picked files or a send in flight no longer make the tap do nothing (the web drops the files too).
+        if (!fileId(threadId) || !canSwitchThread(now, pendingArchive != null)) return
+        // Read-only (with Back to chat) at once from the list's date, not only once the snapshot is in.
+        switchTo(threadId, archivedAt = now.pastChats?.firstOrNull { it.id == threadId }?.archivedAt)
     }
 
     /** Leaves an archived chat for the ongoing one. */
     fun backToCurrent() {
-        if (_state.value.archivedAt == null) return
-        cursor = "0"
-        _state.update { it.copy(threadId = null, archivedAt = null, messages = emptyList(), turn = null, waitingFor = null) }
-        viewModelScope.launch { guarded { resync() } }
+        val now = _state.value
+        if (now.archivedAt == null || !canSwitchThread(now, pendingArchive != null)) return
+        switchTo(null)
     }
 
     suspend fun mediaFile(file: Attachment, expectedScope: Long, cancel: TransferCancellation,

@@ -1,5 +1,6 @@
 package dev.blackoutburst.companion
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.ui.input.pointer.pointerInput
@@ -182,13 +183,14 @@ private fun SignInScreen(state: UiState, signIn: () -> Unit) {
 @Composable
 private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExportControl) {
     var tab by rememberSaveable { mutableStateOf(Tab.Chat) }
-    LaunchedEffect(state.chatRequest) { if (state.chatRequest > 0) tab = Tab.Chat }
+    // #66: each notification's tab is taken once; recreating the screen (rotation, dark mode) no longer jumps back to it.
+    LaunchedEffect(state.chatRequest) { if (model.takeNavRequest("chat", state.chatRequest)) tab = Tab.Chat }
     // Board tab (#55): a notification for a Board sub-conversation opens it there; leaving the tab returns to the main chat.
-    LaunchedEffect(state.boardRequest) { if (state.boardRequest > 0) tab = Tab.Board }
+    LaunchedEffect(state.boardRequest) { if (model.takeNavRequest("board", state.boardRequest)) tab = Tab.Board }
     LaunchedEffect(tab) { if (tab == Tab.Board) model.loadBoard() else model.leaveBoardTopic() }
     // Group tab (#53): a group notification opens that group there; the tab shows once the server has group chat.
     val groups by model.groups.state.collectAsStateWithLifecycle()
-    LaunchedEffect(groups.request) { if (groups.request > 0) tab = Tab.Group }
+    LaunchedEffect(groups.request) { if (model.takeNavRequest("group", groups.request)) tab = Tab.Group }
     LaunchedEffect(tab) { model.groups.setShown(tab == Tab.Group) }
     val chatOnScreen = tab == Tab.Chat || (tab == Tab.Board && state.boardThread != null && state.threadId == state.boardThread)
     LaunchedEffect(chatOnScreen) { model.setChatShown(chatOnScreen) }
@@ -216,7 +218,12 @@ private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExpo
             for (item in shownTabs) {
                 val selected = item == tab
                 Row(Modifier.clip(RoundedCornerShape(50)).background(if (selected) Card else Color.Transparent)
-                    .clickable(role = Role.Tab) { if (item == Tab.Board && tab == Tab.Board) model.leaveBoardTopic(); tab = item }
+                    .clickable(role = Role.Tab) {
+                        // Tapping the tab you are on goes back to its list (a Board topic, and now a group too).
+                        if (item == Tab.Board && tab == Tab.Board) model.leaveBoardTopic()
+                        if (item == Tab.Group && tab == Tab.Group && groups.openId != null) model.groups.close()
+                        tab = item
+                    }
                     .padding(horizontal = when { shownTabs.size >= 5 -> 10.dp; shownTabs.size == 4 -> 16.dp; else -> 22.dp }, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     val label = @Composable { Text(item.label, color = if (selected) Ink else Soft, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 16.sp) }
@@ -274,6 +281,8 @@ private fun ChatScreen(model: CompanionModel, state: UiState) {
     val shown = state.messages.filter { it.text.isNotEmpty() || it.attachments.isNotEmpty() }
     // A Board sub-conversation (#55): its topic bar instead of Chats; replies here are about that ticket.
     val onBoard = state.boardThread != null && state.threadId == state.boardThread
+    // #66: system Back leaves a Board topic for its list, or a past chat for the ongoing one (it used to close the app).
+    BackHandler(enabled = onBoard || state.archivedAt != null) { if (onBoard) model.leaveBoardTopic() else model.backToCurrent() }
     LaunchedEffect(shown.size, shown.lastOrNull()?.text?.length) { if (shown.isNotEmpty()) list.animateScrollToItem(shown.size - 1) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
