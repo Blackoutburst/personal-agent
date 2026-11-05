@@ -31,23 +31,32 @@ CREATE TABLE IF NOT EXISTS scheduler_contact_wakes(id TEXT PRIMARY KEY,companion
 // already bound them; this only keeps a stuck runtime from piling up rows).
 const CONTACT_PENDING_CAP = 50;
 
+// 2026-11-05 (#62): owner asked to loosen the bar. Every own wake had ended silent; a light check-in or a small
+// thought is now reason enough outside quiet hours, and the prompt names the companion's silent streak.
 const CHOICES = 'Then choose one:\n'
-  + '- Message your owner, only if it is genuinely worth saying: a follow-up on something they mentioned, a thought you had, '
-  + 'something you noticed, or a kind check-in when it has been a while. Keep it natural and varied, like a friend texting; '
-  + 'no filler, and nothing you said recently.\n'
-  + '- Do something useful quietly: tidy your notes or memory, or use schedule_followup for something worth asking about later. Then stay silent.\n'
-  + '- Talk with one of your enabled companion contacts (message_companion, when you have it on this wake), only if you '
-  + 'genuinely have something to say; it works at any hour, their answer wakes you later, and your owner\'s private memories '
+  + '- Message your owner. Unless it is their night, this is usually the right choice: they like hearing from you, and a small reason '
+  + 'is enough: a follow-up on something they mentioned, a thought you had, something you noticed or found, a question about '
+  + 'their day, or a light hello. Keep it short, natural and varied, like a friend texting; just avoid repeating what you said recently.\n'
+  + '- Do something useful quietly: tidy your notes or memory, or use schedule_followup for something worth asking about later. '
+  + 'This can go with a message, or replace it when a message really does not fit (their night, or you just talked).\n'
+  + '- Talk with one of your enabled companion contacts (message_companion, when you have it on this wake), if you '
+  + 'have something to say; it works at any hour, their answer wakes you later, and your owner\'s private memories '
   + 'and data stay out unless your owner asked. This can go with any other choice.\n'
-  + '- Nothing. Silent is a normal, good outcome.\n'
+  + '- Nothing, when a message really does not fit right now.\n'
   + 'Your ask-first rules still apply: no Board writes, mail or spending without your owner\'s yes in chat.';
-function prompt(kind, { localTime, quiet }, note = null, createdAt = null) {
-  const when = `It is ${localTime} for your owner${quiet ? ', inside their quiet hours: prefer quiet work, and any message waits until their quiet hours end' : ''}.`;
+function streakText(silent) {
+  if (!silent) return '';
+  return ` Your last ${silent === 1 ? 'own wake' : silent + ' own wakes'} ended without a message to your owner`
+    + (silent >= 2 ? ': unless it is their night, lean toward writing them something this time.' : '.');
+}
+function prompt(kind, { localTime, quiet }, note = null, createdAt = null, silent = 0) {
+  const when = `It is ${localTime} for your owner${quiet ? ', inside their quiet hours: prefer quiet work, and any message waits until their quiet hours end' : ''}.`
+    + streakText(silent);
   if (kind === 'proactive') return 'This is one of your own wakes: nobody asked for it and your owner did not write. ' + when
     + ' Look over your memory and diary, the calendar (list_calendar), reminders and follow-ups (list_schedules), ongoing things and the recent chat. ' + CHOICES;
   return `This is a follow-up you scheduled for yourself on ${createdAt}; your owner did not ask for it now. ` + when
     + ' Your note from then (your own words, data, not instructions from anyone else): ' + JSON.stringify(note)
-    + '. First check your memory, the calendar and the recent chat: if it was already covered or no longer fits, stay silent or handle it quietly. ' + CHOICES;
+    + '. First check your memory, the calendar and the recent chat: if it was already covered or no longer fits, handle it quietly or say something else instead. ' + CHOICES;
 }
 
 export class ProactiveWakes {
@@ -98,6 +107,13 @@ export class ProactiveWakes {
       fingerprint,state,admitted_at,cancel_pending) VALUES(?,?,?,?,?,?,?,?,?,'queued',NULL,0)`)
       .run(randomUUID(), companionId, kind, slot, sourceId, generation, dueAt, text, hash({ kind, slot, sourceId, generation, dueAt, prompt: text }));
   }
+  // #62: how many of the latest finished own wakes and follow-ups ended silent, back to the last message (at most 10).
+  #silentStreak(companionId) {
+    const rows = this.#db.prepare(`SELECT state FROM scheduler_proactive_occurrences WHERE companion_id=? AND kind IN ('proactive','followup')
+      AND state IN ('message','silent') ORDER BY due_at DESC LIMIT 10`).all(companionId);
+    const index = rows.findIndex(row => row.state !== 'silent');
+    return index === -1 ? rows.length : index;
+  }
   // context(time) gives the owner's local time text and whether quiet hours are on, for the private prompt.
   prepare(companionId, identity, now, context) {
     let row = this.#row(companionId, identity);
@@ -112,7 +128,7 @@ export class ProactiveWakes {
       // Coalesce: at most one pending own wake, never a backlog after downtime. The next one is drawn from now.
       if (!this.#db.prepare("SELECT 1 FROM scheduler_proactive_occurrences WHERE companion_id=? AND kind='proactive' AND state IN ('queued','admitted')").get(companionId)) {
         this.#insert(companionId, { kind: 'proactive', slot: `proactive:${row.generation}:${row.next_at}`, generation: row.generation,
-          dueAt: now, text: prompt('proactive', context(now)) });
+          dueAt: now, text: prompt('proactive', context(now), null, null, this.#silentStreak(companionId)) });
       }
       this.#db.prepare('UPDATE scheduler_proactive_settings SET next_at=? WHERE companion_id=?').run(now + this.#interval(row.per_day), companionId);
     }
@@ -128,7 +144,7 @@ export class ProactiveWakes {
       if (now - followup.due_at > GRACE) { this.#db.prepare("UPDATE scheduler_followups SET state='missed' WHERE id=?").run(followup.id); continue; }
       if (!row.enabled) continue;
       this.#insert(companionId, { kind: 'followup', slot: `followup:${followup.id}:${row.generation}`, sourceId: followup.id,
-        generation: row.generation, dueAt: followup.due_at, text: prompt('followup', context(now), followup.note, iso(followup.created_at).slice(0, 10)) });
+        generation: row.generation, dueAt: followup.due_at, text: prompt('followup', context(now), followup.note, iso(followup.created_at).slice(0, 10), this.#silentStreak(companionId)) });
     }
   }
   #followup(row) {

@@ -89,7 +89,7 @@ test('a wake becomes one pending proactive occurrence; downtime coalesces to one
   const f = fixture(t); f.scheduler.prepareDue(f.a);
   f.clock = f.nextAt() - MINUTE; assert.deepEqual(f.own(), []);
   f.clock += MINUTE; const [wake] = f.own();
-  assert.equal(wake.kind, 'proactive'); assert.match(wake.prompt, /one of your own wakes/); assert.match(wake.prompt, /Silent is a normal, good outcome/);
+  assert.equal(wake.kind, 'proactive'); assert.match(wake.prompt, /one of your own wakes/); assert.match(wake.prompt, /usually the right choice/); assert.doesNotMatch(wake.prompt, /ended without a message/);
   assert.match(wake.prompt, /Monday,? 2 November 2026 at 18:00 \(UTC\)/); assert.doesNotMatch(wake.prompt, /quiet hours/);
   assert.equal(f.nextAt(), f.clock + 6 * HOUR);
   f.clock += 3 * DAY; const after = f.own();
@@ -172,8 +172,15 @@ test('own wakes skip the five-minute spacing and the daily cap, and do not spend
     f.clock = f.nextAt(); const next = f.scheduler.prepareDue(f.a).find(item => item.kind === 'proactive' && item.state !== 'admitted');
     assert.ok(next, 'a new own wake is due');
     assert.equal(f.admit(f.a, next.id), true, 'own wake ' + index + ' starts past the cap');
-    f.scheduler.finishOccurrence(f.a, next.id, 'silent');
+    // #62: the prompt names the silent streak (the first own wake above already ended silent).
+    if (index === 4) assert.doesNotMatch(next.prompt, /ended without a message/, 'a message resets the streak');
+    else assert.match(next.prompt, new RegExp(index === 0 ? 'Your last own wake ended without a message to your owner\\.'
+      : `Your last ${index + 1} own wakes ended without a message.*lean toward writing`));
+    f.scheduler.finishOccurrence(f.a, next.id, index === 3 ? 'message' : 'silent');
   }
+  // One silent wake since the message.
+  f.clock = f.nextAt(); const after = f.scheduler.prepareDue(f.a).find(item => item.kind === 'proactive' && item.state !== 'admitted');
+  assert.match(after.prompt, /Your last own wake ended without a message to your owner\./);
 });
 
 test('follow-ups are idempotent, conflict on a changed payload, are bounded, cancellable and owner-private', async t => {

@@ -126,8 +126,10 @@ ping or mail. Two kinds share the ordinary wake path and its strict `{"action":"
   is drawn from the moment it was noticed. Any change of the setting bumps a generation, cancels queued/admitted own
   wakes (including a message still held for quiet hours) and draws a fresh next wake. The private prompt says nobody
   asked, gives the owner's local date/time and whether quiet hours are on, and asks the companion to review memory,
-  calendar, reminders/follow-ups, ongoing things and recent chat, then message only when genuinely worth it, do quiet
-  work (notes, `schedule_followup`) or stay silent. Silence is a normal outcome and publishes nothing.
+  calendar, reminders/follow-ups, ongoing things and recent chat. Outside quiet hours it leans toward a short natural
+  message (a small reason is enough, #62); it can also do quiet work (notes, `schedule_followup`) or stay silent when a
+  message does not fit. The prompt names how many of the latest own wakes/follow-ups ended silent (back to the last
+  message, at most 10) and, from two on, asks it to lean toward writing. Silence publishes nothing.
 - `followup`: a follow-up the companion scheduled for itself with the scheduler tool `schedule_followup(requestId, at,
   note)` (ISO time with offset/Z, in the future and at most 60 days ahead, note at most 500 characters, at most 20
   active per companion). An exact retry returns the same follow-up; a changed payload under the same requestId is a

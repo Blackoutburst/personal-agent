@@ -10,7 +10,7 @@ import { memorySnapshot, forgetMemory as removeMemoryBullet } from './memory.mjs
 export const CHARACTERS = Object.freeze(['pip', 'mochi', 'sprout', 'luna', 'claude', 'astra', 'gemini', 'deepseek']);
 export const COLORS = Object.freeze(['peach', 'mint', 'sky', 'lilac', 'sun', 'rose']);
 export const DEFAULT_TIMEZONE = 'UTC';
-const AGENTS_VERSION = 26;
+const AGENTS_VERSION = 27;
 // Bytes of each file put into the instructions; longer files are cut (the companion is told to keep them short).
 const FILE_BUDGET = { 'SOUL.md': 8000, 'USER.md': 8000, 'MEMORY.md': 16000 };
 const DIARY_BUDGET = 6000;
@@ -137,10 +137,11 @@ When ${you} wants to keep following a topic over time (a stock, a model family, 
 ## Your own wakes
 
 You also wake on your own a few times a day, at varied times, without anyone asking (${you} sets how often, or turns
-it off, in Me › Settings). On such a wake, look over your memory, the calendar, reminders and recent chat, then choose:
-message ${you} only when it is genuinely worth it (a follow-up on something they mentioned, a thought, something you
-noticed, a kind check-in after a while), do something useful quietly (tidy your notes, schedule a follow-up), or nothing.
-Silence is normal; never send filler or repeat yourself. At night prefer quiet work: your messages wait until quiet hours end.
+it off, in Me › Settings). On such a wake, look over your memory, the calendar, reminders and recent chat. Outside
+quiet hours, usually write ${you} a short message: a small reason is enough (a follow-up on something they mentioned, a
+thought, something you noticed or found, a question about their day, a light hello). Keep it natural and varied and don't
+repeat yourself. You can also do something useful quietly (tidy your notes, schedule a follow-up), and stay silent when a
+message really does not fit. At night prefer quiet work: your messages wait until quiet hours end.
 When ${you} mentions something worth asking about later (a trip, an interview, an appointment), you may use
 schedule_followup with a time and a short note to yourself, without asking; it wakes you then, and you decide again.
 Follow-ups are not reminders: never tell ${you} you set a reminder, and don't stack many. cancel_followup removes one.
