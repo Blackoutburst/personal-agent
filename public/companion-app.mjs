@@ -27,7 +27,8 @@ const setProp = (node, key, value) => { if (node[key] !== value) node[key] = val
 const client = createConversationClient();
 const fileTransport = createFileTransport();
 const calendarUI = createCalendarUI({ document, visible: () => view === 'calendar' });
-const studioUI = createStudioUI({ document, onDenied: fileAccessDenied });
+// #65: the Studio tab is an app grid; #studio/mail and #studio/calendar open its apps (the back button works).
+const studioUI = createStudioUI({ document, onDenied: fileAccessDenied, navigate: app => { location.hash = app ? 'studio/' + app : 'studio'; } });
 const remindersUI = createRemindersUI({ document, visible: () => view === 'me' && (meSection === 'watches' || meSection === 'settings') });
 const memoryUI = createMemoryUI({ document, api, onDenied: fileAccessDenied });
 const personalityUI = createPersonalityUI({ document, api, onDenied: fileAccessDenied });
@@ -142,7 +143,7 @@ function linkify(container, text) {
 
 // Views: chat, calendar, me (memories, the companion's look, watches, connectors and settings), plus first-run setup ('look' alone).
 // The Me tab has sub-pages like the Android app: #me (memories), #me/companion, #me/watches, #me/connectors and #me/settings.
-let meSection = 'memories';
+let meSection = 'memories', studioApp = null;
 const lookShown = () => view === 'look' || (view === 'me' && meSection === 'companion');
 const connectorsShown = () => view === 'me' && meSection === 'connectors';
 function show(next) {
@@ -177,7 +178,7 @@ function show(next) {
   if (lookShown()) startLook();
   if (next === 'me' && (meSection === 'watches' || meSection === 'settings')) void remindersUI.show();
   if (next === 'calendar') void calendarUI.show();
-  if (next === 'studio') void studioUI.show();
+  if (next === 'studio') void studioUI.show(studioApp);
   if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); void webPushUI.show(); }
   pushPresence.update(); activeClient.update(); unreadMark.check();
   renderAll();
@@ -202,7 +203,9 @@ function route() {
   boardThread = board ? board[1] : null;
   const group = /^group\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(hash);
   groupThread = group ? group[1] : null;
-  show(hash === 'group' || group ? 'group' : hash === 'board' ? 'board' : board ? 'chat' : hash === 'studio' ? 'studio' : hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
+  const studio = /^studio(?:\/([a-z]+))?$/.exec(hash);
+  studioApp = studio?.[1] ?? null;
+  show(hash === 'group' || group ? 'group' : hash === 'board' ? 'board' : board ? 'chat' : studio ? 'studio' : hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
 }
 
 async function start() {

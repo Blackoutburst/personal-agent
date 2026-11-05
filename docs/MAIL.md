@@ -92,6 +92,8 @@ To check by hand: `sudo grep postfix/studio /var/log/mail.log | tail` (addresses
 
 ## Private Studio contact view (#52)
 
+Since #65 this view is the "Boîte mail" app of the Studio tab, beside the shared Studio calendar (docs/STUDIO.md).
+
 The authenticated web app's **Studio** tab (`#studio`) is a read-only view of the dedicated business mailbox's
 contacts and sent/received exchanges. It cannot send, mark handled, change opposition or adjust limits. Those
 operations remain companion-only. Account validation runs on every `/api/studio` request; a client cannot select

@@ -10,10 +10,11 @@ export class ConnectorError extends Error {
 }
 
 export class Connectors {
-  #db; #now; #discord; #boardConfigured; #github; #x; #mail;
+  #db; #now; #discord; #boardConfigured; #github; #x; #mail; #studioMember;
   // discord: () => the DiscordBridge or null (created after the conversations it serves).
-  constructor({ store, now = Date.now, discord = () => null, boardConfigured = () => false, github = () => null, x = () => null, mail = () => null }) {
-    this.#db = store.db; this.#now = now; this.#discord = discord; this.#boardConfigured = boardConfigured; this.#github = github; this.#x = x; this.#mail = mail;
+  // studioMember(companionId), when given: whether this owner belongs to a Studio, so their companion gets the shared Studio calendar (#65).
+  constructor({ store, now = Date.now, discord = () => null, boardConfigured = () => false, github = () => null, x = () => null, mail = () => null, studioMember = null }) {
+    this.#db = store.db; this.#now = now; this.#discord = discord; this.#boardConfigured = boardConfigured; this.#github = github; this.#x = x; this.#mail = mail; this.#studioMember = studioMember;
     this.#db.exec(`CREATE TABLE IF NOT EXISTS connector_settings(companion_id TEXT NOT NULL, connector TEXT NOT NULL,
       enabled INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(companion_id, connector))`);
   }
@@ -91,8 +92,11 @@ export class Connectors {
   toolFilter(companionId) {
     const bridge = this.#github(), board = this.boardOn(companionId), github = bridge ? bridge.linked(companionId) : true,
       mail = this.#mail() ? this.mailOn(companionId) : true;
-    if (board && github && mail) return null;
+    let studio = !this.#studioMember;
+    try { if (this.#studioMember) studio = Boolean(this.#studioMember(companionId)); } catch { /* not a member this turn */ }
+    if (board && github && mail && studio) return null;
     return name => (board || (!name.startsWith('mcp__board__') && name !== 'mcp__files__attach_to_board'))
-      && (github || !name.startsWith('mcp__scheduler__github_')) && (mail || !name.startsWith('mcp__scheduler__mail_'));
+      && (github || !name.startsWith('mcp__scheduler__github_')) && (mail || !name.startsWith('mcp__scheduler__mail_'))
+      && (studio || !name.startsWith('mcp__scheduler__studio_calendar_'));
   }
 }

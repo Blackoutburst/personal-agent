@@ -26,6 +26,7 @@ import { Calendar } from './src/calendar.mjs';
 import { GitHub } from './src/github.mjs';
 import { Mail } from './src/mail.mjs';
 import { Studio, createStudioHttp } from './src/studio.mjs';
+import { StudioCalendar } from './src/studio-calendar.mjs';
 import { OwnerProfiles, createOwnerProfileHttp } from './src/owner-profile.mjs';
 import { XPosts } from './src/x-posts.mjs';
 import { SecretBox } from './src/secrets.mjs';
@@ -133,7 +134,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let companionHttp;
   let studioHttp;
   let ownerProfileHttp;
-  let schedulerHttp, schedulerService, schedulerStore, calendar = null, github = null, mail = null, x = null, discord = null;
+  let schedulerHttp, schedulerService, schedulerStore, calendar = null, studioCalendar = null, github = null, mail = null, x = null, discord = null;
   let groupChat = null, groupHttp = null;
   let asr = null, files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
   let activeClients = null, pushHold = null;
@@ -229,7 +230,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           return fail(415, 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json.');
         }
         const parsed = await readJsonBody(req, 16384);
-        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value, { calendar, github, mail, x });
+        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value, { calendar, github, mail, x, studioCalendar });
         if (result.closeConnection) res.setHeader('connection', 'close');
         return send(result.status, result.body);
       }
@@ -327,7 +328,8 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
                 COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'schedule_followup', 'cancel_followup', 'create_release_watch', 'create_topic_watch', 'update_release_watch',
                   'list_calendar', 'create_event', 'update_event', 'delete_event',
                   'github_list_repos', 'github_repo', 'github_pulls', 'github_pull', 'github_create_repo', 'read_x_post', 'watch_x_video',
-                  'mail_status', 'mail_inbox', 'mail_read', 'mail_send', 'mail_mark_handled', 'mail_opt_out'] }];
+                  'mail_status', 'mail_inbox', 'mail_read', 'mail_send', 'mail_mark_handled', 'mail_opt_out',
+                  'studio_calendar_list', 'studio_calendar_create', 'studio_calendar_update', 'studio_calendar_delete'] }];
           } });
         agentsConfigured = true;
       }
@@ -438,8 +440,14 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           return (canonical && companionIdFor(store, canonical)) || companionId;
         }, ...mailOptions,
         ...(schedulerOptions.now && !mailOptions.now ? { now: schedulerOptions.now } : {}) });
-      studioHttp = createStudioHttp({ access, studio: new Studio({ store, owners, ...(mailOptions.now ? { now: mailOptions.now } : {}) }) });
-      connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, mail: () => mail, boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
+      // #65: the shared Studio calendar, for every member of a Studio (docs/STUDIO.md); who added an event is the owner's
+      // display name (Studio tab) or the companion's name (studio_calendar_* tools).
+      studioCalendar = new StudioCalendar({ store, owners, timezoneFor: companionId => profiles.get(companionId)?.timezone ?? 'UTC',
+        nameFor: (companionId, kind) => kind === 'human' ? ownerProfiles.publicProfile(companionId).displayName : profiles.get(companionId)?.name ?? null,
+        ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
+      studioHttp = createStudioHttp({ access, calendar: studioCalendar, studio: new Studio({ store, owners, ...(mailOptions.now ? { now: mailOptions.now } : {}) }) });
+      connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, mail: () => mail,
+        studioMember: companionId => studioCalendar.member(companionId), boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
       // Board inbox (#55, docs/BOARD-INBOX.md): one sub-conversation per Board thread or ticket, out of the main chat.
       // #59 (docs/PUSH.md): while the owner actively uses a client, a finished message waits a short while before it is
       // pushed (Android, Web Push) or mirrored to Discord, and is dropped if that client showed it.

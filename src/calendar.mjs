@@ -26,15 +26,15 @@ export class CalendarError extends Error {
   }
 }
 const invalid = () => new CalendarError('INVALID_REQUEST');
-const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+export const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
   && [Object.prototype, null].includes(Object.getPrototypeOf(value));
-function only(value, required, optional = []) {
+export function only(value, required, optional = []) {
   if (!plain(value)) throw invalid();
   const keys = Object.keys(value);
   if (!required.every(key => keys.includes(key)) || keys.some(key => ![...required, ...optional].includes(key))) throw invalid();
   return value;
 }
-function text(value, max, { required = false } = {}) {
+export function text(value, max, { required = false } = {}) {
   if (value === undefined || value === null || value === '') { if (required) throw invalid(); return null; }
   if (typeof value !== 'string' || !value.isWellFormed() || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) throw invalid();
   const trimmed = value.trim();
@@ -45,7 +45,7 @@ function text(value, max, { required = false } = {}) {
 // --- Dates ------------------------------------------------------------------------------------------------------------
 const pad = n => String(n).padStart(2, '0');
 export const leap = year => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-function parseDate(value) {
+export function parseDate(value) {
   const match = typeof value === 'string' && value.match(DATE);
   if (!match) return null;
   const [year, month, day] = match.slice(1).map(Number);
@@ -54,7 +54,7 @@ function parseDate(value) {
   if (year < 1900 || year > 2200 || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day) return null;
   return { year, month, day };
 }
-function parseDateTime(value) {
+export function parseDateTime(value) {
   const match = typeof value === 'string' && value.match(DATETIME);
   if (!match) return null;
   const date = parseDate(value.slice(0, 10)), hour = Number(match[4]), minute = Number(match[5]);
@@ -74,7 +74,7 @@ function inYear(key, year) {
   return `${year}-${pad(month)}-${pad(month === 2 && day === 29 && !leap(year) ? 28 : day)}`;
 }
 
-function wall(time, timeZone) {
+export function wall(time, timeZone) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(time).map(part => [part.type, part.value]));
   return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}`,

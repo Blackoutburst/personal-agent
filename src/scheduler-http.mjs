@@ -3,6 +3,7 @@ import { calendarOperation, isCalendarAction } from './calendar.mjs';
 import { githubOperation } from './github.mjs';
 import { xOperation } from './x-posts.mjs';
 import { mailOperation } from './mail.mjs';
+import { studioCalendarOperation } from './studio-calendar.mjs';
 
 const failure = (status, code, message) => ({ status, body: { error: { code, message } } });
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
@@ -11,13 +12,19 @@ const exact = (value, keys) => value && typeof value === 'object' && !Array.isAr
 // Shared by the freshly authenticated owner UI and the application-owned tool broker.
 // Only the browser path may change quiet hours or opt in to proactive heartbeats.
 // Calendar actions (#44) travel the same two paths.
-export async function schedulerOperation(scheduler, companionId, payload, { allowSettings = false, calendar = null, github = null, x = null, mail = null } = {}) {
+export async function schedulerOperation(scheduler, companionId, payload, { allowSettings = false, calendar = null, github = null, x = null, mail = null, studioCalendar = null } = {}) {
   // GitHub tools (#45) exist only on the companion's tool path; the owner manages the link in Me › Connectors.
   if (!allowSettings && exact(payload, ['action', 'input']) && payload.action === 'github') return githubOperation(github, companionId, payload.input);
   // X post reading (#46) likewise exists only for the companion's tools.
   if (!allowSettings && exact(payload, ['action', 'input']) && payload.action === 'x') return xOperation(x, companionId, payload.input);
   // The mail connector (#50) likewise: its limits are enforced in src/mail.mjs.
   if (!allowSettings && exact(payload, ['action', 'input']) && payload.action === 'mail') return mailOperation(mail, companionId, payload.input);
+  // The shared Studio calendar (#65) on the companion's tool path; membership is checked in src/studio-calendar.mjs.
+  if (!allowSettings && exact(payload, ['action', 'input']) && payload.action === 'studioCalendar') {
+    const { op, ...rest } = payload.input && typeof payload.input === 'object' && !Array.isArray(payload.input) ? payload.input : {};
+    const action = { list: 'calendar', create: 'createEvent', update: 'updateEvent', delete: 'deleteEvent' }[op];
+    return studioCalendarOperation(studioCalendar, companionId, action ? { action, input: rest } : { action: 'invalid' }, { kind: 'companion' });
+  }
   if (payload && typeof payload === 'object' && isCalendarAction(payload.action)) return calendarOperation(calendar, companionId, payload, { allowSettings });
   if (!scheduler) return failure(503, 'SCHEDULER_UNAVAILABLE', 'Reminders are unavailable right now.');
   try {

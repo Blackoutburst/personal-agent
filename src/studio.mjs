@@ -1,5 +1,7 @@
 // Private, read-only Studio mailbox view. No mail scan, send, suppression or handling operations here.
+// #65: the same endpoint serves the shared Studio calendar (src/studio-calendar.mjs) to every Studio member.
 import { companionIdFor } from './runtime-config.mjs';
+import { isStudioCalendarAction, studioCalendarOperation } from './studio-calendar.mjs';
 
 const DAY = 86_400_000;
 const EVENTS = `WITH events AS (
@@ -71,9 +73,9 @@ export class Studio {
     return { company, messages, nextOffset: rows.length > 50 ? offset + 50 : null };
   }
 }
-export function createStudioHttp({ access, studio }) {
+export function createStudioHttp({ access, studio, calendar = null }) {
   return async request => {
-    const parsed = await access.read(request, 2048);
+    const parsed = await access.read(request, 16384);
     if (parsed.failure) return parsed.failure;
     const admitted = await access.authorize(request);
     if (admitted.failure) return admitted.failure;
@@ -82,7 +84,14 @@ export function createStudioHttp({ access, studio }) {
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StudioError('INVALID_REQUEST');
       const only = keys => Object.keys(value).every(key => keys.includes(key));
       const id = admitted.companionId;
-      if (value.action === 'access' && only(['action'])) { studio.scope(id); return { status: 200, body: { allowed: true } }; }
+      // The app grid (#65): which Studio apps this member may open. The mailbox stays with its studioViewers.
+      if (value.action === 'access' && only(['action'])) {
+        const mail = (() => { try { studio.scope(id); return true; } catch (error) { if (error instanceof StudioError) return false; throw error; } })();
+        const shared = Boolean(calendar?.member(id));
+        if (!mail && !shared) throw new StudioError('STUDIO_FORBIDDEN', 403);
+        return { status: 200, body: { allowed: true, apps: { mail, calendar: shared } } };
+      }
+      if (isStudioCalendarAction(value.action) && only(['action', 'input'])) return studioCalendarOperation(calendar, id, value, { kind: 'human', lang: 'fr' });
       if (value.action === 'list' && only(['action'])) return { status: 200, body: studio.list(id) };
       if (value.action === 'detail' && only(['action', 'company', 'offset'])) return { status: 200, body: studio.detail(id, value.company, value.offset) };
       throw new StudioError('INVALID_REQUEST');

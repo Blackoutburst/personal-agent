@@ -81,7 +81,24 @@ main { flex: 1; min-height: 0; display: flex; }
 .studio-message-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; max-width: 72ch; }
 .studio-opposition { color: var(--danger); font-weight: 700; }
 .studio-provenance { font-size: 13px; line-height: 1.5; padding-top: 24px; max-width: 80ch; }
+/* #65: the Studio app grid and the bar above an open app. */
+.studio-apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin: 20px 0; }
+.studio-apps[hidden], .studio-app-bar[hidden], .studio-app[hidden] { display: none; }
+.studio-app-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 18px; min-width: 0; text-align: left; cursor: pointer;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); color: var(--ink); font: inherit; box-shadow: 0 3px 12px rgba(120,80,90,.08); }
+.studio-app-tile:hover { border-color: var(--shade); }
+.studio-app-tile:focus-visible, .studio-apps-back:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+.studio-app-tile strong { font-size: 17px; }
+.studio-app-tile span:not(.studio-app-icon) { font-size: 13px; color: var(--soft); line-height: 1.45; }
+.studio-app-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 14px; background: color-mix(in srgb, var(--body) 32%, var(--card)); color: var(--ink); font-size: 22px; line-height: 1; }
+.studio-app-bar { display: flex; align-items: center; gap: 14px; margin: 18px 0 4px; flex-wrap: wrap; }
+.studio-app-bar .button { padding: 8px 16px; font-size: 14px; }
+.studio-app-title { margin: 0; font-size: 20px; }
+.studio-app-title:focus { outline: none; }
+.cal-agenda { margin-top: 14px; padding: 12px 14px; border-radius: 16px; background: var(--bg); }
+.cal-agenda h3 { font-size: 15px; margin: 0 0 8px; }
 @media (max-width: 640px) {
+  .studio-apps { grid-template-columns: 1fr; }
   .studio-layout { display: block; }
   .studio-layout[data-detail=false] .studio-detail, .studio-layout[data-detail=true] .studio-contacts { display: none; }
   .studio-controls { flex-wrap: wrap; }

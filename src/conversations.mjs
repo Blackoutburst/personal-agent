@@ -34,6 +34,8 @@ const wakeToolFilter = kind => name => !WEB_TOOLS.includes(name) && !['mcp__sche
   'mcp__scheduler__read_x_post', 'mcp__scheduler__watch_x_video'].includes(name)
   // The companion's own wakes (#54) and contact wakes (#58) never send mail: mail stays with owner chats and Board/mail wakes.
   && !(TALKING_WAKES.includes(kind) && name === 'mcp__scheduler__mail_send')
+  // Nor do they change the shared Studio calendar (#65); mail, connector and Board wakes may, like mail_send.
+  && !(TALKING_WAKES.includes(kind) && name.startsWith('mcp__scheduler__studio_calendar_') && name !== 'mcp__scheduler__studio_calendar_list')
   && (!name.startsWith(BOARD_PREFIX) || kind === 'board' || READ_ONLY_BOARD_TOOLS.includes(name.slice(BOARD_PREFIX.length)));
 // Turns that arrive through the owner's Discord DM (requestId "discord-<message id>", src/discord.mjs).
 const DISCORD_NOTE = '\n\n(Channel note from the app, not from the owner: this message came from your owner\'s Discord DM with you, '
