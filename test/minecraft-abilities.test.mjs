@@ -238,7 +238,7 @@ test('#70: pathfinding may dig and place scaffolding from the inventory; jump, s
   assert.equal(bot.movements.canDig, true); assert.equal(bot.movements.allow1by1towers, true);
   for (const name of ['dirt', 'cobblestone', 'netherrack', 'oak_planks', 'stone']) assert.ok(bot.movements.scafoldingBlocks.includes(itemId(name)), name);
   assert.ok(!bot.movements.scafoldingBlocks.includes(itemId('diamond_sword')));
-  assert.deepEqual(await body.act({ type: 'jump' }), { type: 'jump', ok: true, detail: 'jumped' });
+  assert.deepEqual(await body.act({ type: 'jump' }), { type: 'jump', ok: true, detail: 'jumped (1.2 blocks up)' });
   assert.equal(bot.controls.jump, false);
   assert.deepEqual(await body.act({ type: 'sprint', on: true }), { type: 'sprint', ok: true, detail: 'sprint on' }); assert.equal(bot.controls.sprint, true);
   assert.equal((await body.act({ type: 'sneak', on: false })).detail, 'sneak off');
@@ -247,7 +247,7 @@ test('#70: pathfinding may dig and place scaffolding from the inventory; jump, s
   assert.equal(await body.act({ type: 'stop' }).then(result => result.detail), 'stopped swim');
   assert.equal((await swim).ok, false); assert.equal(bot.controls.jump, false); assert.equal(bot.controls.forward, false);
   bot.set(8, 64, 2, 'crafting_table');
-  assert.deepEqual(await body.act({ type: 'goto', block: 'crafting_table' }), { type: 'goto', ok: true, detail: 'reached the crafting_table at 8 64 2' });
+  assert.deepEqual(await body.act({ type: 'goto', block: 'crafting_table' }), { type: 'goto', ok: true, detail: 'reached the crafting_table at 8 64 2; now at 10 64 2' });
   assert.equal((await body.act({ type: 'goto', block: 'furnace' })).detail, 'no furnace within 64 blocks');
 });
 

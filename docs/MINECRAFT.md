@@ -77,9 +77,10 @@ found)", "placed 10 of 12 blocks; 2 failed: …"), and a failed or timed-out act
 | | `follow` | `player`, `distance` 1-8, `seconds` 5-120 | keep near a player | the seconds + 5 s |
 | | `wander` | `distance` 8-64 | explore in a random direction | 60 s |
 | | `look_at` | `player` or `x, y, z` | turn the head | 3 s |
-| | `jump` | none | one jump | 3 s |
+| | `jump` | none | one jump; ok only when she left the ground (half a block up at least) | 3 s |
 | | `sprint`, `sneak` | `on` (default true) | toggle | 1 s |
-| | `swim` | `seconds` 1-30, `forward` | hold jump (swim up, stay afloat), optionally forward | the seconds + 5 s |
+| | `swim` | `seconds` 1-30, `forward` | hold jump (swim up, stay afloat), optionally sprint-swim forward; reports how far she really rose and moved, fails when she did not move with her head under water | the seconds + 5 s |
+| | `escape` | none | out of water, a hole or a pit: swim up (sprint-swim) and over the rim, else pillar up with dirt, cobblestone or planks, else dig a staircase out; says what failed | 120 s |
 | Blocks | `dig` | `x, y, z` or `block` (nearest within 32) | break any breakable block with the best tool from the inventory | 60 s |
 | | `collect` | `block`, `count` 1-64 | mine that many of the nearest, then pick up the drops (reports what was picked up) | 30 s + 15 s per block |
 | | `pick_up` | none | walk over dropped items within 16 blocks | 30 s |
@@ -115,6 +116,52 @@ doors), so she gets out of a pit or across a gap like a player. The pathfinder s
 `blocksCantBreak`). Before #70 walking never dug or placed and `collect` only broke natural blocks; the owner asked to
 remove those limits. What she does to other people's builds on the shared server is now up to her, like for any player:
 AGENTS.md asks her to treat others' builds, chests and animals as theirs and to ask first.
+
+### Physics on 26.1 and getting unstuck (t70)
+
+**Symptom** (live, Yakusuna near spawn): "jump says done but my position never changed", "goto says arrived but I'm
+still at 9 77 -12", oxygen dropping while idle, swimming rose 1 block in about 8 minutes, a pillar block refused. She was
+in a water-filled hole she had dug; the server log had no "moved wrongly" or "moved too quickly".
+
+**Root cause**, measured on a private local Paper 26.1.2 server (offline, 127.0.0.1:25599) with the same jar:
+
+1. *The server rolls her back whenever her hitbox touches a block face.* prismarine-physics 1.11.1 (the newest on npm;
+   mineflayer 4.39.0 uses it) makes the player box exactly 0.6 wide, so pressed against a wall its edge lies exactly on
+   the block face (z = 500.7 next to a block at 501). The server's own box is the float 0.6f, a hair wider, and it
+   treats that as moving into the block: it silently teleports her to her last good position, every tick she pushes on
+   the wall. Placing her by hand with physics off: z = 500.69999 accepted, z = 500.7 corrected. Open ground never
+   touches a wall, which is why walking on dry land (and the E2E harness) worked; in a hole every way out (jumping onto
+   a ledge, leaving the water at the rim, the pathfinder's towering) presses on a wall. Before: 53-57 corrections in
+   3 s walking into a wall on dry land, 104-113 in 6 s swimming up along one; after: 0. Water physics itself is fine
+   (swimming up a 1x1 water hole: 3.4 blocks in 8 s), and physics ticks run at 20 per second in the worker thread.
+   **Fix**: `patchPhysics` (src/minecraft-body.mjs) sets `bot.physics.playerHalfWidth` to 0.30001 at login and spawn
+   (Mineflayer injects its physics plugin after `attach()`). A runtime patch in our code because there is no newer
+   prismarine-physics or minecraft-data release to pin, and a Movements setting cannot change the collision box.
+2. *goto "arrived" without moving.* mineflayer-pathfinder's `goto` resolves when it computes an empty path, which is
+   what it finds from inside water (it never plans a move out of a water block). **Fix**: goto and wander check where
+   she really is afterwards (the goal's `isEnd`); not there means a failure with her real position. In water or a hole
+   with no way out on foot, goto runs `escape` first and walks once more, and says so.
+3. *jump and swim reported success blindly*, and `place below` placed the pillar block after waiting at most 1 s for
+   her to rise, which in water is not a full block, so the server refused a block inside her. **Fix**: jump is ok only
+   if she left the ground, swim reports the real numbers, a pillar step waits until she is a full block up (1.1 on
+   land, near the top of the jump, because the server sees her a tick late).
+
+`escape`: the rim is the lowest block beside her column she could stand on; she is out when she is out of the water,
+on solid ground, at the rim. In order: swim up holding jump and sprint, then forward over the rim; pillar up with a
+scaffold block (dirt, cobblestone, planks…) and step off; dig a staircase toward the rim (head room, the two blocks
+ahead, a step placed if missing). Each way runs only while she is not out; what failed is part of the result.
+
+Measured through the real worker and BotBody on the local server (before = main e126313, after = this branch):
+
+| Scenario | Before | After |
+| --- | --- | --- |
+| goto 6 blocks from the bottom of a 1x1 water hole 4 deep | "arrived" in 0.4 s, did not move | ok in 3.8 s: swam out, walked to 700 -55 705 |
+| goto from a 1x1 water hole 2 deep | "arrived" in 0.4 s, did not move | ok in 3.3 s |
+| goto out of a dry 1x1 pit 2 deep | timed out after 90 s, 1 block up | ok in 2.0 s (the pathfinder alone) |
+| escape from the 4-deep water hole | (no such action) | swam up and out, 3.0 s |
+| escape from a dry 3-deep pit in stone, with dirt | | pillared 2 dirt and stepped out, 2.8 s |
+| escape from a dry 3-deep pit in dirt, no blocks | | dug 3 stair steps out, 6.6 s |
+| goto 6 blocks on flat ground | ok, 1.3 s | ok, 1.3 s |
 
 ### Commands (#70)
 

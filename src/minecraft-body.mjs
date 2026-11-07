@@ -8,7 +8,7 @@
 // action runs code, reads files or reaches anything outside the game, because the worker runs as the service user.
 
 export const ACTION_TYPES = Object.freeze([
-  'say', 'goto', 'follow', 'wander', 'look_at', 'jump', 'sprint', 'sneak', 'swim',
+  'say', 'goto', 'follow', 'wander', 'look_at', 'jump', 'sprint', 'sneak', 'swim', 'escape',
   'dig', 'collect', 'pick_up', 'place', 'build',
   'craft', 'smelt',
   'equip', 'unequip', 'toss', 'drop', 'give', 'use_item', 'eat',
@@ -20,12 +20,12 @@ export const ACTION_TYPES = Object.freeze([
 export const ACTION_TIMEOUTS = Object.freeze({ say: 2000, goto: 90_000, wander: 60_000, look_at: 3000, jump: 3000, sprint: 1000, sneak: 1000,
   dig: 60_000, pick_up: 30_000, place: 30_000, equip: 5000, unequip: 5000, toss: 10_000, drop: 10_000, give: 60_000, eat: 10_000,
   attack: 60_000, open: 45_000, deposit: 45_000, withdraw: 45_000, activate: 30_000, sleep: 45_000, wake: 5000, mount: 30_000,
-  dismount: 5000, trade: 45_000, breed: 45_000, stop: 1000 });
+  dismount: 5000, trade: 45_000, breed: 45_000, escape: 120_000, stop: 1000 });
 export const LIMITS = Object.freeze({ gotoDistance: 256, wanderMin: 8, wanderMax: 64, followMax: 8, followMaxSeconds: 120,
   collectMax: 64, collectRange: 32, pickupRange: 16, sayChars: 240, players: 8, mobs: 8, items: 8, blocks: 12, inventory: 36, scanRange: 16,
   mobRange: 24, findRange: 64, blockRange: 64, buildBlocks: 64, buildOffset: 16, craftMax: 64, smeltMax: 64, tossMax: 2304, attackRange: 32,
   defendMaxSeconds: 300, defendRange: 12, swimMaxSeconds: 30, shieldMaxSeconds: 30, useMaxSeconds: 5, fishMaxSeconds: 120, farmRange: 16,
-  farmMax: 64, entityRange: 16, resultChars: 400, commandLines: 4 });
+  farmMax: 64, entityRange: 16, resultChars: 400, commandLines: 4, pillarMax: 8, stairMax: 10 });
 // Blocks worth noticing as a "found" event (once per position): rare things.
 const NOTABLE = /^(?:deepslate_)?(?:diamond|emerald|gold|lapis|redstone)_ore$|^(?:ancient_debris|spawner|chest|trial_spawner|vault|nether_portal|end_portal_frame|budding_amethyst|bee_nest|suspicious_sand|suspicious_gravel)$/;
 // Blocks shown in the perception: places to use and resources.
@@ -53,6 +53,25 @@ const BREED_FOOD = Object.freeze({ cow: ['wheat'], mooshroom: ['wheat'], sheep: 
   camel: ['cactus'], sniffer: ['torchflower_seeds'], armadillo: ['spider_eye'], strider: ['warped_fungus'], hoglin: ['crimson_fungus'] });
 const DRINKS = /potion$|^(?:milk_bucket|honey_bottle|ominous_bottle)$/;
 const MATERIAL = { wooden: 1, golden: 1, stone: 2, copper: 2, iron: 3, diamond: 4, netherite: 5 };
+// Blocks walking and escape may use as scaffolding (pillar steps, stair steps).
+const SCAFFOLD = /^(?:dirt|cobblestone|cobbled_deepslate|netherrack|stone|andesite|diorite|granite|tuff|blackstone|end_stone|[a-z_]+_planks)$/;
+const WATERY = new Set(['water', 'bubble_column', 'seagrass', 'tall_seagrass', 'kelp', 'kelp_plant']);
+const SIDES = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+// t70: prismarine-physics 1.11.1 (the newest on npm, used by mineflayer 4.39.0) gives the player a hitbox exactly 0.6
+// wide (half-width 0.3), so pressed against a wall its box ends exactly on the block face. The 26.1 server's own
+// player box is the float 0.6f (a hair wider) and it treats that exact touch as moving into the block: it silently
+// sends her back to her last good position, every tick, for as long as she pushes on the wall (no "moved wrongly" log).
+// That froze her in holes and water (no climbing out, no jumping onto a ledge, no pillaring) while open ground was
+// fine. A hitbox 0.00002 wider keeps her a hair off every face, so the server accepts each move. Measured on a local
+// 26.1.2 server: 53-113 corrections per 3-6 s against a wall before, 0 after (docs/MINECRAFT.md, "Physics on 26.1").
+export const PHYSICS_HALF_WIDTH = 0.30001;
+export function patchPhysics(bot) {
+  const physics = bot?.physics;
+  if (!physics || typeof physics.playerHalfWidth !== 'number') return false;
+  if (physics.playerHalfWidth < PHYSICS_HALF_WIDTH) physics.playerHalfWidth = PHYSICS_HALF_WIDTH;
+  return true;
+}
 
 const round = value => Math.round(value * 10) / 10;
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
@@ -121,7 +140,7 @@ export function validateAction(input) {
       const pos = !extra('x', 'y', 'z') && xyz(false);
       return pos ? { action: { type, ...pos } } : err('look_at needs a player or x, y, z');
     }
-    case 'jump': case 'pick_up': case 'wake': case 'dismount': case 'stop':
+    case 'jump': case 'pick_up': case 'wake': case 'dismount': case 'stop': case 'escape':
       return keys.length ? err(`${type} takes no arguments`) : { action: { type } };
     case 'sprint': case 'sneak': {
       const on = flag('on', true);
@@ -316,10 +335,10 @@ export class BotBody {
 
   // bot: a Mineflayer bot (or a fake). pathfinder: the mineflayer-pathfinder module ({ goals, Movements }) once loaded, or
   // null (movement skills then fail cleanly). onEvent(event): what the body noticed. companions: other companions' names.
-  // pace: waits in ms ({ hit, poll, settle }); tests make them short.
+  // pace: waits in ms ({ hit, poll, settle, rise, swim, step }); tests make them short.
   constructor({ bot, pathfinder = null, onEvent = () => {}, companions = [], now = Date.now, scanMs = 5000, pace = {}, Vec3 = null }) {
     this.#bot = bot; this.#pathfinder = pathfinder; this.#emit = onEvent; this.#companions = new Set(companions.map(name => name.toLowerCase()));
-    this.#now = now; this.#scanMs = scanMs; this.#pace = { hit: 650, poll: 250, settle: 400, ...pace }; this.#Vec3 = Vec3;
+    this.#now = now; this.#scanMs = scanMs; this.#pace = { hit: 650, poll: 250, settle: 400, rise: 1500, swim: 12_000, step: 1500, ...pace }; this.#Vec3 = Vec3;
   }
 
   get username() { return this.#bot.username; }
@@ -336,7 +355,7 @@ export class BotBody {
     const bot = this.#bot, movements = new this.#pathfinder.Movements(bot), items = this.#registry().itemsByName ?? {};
     movements.canDig = true; movements.allow1by1towers = true; movements.allowParkour = true; movements.allowSprinting = true;
     movements.canOpenDoors = true;
-    const names = Object.keys(items).filter(name => /^(?:dirt|cobblestone|cobbled_deepslate|netherrack|stone|andesite|diorite|granite|tuff|blackstone|end_stone|[a-z_]+_planks)$/.test(name));
+    const names = Object.keys(items).filter(name => SCAFFOLD.test(name));
     movements.scafoldingBlocks = [...new Set(names.map(name => items[name].id).filter(Number.isInteger))];
     return movements;
   }
@@ -344,7 +363,10 @@ export class BotBody {
   attach() {
     const bot = this.#bot;
     if (this.#pathfinder && typeof bot.loadPlugin === 'function' && !bot.pathfinder) bot.loadPlugin(this.#pathfinder.pathfinder);
+    // Mineflayer injects its physics plugin after attach() (once the version is known): patch it at login and spawn.
+    this.#on('login', () => patchPhysics(bot));
     this.#on('spawn', () => {
+      patchPhysics(bot);
       if (this.#spawnedAt) return;
       this.#spawnedAt = this.#now();
       if (this.#pathfinder && bot.pathfinder) bot.pathfinder.setMovements(this.#movements());
@@ -469,6 +491,7 @@ export class BotBody {
       dimension: clean(String(bot.game?.dimension ?? 'overworld').replace(/^minecraft:/, ''), 32), biome: biome ? clean(biome, 40) : null,
       time: { phase: timeOfDay(bot.time?.timeOfDay ?? 0), ticks: Math.floor(bot.time?.timeOfDay ?? 0) },
       health: round(bot.health ?? 0), food: Math.round(bot.food ?? 0), ...(finite(bot.oxygenLevel) && bot.oxygenLevel < 20 ? { oxygen: bot.oxygenLevel } : {}),
+      ...(self.isInWater ? { inWater: true } : {}),
       ...(finite(bot.experience?.level) ? { level: bot.experience.level } : {}),
       online: online.slice(0, 16).map(name => ({ name, kind: kind(name) })), players, mobs, items, blocks,
       holding: held ? `${clean(held.name, 40)} ${held.count ?? 1}` : null, offhand: slots[45]?.name ? clean(slots[45].name, 40) : null, armor,
@@ -723,6 +746,240 @@ export class BotBody {
     return count;
   }
 
+  // ---------- Movement checks and getting unstuck (t70) ----------
+  // Every movement skill measures where she really is afterwards: a pathfinder that "arrives" without moving (it
+  // resolves goto on an empty path, which is what it finds from inside water) or a server that keeps sending her
+  // back must come out as a failure with her real position, never as "arrived".
+
+  #here() { const p = this.#bot.entity.position; return { x: p.x, y: p.y, z: p.z }; }
+  #feet() { const p = this.#bot.entity.position; return { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }; }
+  #where() { const f = this.#feet(); return at(f); }
+  #solid(x, y, z) {
+    const block = this.#block({ x, y, z });
+    return !block || (!REPLACEABLE.has(block.name) && block.boundingBox !== 'empty'); // unloaded counts as solid
+  }
+  #watery(x, y, z) {
+    const block = this.#block({ x, y, z });
+    return Boolean(block && (WATERY.has(block.name) || block.getProperties?.()?.waterlogged === true));
+  }
+  #inWater() { const f = this.#feet(); return this.#bot.entity.isInWater === true || this.#watery(f.x, f.y, f.z); }
+  #headUnder() {
+    const p = this.#bot.entity.position;
+    return this.#watery(Math.floor(p.x), Math.floor(p.y + 1.62), Math.floor(p.z));
+  }
+  // Ways out from the block she is in: a side she can walk into (two free blocks) or step up onto (a block with two
+  // free above it and head room for the jump).
+  #exits() {
+    const f = this.#feet(), exits = [];
+    for (const [dx, dz] of SIDES) {
+      const x = f.x + dx, z = f.z + dz;
+      if (!this.#solid(x, f.y, z) && !this.#solid(x, f.y + 1, z)) exits.push({ dx, dz, up: 0 });
+      else if (this.#solid(x, f.y, z) && !this.#solid(x, f.y + 1, z) && !this.#solid(x, f.y + 2, z) && !this.#solid(f.x, f.y + 2, f.z)) exits.push({ dx, dz, up: 1 });
+    }
+    return exits;
+  }
+  // Stuck: in water (a dug hole fills up; pathfinding out of water finds nothing), or in a hole with no side to walk
+  // or step out of.
+  #stuck() { return this.#inWater() || !this.#exits().length; }
+  // The best way out first: onto dry ground before into more water, walking before stepping up.
+  #bestExit() {
+    const f = this.#feet();
+    return this.#exits().map(exit => ({ ...exit, wet: this.#watery(f.x + exit.dx, f.y + exit.up, f.z + exit.dz) ? 1 : 0 }))
+      .sort((a, b) => a.wet - b.wet || a.up - b.up)[0] ?? null;
+  }
+  // The rim of the hole she is in: the lowest block beside her column where she could stand (two free blocks on solid
+  // ground, not water), up to 12 blocks up. null in open water or when nothing is in reach.
+  #rim() {
+    const f = this.#feet();
+    let best = null;
+    for (const [dx, dz] of SIDES) {
+      const x = f.x + dx, z = f.z + dz;
+      for (let y = f.y; y <= f.y + 12; y++) {
+        if (!this.#solid(x, y, z) && !this.#solid(x, y + 1, z) && this.#solid(x, y - 1, z) && !this.#watery(x, y, z)) {
+          if (!best || y < best.y) best = { y, dx, dz };
+          break;
+        }
+      }
+    }
+    return best;
+  }
+  // Out: not in water, on solid ground (not hanging over the hole), and up at the rim (or with a way on foot).
+  #out(rim) {
+    const f = this.#feet();
+    return !this.#inWater() && this.#solid(f.x, f.y - 1, f.z) && (rim ? f.y >= rim.y : this.#exits().length > 0);
+  }
+  // Which way to step: toward the rim once it is level or one block up, else the best exit.
+  #toward(rim) {
+    const f = this.#feet();
+    if (!rim) return this.#bestExit();
+    const up = rim.y - f.y;
+    return up === 0 || (up === 1 && !this.#solid(f.x, f.y + 2, f.z)) ? { dx: rim.dx, dz: rim.dz, up } : null;
+  }
+  #moved(from) { const p = this.#bot.entity.position; return Math.hypot(p.x - from.x, p.y - from.y, p.z - from.z); }
+
+  // Polls test() until true or ms ran out; resolves to whether it became true.
+  async #until(test, ms, signal) {
+    const end = this.#now() + ms;
+    for (;;) {
+      if (test()) return true;
+      if (this.#now() >= end) return false;
+      await this.#wait(Math.min(this.#pace.poll, 50), signal);
+    }
+  }
+  #release(...controls) { for (const control of controls) { try { this.#bot.setControlState(control, false); } catch { /* fake */ } } }
+
+  #reached(goal, target, range) {
+    const p = this.#bot.entity.position, node = this.#vec(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z));
+    if (typeof goal?.isEnd === 'function') {
+      try { return goal.isEnd(node) || goal.isEnd(node.offset(0, 1, 0)); } catch { /* fall back to the distance */ }
+    }
+    if (!target) return true;
+    return Math.hypot(p.x - target.x, (target.y === undefined ? 0 : p.y - target.y), p.z - target.z) <= range + 1.5;
+  }
+
+  // Walks to the goal and checks she got there. Stuck in water or a hole, she escapes and tries once more.
+  // Returns a note on the escape ('' when there was none); throws with her real position when she did not arrive.
+  async #walkTo(goal, signal, { target = null, range = 1, makeGoal = () => goal } = {}) {
+    const start = this.#here();
+    let problem = null;
+    try { await this.#walk(goal, signal); } catch (error) { if (signal.aborted) throw error; problem = error; }
+    if (this.#reached(goal, target, range)) return '';
+    let note = '';
+    if (this.#stuck()) {
+      try { note = await this.#escape(signal); } catch (error) { if (signal.aborted) throw error; note = ''; problem = error; }
+      if (note) {
+        const again = makeGoal();
+        problem = null;
+        try { await this.#walk(again, signal); } catch (error) { if (signal.aborted) throw error; problem = error; }
+        if (this.#reached(again, target, range)) return ` (first got out: ${note})`;
+      }
+    }
+    const why = problem ? clean(String(problem.message ?? problem).replace(/[.!]+$/, ''), 120) : 'the path finder found no way';
+    fail(`did not get there: ${why}; still at ${this.#where()} (moved ${round(this.#moved(start))} blocks)${note ? `; ${note}` : ''}`);
+  }
+
+  // One pillar step: a block under her feet. In water she swims up first; on the ground she jumps.
+  async #pillarStep(name, signal) {
+    const bot = this.#bot, p = bot.entity.position, x = Math.floor(p.x), z = Math.floor(p.z), y = Math.floor(p.y);
+    const under = this.#block({ x, y: y - 1, z });
+    if (!under) fail('the block under you is not loaded');
+    await this.#hold(name);
+    let target = { x, y: y - 1, z };
+    // A caller swimming up holds jump already: leave it held.
+    const held = typeof bot.getControlState === 'function' ? bot.getControlState('jump') === true : bot.controls?.jump === true;
+    const letGo = () => { if (!held) this.#release('jump'); };
+    if (!REPLACEABLE.has(under.name)) {
+      // On something solid: rise a full block, then fill the block she was standing in.
+      target = { x, y, z };
+      bot.setControlState('jump', true);
+      // Near the top of the jump (it peaks 1.25 up): the server, a tick behind, must see her clear of the block.
+      const water = this.#inWater(), height = water ? 1 : 1.1;
+      const rose = await this.#until(() => bot.entity.position.y >= y + height, water ? this.#pace.rise * 2 : this.#pace.rise, signal);
+      if (!rose) { letGo(); fail(`could not rise high enough to put a block under you (still at ${this.#where()})`); }
+    }
+    const reference = this.#reference(target);
+    if (!reference) { letGo(); fail(`nothing to place the ${name} against at ${at(target)}`); }
+    try { await bot.placeBlock(reference.block, reference.face); } finally { letGo(); }
+    return target;
+  }
+
+  // Swim up (holding jump, sprint-swimming), then out over the rim. Returns a note, or null when she is not out.
+  async #swimOut(signal, rim, out) {
+    const bot = this.#bot, start = this.#here();
+    bot.setControlState('jump', true); bot.setControlState('sprint', true);
+    try {
+      const end = this.#now() + this.#pace.swim;
+      while (this.#now() < end && !signal.aborted && !out()) {
+        const exit = this.#headUnder() ? null : this.#toward(rim);
+        if (exit) {
+          const f = this.#feet();
+          await bot.lookAt?.(this.#vec(f.x + 0.5 + exit.dx, f.y + exit.up + 1.6, f.z + 0.5 + exit.dz), true);
+          bot.setControlState('forward', true);
+        } else this.#release('forward');
+        await this.#wait(Math.min(this.#pace.poll, 50), signal);
+      }
+    } finally { this.#release('forward', 'sprint', 'jump'); }
+    await this.#wait(this.#pace.settle, signal);
+    return out() ? `swam up and out (${round(bot.entity.position.y - start.y)} blocks up)` : null;
+  }
+
+  // Step onto the next block (level or one up): face it, walk, jump if it is higher.
+  async #stepOut(signal, exit) {
+    const bot = this.#bot;
+    if (!exit) return false;
+    const f = this.#feet(), cell = { x: f.x + exit.dx, y: f.y + exit.up, z: f.z + exit.dz };
+    await bot.lookAt?.(this.#vec(cell.x + 0.5, cell.y + 1.6, cell.z + 0.5), true);
+    bot.setControlState('forward', true);
+    if (exit.up) bot.setControlState('jump', true);
+    try {
+      return await this.#until(() => { const now = this.#feet(); return now.x === cell.x && now.z === cell.z && now.y >= cell.y; }, this.#pace.step, signal);
+    } finally { this.#release('forward', 'jump'); }
+  }
+
+  async #pillarOut(signal, rim, out) {
+    const name = this.#items().find(item => SCAFFOLD.test(item.name))?.name;
+    if (!name) throw new Error('no dirt, cobblestone or planks to pillar with');
+    const start = this.#here(), inWater = this.#inWater();
+    let placed = 0;
+    if (inWater) this.#bot.setControlState('jump', true);
+    try {
+      while (!out() && !signal.aborted && placed < LIMITS.pillarMax) {
+        const exit = this.#headUnder() ? null : this.#toward(rim);
+        if (exit && await this.#stepOut(signal, exit)) { await this.#wait(this.#pace.settle, signal); if (out()) break; }
+        if (!this.#count(name)) break;
+        await this.#pillarStep(name, signal);
+        placed++;
+        this.#progress(`placed ${placed} ${name} under you`);
+        await this.#wait(this.#pace.settle, signal);
+      }
+      if (!out()) await this.#stepOut(signal, this.#toward(rim));
+    } finally { if (inWater) this.#release('jump'); }
+    return out() ? `pillared up ${plural(placed, `${name} block`)} and stepped out (${round(this.#bot.entity.position.y - start.y)} blocks up)` : null;
+  }
+
+  // Dig a staircase up toward the rim: head room, the two blocks ahead, a step (placed if missing), and up onto it.
+  async #stairsOut(signal, rim, out) {
+    const start = this.#here();
+    let steps = 0;
+    const filler = () => this.#items().find(item => SCAFFOLD.test(item.name))?.name ?? null;
+    const sides = rim ? [[rim.dx, rim.dz], ...SIDES.filter(([dx, dz]) => dx !== rim.dx || dz !== rim.dz)] : SIDES;
+    for (const [dx, dz] of sides) {
+      for (let n = 0; n < LIMITS.stairMax && !signal.aborted && !out(); n++) {
+        const f = this.#feet(), x = f.x + dx, z = f.z + dz;
+        let blocked = false;
+        for (const [bx, by, bz] of [[f.x, f.y + 2, f.z], [x, f.y + 1, z], [x, f.y + 2, z]]) {
+          if (!this.#solid(bx, by, bz)) continue;
+          try { await this.#dig(this.#block({ x: bx, y: by, z: bz }), signal); } catch (error) { if (signal.aborted) throw error; blocked = true; break; }
+        }
+        if (blocked) break;
+        if (!this.#solid(x, f.y, z)) {
+          const name = filler();
+          if (name) { try { await this.#placeAt({ x, y: f.y, z }, name, signal); } catch (error) { if (signal.aborted) throw error; } }
+        }
+        if (!await this.#stepOut(signal, { dx, dz, up: this.#solid(x, f.y, z) ? 1 : 0 })) break; // did not get onto it: another side
+        steps++;
+        this.#progress(`dug ${plural(steps, 'stair step')}`);
+      }
+      if (out()) break;
+    }
+    return out() ? `dug ${plural(steps, 'stair step')} out (${round(this.#bot.entity.position.y - start.y)} blocks up)` : null;
+  }
+
+  // Out of water, a hole or a pit: swim up (sprint-swim), else pillar up with a scaffold block, else dig stairs.
+  // Each way is tried only while she is not out yet; what failed is said, on success too.
+  async #escape(signal) {
+    const start = this.#here(), rim = this.#rim(), out = () => this.#out(rim), tried = [];
+    if (out()) return 'not stuck: you are on your feet with a way to walk on';
+    for (const [label, run] of [['swimming up', this.#swimOut], ['pillaring', this.#pillarOut], ['digging stairs', this.#stairsOut]]) {
+      if (label === 'swimming up' && !this.#inWater()) continue;
+      let note = null;
+      try { note = await run.call(this, signal, rim, out); } catch (error) { if (signal.aborted) throw error; tried.push(`${label}: ${clean(error?.message, 80)}`); }
+      if (out()) return `${note ?? `${label} got you out`}; now at ${this.#where()}${tried.length ? ` (${tried.join('; ')})` : ''}`;
+      if (!note && !tried.some(entry => entry.startsWith(label))) tried.push(`${label} did not get you out`);
+    }
+    fail(`still stuck at ${this.#where()} (moved ${round(this.#moved(start))} blocks${rim ? `; the rim is at y ${rim.y}` : ''}): ${tried.join('; ')}`);
+  }
+
   // ---------- Skills ----------
 
   async #skill(action, signal) {
@@ -730,19 +987,20 @@ export class BotBody {
     switch (action.type) {
       case 'goto': {
         const goals = this.#goals();
+        const near = (target, range) => ({ target, range, makeGoal: () => new goals.GoalNear(target.x, target.y, target.z, range) });
         if (action.player) {
-          const target = this.#player(action.player).position;
-          await this.#walk(new goals.GoalNear(target.x, target.y, target.z, 2), signal);
-          return `reached ${action.player}`;
+          const entity = this.#player(action.player), target = { x: entity.position.x, y: entity.position.y, z: entity.position.z };
+          const how = near(target, 2), note = await this.#walkTo(how.makeGoal(), signal, how);
+          return `reached ${action.player}; now at ${this.#where()}${note}`;
         }
         if (action.block) {
           const block = this.#find(action.block, LIMITS.findRange)[0] ?? fail(`no ${action.block} within ${LIMITS.findRange} blocks`);
-          await this.#walk(new goals.GoalNear(block.position.x, block.position.y, block.position.z, 2), signal);
-          return `reached the ${action.block} at ${at(block.position)}`;
+          const how = near(block.position, 2), note = await this.#walkTo(how.makeGoal(), signal, how);
+          return `reached the ${action.block} at ${at(block.position)}; now at ${this.#where()}${note}`;
         }
         if (distance(here, action) > LIMITS.gotoDistance) throw new Error(`too far (more than ${LIMITS.gotoDistance} blocks)`);
-        await this.#walk(new goals.GoalNear(action.x, action.y, action.z, 1), signal);
-        return `arrived near ${Math.floor(action.x)} ${Math.floor(action.y)} ${Math.floor(action.z)}`;
+        const how = near(action, 1), note = await this.#walkTo(how.makeGoal(), signal, how);
+        return `arrived near ${Math.floor(action.x)} ${Math.floor(action.y)} ${Math.floor(action.z)}; now at ${this.#where()}${note}`;
       }
       case 'follow': {
         const goals = this.#goals(), entity = this.#player(action.player);
@@ -754,27 +1012,45 @@ export class BotBody {
       case 'wander': {
         const goals = this.#goals(), angle = Math.random() * Math.PI * 2;
         const x = Math.floor(here.x + Math.cos(angle) * action.distance), z = Math.floor(here.z + Math.sin(angle) * action.distance);
-        await this.#walk(new goals.GoalNearXZ(x, z, 3), signal);
-        const now = bot.entity.position;
-        return `wandered to ${Math.floor(now.x)} ${Math.floor(now.y)} ${Math.floor(now.z)}`;
+        const note = await this.#walkTo(new goals.GoalNearXZ(x, z, 3), signal, { target: { x, z }, range: 3, makeGoal: () => new goals.GoalNearXZ(x, z, 3) });
+        return `wandered to ${this.#where()}${note}`;
       }
       case 'look_at': {
         const target = action.player ? this.#player(action.player).position.offset(0, 1.6, 0) : this.#vec(action.x, action.y, action.z);
         await bot.lookAt(target);
         return action.player ? `looking at ${action.player}` : 'looking there';
       }
-      case 'jump':
+      case 'jump': {
+        // Success is leaving the ground (half a block up at least), not having pressed the key.
+        const startY = here.y;
+        let peak = startY;
         bot.setControlState('jump', true);
-        try { await this.#wait(this.#pace.settle, signal); } finally { bot.setControlState('jump', false); }
-        return 'jumped';
+        try { await this.#until(() => { peak = Math.max(peak, bot.entity.position.y); return peak - startY >= 0.5; }, this.#pace.settle, signal); } finally { bot.setControlState('jump', false); }
+        if (peak - startY >= 0.5) return `jumped (${round(peak - startY)} blocks up)`;
+        const f = this.#feet();
+        if (this.#inWater()) fail(`jumping in water barely moves you (rose ${round(peak - startY)}; still at ${at(f)}): use swim to rise, or escape to get out`);
+        fail(`did not leave the ground (rose ${round(peak - startY)}; still at ${at(f)})${this.#solid(f.x, f.y + 2, f.z) ? ': a block is right above your head' : ''}`);
+      }
       case 'sprint': case 'sneak':
         bot.setControlState(action.type, action.on);
         return `${action.type} ${action.on ? 'on' : 'off'}`;
-      case 'swim':
+      case 'swim': {
+        // Hold jump (and sprint-swim forward); the result is what she really did.
+        const start = this.#here(), wasIn = this.#inWater();
+        let peak = start.y;
         bot.setControlState('jump', true);
-        if (action.forward) bot.setControlState('forward', true);
-        try { await this.#wait(action.seconds * 1000, signal); } finally { bot.setControlState('jump', false); bot.setControlState('forward', false); }
-        return `swam ${action.forward ? 'forward and ' : ''}up for ${action.seconds}s`;
+        if (action.forward) { bot.setControlState('sprint', true); bot.setControlState('forward', true); }
+        try { await this.#until(() => { peak = Math.max(peak, bot.entity.position.y); return false; }, action.seconds * 1000, signal); }
+        finally { this.#release('jump', 'forward', ...(action.forward ? ['sprint'] : [])); }
+        const end = bot.entity.position, up = peak - start.y, across = Math.hypot(end.x - start.x, end.z - start.z), under = this.#headUnder();
+        const did = `${up >= 0.3 ? `rose ${round(up)} blocks` : 'did not rise'}${action.forward ? `, ${round(across)} blocks forward` : ''}`;
+        if (up < 0.3 && across < 0.5 && (under || !wasIn)) fail(`swam for ${action.seconds}s but did not move: still at ${this.#where()}${wasIn ? ', head under water' : ' (not in water)'}; try escape`);
+        return `swam ${action.seconds}s: ${did}; now at ${this.#where()}${under ? ', head still under water' : wasIn ? ', head above water' : ''}`;
+      }
+      case 'escape': {
+        if (!this.#stuck()) return `not stuck: there is a way out on foot from ${this.#where()}`;
+        return `got out: ${await this.#escape(signal)}`;
+      }
 
       case 'dig': {
         const block = this.#blockTarget(action, action.block, LIMITS.collectRange, action.block);
@@ -819,13 +1095,9 @@ export class BotBody {
         const below = { x, y: y - 1, z }, under = this.#block(below);
         if (under && REPLACEABLE.has(under.name)) { await this.#placeAt(below, action.item, signal); return `placed ${action.item} below you at ${at(below)}`; }
         if (!under) fail('the block under you is not loaded');
-        await this.#hold(action.item);
-        bot.setControlState('jump', true);
-        try {
-          for (let waited = 0; bot.entity.position.y < y + 1 && waited < 1000; waited += 50) await this.#wait(50, signal);
-          await bot.placeBlock(under, this.#vec(0, 1, 0));
-        } finally { bot.setControlState('jump', false); }
-        return `jumped and placed ${action.item} under you at ${x} ${y} ${z}`;
+        // A pillar step: only once she is a full block up (in water that takes longer), else the server refuses it.
+        const target = await this.#pillarStep(action.item, signal);
+        return `${this.#inWater() ? 'swam up' : 'jumped'} and placed ${action.item} under you at ${at(target)}`;
       }
       case 'build': {
         const origin = action.x !== undefined ? action : { x: Math.floor(here.x), y: Math.floor(here.y), z: Math.floor(here.z) };

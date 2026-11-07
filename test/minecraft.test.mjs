@@ -137,7 +137,8 @@ function fakeBot({ goto = async () => {} } = {}) {
     async dig(block) { bot.dug.push(block.name); bot.blocks.delete(`${block.position.x},${block.position.y},${block.position.z}`); },
     async equip() {}, async consume() { bot.food = 20; }, async lookAt(target) { bot.looked = target; } });
   bot.pathfinder = { goals: [], setGoal(goal) { bot.goal = goal; }, stop() { bot.stopped = (bot.stopped ?? 0) + 1; }, setMovements(m) { bot.movements = m; },
-    goto: async goal => { bot.pathfinder.goals.push(goal); return goto(goal); } };
+    // t70: a walk that resolves ends at the goal (the body checks where she really is afterwards).
+    goto: async goal => { bot.pathfinder.goals.push(goal); const result = await goto(goal); if (goal.kind === 'near') bot.entity.position = new Vec(...goal.args.slice(0, 3)); return result; } };
   return bot;
 }
 const goal = name => class { constructor(...args) { this.kind = name; this.args = args; } };
@@ -509,7 +510,7 @@ test('root cause: a chat line no longer aborts the body\'s running action', asyn
   assert.deepEqual(await body.act({ type: 'collect', block: 'Oak Planks' }), { type: 'collect', ok: false, detail: 'collect needs a block name' });
   assert.equal(body.perceive().doing, 'goto', 'a chat line, chat events, perception and a refused action leave the walk alone');
   assert.equal(bot.stopped, undefined, 'the pathfinder was never stopped');
-  resolvers[0](); assert.deepEqual(await walking, { type: 'goto', ok: true, detail: 'arrived near 30 64 0' });
+  resolvers[0](); assert.deepEqual(await walking, { type: 'goto', ok: true, detail: 'arrived near 30 64 0; now at 30 64 0' });
   body.detach();
 });
 
