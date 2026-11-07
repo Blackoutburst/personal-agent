@@ -16,6 +16,7 @@ References studied for ideas only (no code copied): Mineflayer, Mindcraft, Voyag
 | Agent loop | `src/minecraft.mjs` (`MinecraftAgent`, `TurnGate`) | Decides when to take a turn, builds the prompt, parses the reply, runs one action, reconnects. |
 | Body | `src/minecraft-body.mjs` (`BotBody`) | Perception, events and the closed skill library on one Mineflayer bot. |
 | Worker | `src/minecraft-worker.mjs` | Runs Mineflayer in its own worker thread: one connection per worker. |
+| Sign-in | `src/minecraft-auth.mjs` | Online mode: per-companion Microsoft sign-in folder (0700, files 0600), device-code view, sign-out wipe. |
 | Packages | `src/deps.mjs` | Loads `mineflayer` and `mineflayer-pathfinder` lazily; missing packages only switch the feature off. |
 
 ### The loop
@@ -68,7 +69,7 @@ blocks, so a companion cannot take apart someone's build.
 - **Other players have no powers**: their chat is conversation only. A game turn gets the workspace file tools (Read,
   Edit, Write, Glob, Grep on Claude; Codex keeps its workspace sandbox with web search off) and nothing else: no web, no
   Board, mail, calendar, reminders, contacts or files tools. This holds for every player, the owner's own in-game name
-  included, because names can be faked on an offline-mode server.
+  included: in offline mode names can be faked, and even in online mode a name is no consent.
 
 ### Memory
 
@@ -86,10 +87,12 @@ blocks, so a companion cannot take apart someone's build.
 - The bot runs in a worker thread (768 MiB heap limit). A Mineflayer exception ends that worker only; every callback in
   the main thread is wrapped, so the bot cannot crash the web service.
 - Reconnects back off from 5 s doubling to 5 minutes, with jitter; a connection that stayed up a minute resets it.
-  "Not whitelisted", banned, "logged in from another location" and missing packages wait 30 minutes.
+  "Not whitelisted", banned, "logged in from another location", "Failed to verify username" (online mode) and missing
+  packages wait 30 minutes. Microsoft sign-in problems (a code nobody entered in time, a refused sign-in) back off from
+  1 minute, doubling, to 30 minutes, so a new code is never requested in a tight loop.
 - Shutdown: the service's `close()` stops the agents (abort the turn, quit the bot, terminate the worker after 3 s).
-- The service runs with `ProtectHome=read-only`: the connector writes only the companion workspace (diary) and the
-  database, both under `~/personal-agent-data`.
+- The service runs with `ProtectHome=read-only`: the connector writes only the companion workspace (diary), the
+  database and, in online mode, `~/personal-agent-data/minecraft-auth/<companion id>/`, all under `~/personal-agent-data`.
 
 ## Configuration (off by default)
 
@@ -104,6 +107,36 @@ off and on in Me › Connectors (the card shows the name, the server and how man
 
 Only `username` is required; the rest are the defaults shown. Two companions cannot share a name. `ownerName` (the
 owner's in-game name) is accepted for later use and grants nothing.
+
+### Online mode: each companion's own Microsoft account
+
+With `"auth": "microsoft"` the companion signs in with its own Minecraft (Microsoft) account; `"offline"` is the default
+and the behaviour above. In online mode `username` is optional: the in-game name comes from the account. If given, it is
+only a label and the sign-in cache key (without it the owner label is the key).
+
+```json
+"minecraft": { "auth": "microsoft" }
+"minecraft": { "auth": "microsoft", "username": "SentientToaster" }
+```
+
+- **Sign-in** (Mineflayer `auth: 'microsoft'`, prismarine-auth 3.1.1, already a dependency of mineflayer 4.39.0: no new
+  package). On the first connection, or when the saved sign-in no longer works, the bot asks Microsoft for a device code.
+  Me › Connectors then shows, **only to that companion's owner**: "Sign in to Minecraft: open
+  https://www.microsoft.com/link and enter ABCD-1234", with the code's expiry (about 15 minutes). The owner opens the
+  link, signs in with the companion's account and enters the code; the bot then joins normally. The card refreshes by
+  itself while it waits.
+- **Tokens** stay in `~/personal-agent-data/minecraft-auth/<companion id>/` (folder 0700, each cache file 0600, written
+  atomically, never through a link). Access, refresh and Xbox tokens are never logged, returned by the API, shown on the
+  card, put in a prompt or sent to the Board; the journal says only that a sign-in is needed or done, never the code.
+  Library messages from failed sign-ins are replaced by fixed texts.
+- **Expiry and failures**: an unused code expires; the next code comes after 1 minute, then 2, 4… up to 30 minutes. A
+  refused session ("session rejected", "Failed to verify username") makes the next connection fetch the Xbox and
+  Minecraft tokens again from the Microsoft sign-in; if that is refused as well, a new code is shown.
+- **Sign out**: Me › Connectors › "Sign out of Minecraft" (once signed in) stops the bot, deletes the contents of the
+  companion's sign-in folder and forgets the account name; with the connector on, a new code follows (to switch
+  accounts). "Disconnect" just switches the connector off and keeps the sign-in.
+- The account must own Minecraft Java Edition. One account per companion: the same account cannot play twice at once
+  (the server kicks with "You logged in from another location", which waits 30 minutes).
 
 ## Packages and releases
 
@@ -167,9 +200,10 @@ enable-query=false
 enable-command-block=false
 motd=Companion survival
 PROPS
+#    online-mode=false is the original offline setup; online mode sets it to true ("Switching to online mode" below).
 #    server-ip= (empty) listens on every interface because the server is public; for loopback only use server-ip=127.0.0.1.
 
-# 6. whitelist.json with offline-mode UUIDs (computed by ops/minecraft/offline-uuid.mjs; add the humans' names too).
+# 6. (Offline mode only; for online mode see below.) whitelist.json with offline-mode UUIDs (computed by ops/minecraft/offline-uuid.mjs; add the humans' names too).
 #    SentientToaster -> 58367002-f226-35b0-9678-4a622d6b424d
 node ~/src/personal-agent/ops/minecraft/offline-uuid.mjs SentientToaster | sudo -u companion-survival tee /srv/companion-survival/whitelist.json
 sudo -u companion-survival sh -c 'echo "[]" > /srv/companion-survival/ops.json'
@@ -195,6 +229,51 @@ plus JVM overhead), `CPUQuota=200%` and `Nice=5`, so it stays modest on the 15 G
 Then enable a companion: add the `minecraft` block to its owners.json entry (above) and restart the companion service
 with a release that contains this connector.
 
+### Switching to online mode (owner decision: online-mode=true, one real account per companion, no Velocity)
+
+The UUIDs change: an online-mode server knows players by their **real** Mojang UUIDs, so every offline UUID in the
+current `whitelist.json` and `ops.json` (the `OfflinePlayer:` MD5 UUIDs from `offline-uuid.mjs`, e.g.
+SentientToaster → 58367002-…) becomes invalid. Those entries no longer match anyone, and the old offline players' data
+in `world/playerdata/<offline uuid>.dat` (inventory, position) is not carried over to the real UUIDs.
+
+```sh
+# 1. Stop the server and keep a copy of the current lists.
+sudo systemctl stop companion-survival
+sudo -u companion-survival cp /srv/companion-survival/whitelist.json /srv/companion-survival/whitelist.offline.json
+sudo -u companion-survival cp /srv/companion-survival/ops.json /srv/companion-survival/ops.offline.json
+
+# 2. server.properties: online-mode=true (keep white-list=true and enforce-whitelist=true).
+sudo -u companion-survival sed -i 's/^online-mode=.*/online-mode=true/' /srv/companion-survival/server.properties
+grep -E '^(online-mode|white-list|enforce-whitelist)=' /srv/companion-survival/server.properties
+
+# 3. Whitelist by real name, with real UUIDs. Either (a) write whitelist.json yourself, one entry per account, with
+#    the UUID from the Mojang API (it answers {"id":"<32 hex>","name":"<exact name>"}; add the dashes 8-4-4-4-12):
+curl -fsS https://api.mojang.com/users/profiles/minecraft/<name>
+#    the same, printed as a dashed UUID:
+curl -fsS https://api.mojang.com/users/profiles/minecraft/<name> \
+  | sed -E 's/.*"id" *: *"([0-9a-f]{8})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{12})".*/\1-\2-\3-\4-\5/'
+#    e.g. for one companion account and one human:
+sudo -u companion-survival tee /srv/companion-survival/whitelist.json >/dev/null <<'JSON'
+[ { "uuid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "name": "<companion account name>" },
+  { "uuid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "name": "<human name>" } ]
+JSON
+sudo -u companion-survival sh -c 'echo "[]" > /srv/companion-survival/ops.json'   # or real UUIDs, same format plus "level": 4
+#    or (b) start the server and use the console command, which looks the real UUID up itself:
+#    whitelist add <name>   (and op <name>; whitelist reload after editing the file by hand)
+#    The unit has no console and RCON is off, so (a) is the way on this host unless a console is attached.
+
+# 4. Restart and check the log.
+sudo systemctl start companion-survival
+sudo journalctl -u companion-survival -f        # "Done (…)!"; no "offline mode" warning any more
+
+# 5. Companions: set "auth": "microsoft" in their owners.json minecraft blocks (username optional), restart the
+#    companion service, then each owner opens Me › Connectors and signs the companion in with the shown code.
+```
+
+A companion that is not whitelisted under its account's real name is kicked with "You are not whitelisted" (30-minute
+wait); add its account's name (the card shows it once the companion has signed in) and it joins on the next try.
+`ops/minecraft/offline-uuid.mjs` is for offline mode only.
+
 ## Checking it
 
 ### E2E harness (fake turns, no model)
@@ -203,6 +282,7 @@ with a release that contains this connector.
 cd ~/src/personal-agent && npm ci        # once, for the packages
 node ops/minecraft/e2e.mjs               # 127.0.0.1:25566 as SentientToaster, 120 s at most
 # MC_E2E_HOST, MC_E2E_PORT, MC_E2E_NAME, MC_E2E_SECONDS, MC_E2E_VERSION override the defaults (port 25565 is refused).
+# Online mode: MC_E2E_AUTH=microsoft MC_E2E_PROFILES=~/mc-e2e-auth MC_E2E_SECONDS=900 (the code prints on the terminal).
 ```
 
 It runs the real worker and Mineflayer with a fake turn function (scripted replies: say a line with a nonce and wander,
@@ -226,7 +306,8 @@ Me › Connectors first, or whitelist and use another name).
 
 ## Open decisions for the owner
 
-- **Public port and name spoofing.** The server is public on 25566 in offline mode. Offline mode means anyone can
+- **Public port and name spoofing** (offline mode; online mode, decided 2026-11-07, removes this: Mojang verifies each
+  account). The server is public on 25566 in offline mode. Offline mode means anyone can
   connect under any name, and the whitelist only checks the name (offline UUIDs are derived from the name), so a
   stranger who guesses a whitelisted name can join as that player, including as SentientToaster or as a human.
   The app side is safe by construction (nobody's chat, not even the owner's name, can make a companion use tools), but
@@ -234,6 +315,7 @@ Me › Connectors first, or whitelist and use another name).
   IP addresses (`ufw allow from <ip> to any port 25566 proto tcp`) and keep loopback for the bots; (b) a login plugin
   (for example nLogin or LibreLogin) so humans register a password; the bots would then need a login step and a stored
   password (not built); (c) bind Paper to 127.0.0.1 and reach it over a VPN (Tailscale/WireGuard) instead of a public port.
-- **Human whitelist names**: which players to add (their exact names; offline UUIDs come from `offline-uuid.mjs`).
-- **Cirno's in-game name** (TheScreamer's companion): then add its `minecraft` block and whitelist entry.
+- **Human whitelist names**: which players to add (their exact names; real UUIDs from the Mojang API in online mode).
+- **Cirno's account** (TheScreamer's companion): its own Minecraft account; then add its `minecraft` block
+  (`"auth": "microsoft"`) and whitelist entry.
 - Whether game turns should count against a daily budget as well (now: 40 an hour per companion while people play).

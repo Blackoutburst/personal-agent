@@ -148,7 +148,7 @@ const lookShown = () => view === 'look' || (view === 'me' && meSection === 'comp
 const connectorsShown = () => view === 'me' && meSection === 'connectors';
 function show(next) {
   view = next;
-  if (!connectorsShown()) { clearTimeout(discordTimer); discordTimer = null; }
+  if (!connectorsShown()) { clearTimeout(discordTimer); discordTimer = null; clearTimeout(minecraftTimer); minecraftTimer = null; }
   $('app').dataset.view = next;
   for (const name of ['loading', 'gate', 'chat', 'calendar', 'studio', 'board', 'group']) $(`view-${name}`).hidden = name !== next;
   $('group-list-panel').hidden = Boolean(groupThread); $('group-chat-panel').hidden = !groupThread;
@@ -933,7 +933,7 @@ let connectors = null, connectorsBusy = false, connectorsRequest = 0, connectors
 const CONNECTOR_STATES = { connected: 'Connected', pending: 'Waiting for pairing', error: 'Needs attention', not_connected: 'Not connected', paused: 'Switched off', unavailable: 'Not available', expiring: 'Expires soon' };
 const GITHUB_ERRORS = { INVALID_TOKEN: 'GitHub didn’t accept that token. Check it starts with github_pat_ and hasn’t expired.',
   X_INVALID_KEY: 'That doesn’t look like an X API bearer token.', X_KEY_REJECTED: 'X didn’t accept that key. Check it is the app’s bearer token and the app has credits.' };
-let githubForm = false, xForm = false;
+let githubForm = false, xForm = false, minecraftTimer = null;
 async function loadConnectors() {
   if (connectorsBusy || sessionDenied) return;
   const owner = ownerEpoch, token = ++connectorsRequest;
@@ -944,6 +944,10 @@ async function loadConnectors() {
     connectorsError = 'Connectors could not be loaded. Try again in a moment.';
   }
   renderConnectors();
+  // Minecraft (#68): while the bot connects or waits for a Microsoft sign-in, refresh so the code and the result show up.
+  clearTimeout(minecraftTimer); minecraftTimer = null;
+  if (owner === ownerEpoch && connectorsShown() && connectors?.some(item => item.id === 'minecraft' && item.state === 'pending') && document.visibilityState !== 'hidden')
+    minecraftTimer = setTimeout(() => { if (owner === ownerEpoch) void loadConnectors(); }, 5000);
 }
 async function setConnector(id, enabled) {
   if (connectorsBusy || sessionDenied) return;
@@ -972,6 +976,8 @@ function renderConnectors() {
       card.append(githubControls(item, owner));
     } else if (item.id === 'x') {
       card.append(xControls(item, owner));
+    } else if (item.id === 'minecraft') {
+      card.append(minecraftControls(item, owner));
     } else if (item.id === 'board' && item.state === 'unavailable') {
       card.append(boardSetupSteps());
     } else if (item.actions.length) {
@@ -986,6 +992,35 @@ function renderConnectors() {
     }
     return card;
   }));
+}
+
+// Minecraft (#68): the on/off switch, and in online mode the Microsoft sign-in code (this owner only) and sign-out.
+function minecraftControls(item, owner) {
+  const box = el('div', { className: 'github-link' });
+  if (item.signIn) {
+    const minutes = Math.max(1, Math.round((item.signIn.expiresAt - Date.now()) / 60_000));
+    box.append(el('ol', {},
+      el('li', {}, 'Open ', el('a', { href: item.signIn.url, target: '_blank', rel: 'noopener noreferrer', textContent: item.signIn.url }), ' and sign in with ', companionName(), '’s Minecraft (Microsoft) account.'),
+      el('li', {}, 'Enter the code ', el('strong', { textContent: item.signIn.code }), ` (it expires in about ${minutes} minute${minutes === 1 ? '' : 's'}).`)));
+  }
+  const on = item.actions.includes('connect');
+  const toggle = el('button', { type: 'button', className: on ? 'button primary' : 'button', disabled: connectorsBusy, textContent: on ? 'Connect' : 'Disconnect' });
+  toggle.addEventListener('click', () => {
+    if (owner !== ownerEpoch) return;
+    if (!on && !confirm(`Disconnect Minecraft? ${companionName()} stops using it until you connect it again.`)) return;
+    return setConnector(item.id, on);
+  });
+  const row = el('div', { className: 'actions' }, toggle);
+  if (item.actions.includes('signout')) {
+    const out = el('button', { type: 'button', className: 'button', disabled: connectorsBusy, textContent: 'Sign out of Minecraft' });
+    out.addEventListener('click', () => {
+      if (owner !== ownerEpoch || !confirm(`Sign ${companionName()} out of its Minecraft account? The saved sign-in is deleted; a new sign-in code follows.`)) return;
+      void githubAction({ action: 'minecraftSignOut' }, 'Signed out of Minecraft.');
+    });
+    row.append(out);
+  }
+  box.append(row);
+  return box;
 }
 
 // Agent Board: not set up for this owner yet. Pairing needs their Board account and the server admin (docs/BOARD-COMPANION.md).
@@ -1067,7 +1102,7 @@ async function githubAction(body, done) {
   catch (error) {
     if (owner !== ownerEpoch || token !== connectorsRequest) return;
     if (error.status === 401 || error.status === 403) { fileAccessDenied(); return; }
-    connectorsError = GITHUB_ERRORS[error.message] ?? (body.action.startsWith('x') ? 'X could not be reached. Try again in a moment.' : 'GitHub could not be reached. Try again in a moment.');
+    connectorsError = GITHUB_ERRORS[error.message] ?? (body.action.startsWith('minecraft') ? 'The sign-out could not be finished. Try again in a moment.' : body.action.startsWith('x') ? 'X could not be reached. Try again in a moment.' : 'GitHub could not be reached. Try again in a moment.');
   } finally { if (owner === ownerEpoch && token === connectorsRequest) { connectorsBusy = false; renderConnectors(); } }
 }
 

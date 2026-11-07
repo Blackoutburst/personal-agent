@@ -561,8 +561,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       // minecraftOptions (tests): { start: false } builds the connector without connecting; other keys go to the connector.
       const { start: _start, ...minecraftSettings } = minecraftOptions;
       if (runner && owners.some(owner => owner.minecraft)) {
+        // authDir: per-companion Microsoft sign-in folders (0700, files 0600) for "auth": "microsoft" (online mode).
         minecraft = new MinecraftConnector({ store, owners, companionIdFor: owner => companionIdFor(store, owner),
-          log: message => console.error(message), active: companionId => connectors.minecraftOn(companionId),
+          authDir: join(dataDir, 'minecraft-auth'), log: message => console.error(message), active: companionId => connectors.minecraftOn(companionId),
           busy: companionId => runner.busy(companionId),
           runTurn: async (companionId, { prompt, resume, signal }) => {
             const workspace = workspaceFor(companionId);

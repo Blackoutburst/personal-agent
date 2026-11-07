@@ -4,6 +4,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { loadPackage } from './deps.mjs';
 import { BotBody } from './minecraft-body.mjs';
+import { createAuthCache, signInView, signInFailure, safeReason } from './minecraft-auth.mjs';
 
 const LOGIN_MS = 60_000;
 const text = value => {
@@ -17,7 +18,7 @@ const post = message => { try { parentPort.postMessage(message); } catch { /* th
 function end(reason) {
   if (ended) return;
   ended = true;
-  post({ op: 'state', state: 'ended', reason: String(reason ?? 'disconnected').replace(/[\x00-\x1f\x7f§]/g, ' ').slice(0, 300) });
+  post({ op: 'state', state: 'ended', reason: safeReason(reason ?? 'disconnected').replace(/[\x00-\x1f\x7f§]/g, ' ').slice(0, 300) });
   try { body?.detach(); } catch { /* closing */ }
   setTimeout(() => process.exit(0), 200);
 }
@@ -25,20 +26,46 @@ process.on('uncaughtException', error => end('crashed: ' + (error?.message ?? 'e
 process.on('unhandledRejection', error => end('crashed: ' + (error?.message ?? 'error')));
 
 try {
-  const { host, port, username, version, companions } = workerData;
+  const { host, port, username, version, companions, auth = 'offline', profilesFolder = null, cacheKey = null, refreshTokens = false } = workerData;
   const mineflayer = loadPackage('mineflayer');
   let pathfinder = null;
   try { pathfinder = loadPackage('mineflayer-pathfinder'); } catch { /* walking skills report unavailable */ }
-  bot = mineflayer.createBot({ host, port, username, auth: 'offline', version: version || false, hideErrors: true,
+  const microsoft = auth === 'microsoft';
+  let kicked = null, login = null, signInTimer = null, session = !microsoft, signingIn = false;
+  const startLogin = () => { clearTimeout(login); login = setTimeout(() => { end(session ? 'login timed out' : 'sign-in failed'); try { bot.quit(); } catch { /* gone */ } }, LOGIN_MS); };
+  // Online mode: prismarine-auth signs in with the companion's Microsoft account. Its tokens stay in the 0600 cache
+  // files; only the device code's user code, URL and expiry leave this thread, and only while a sign-in is pending.
+  const authOptions = microsoft ? { auth: 'microsoft', username: cacheKey, profilesFolder: createAuthCache(profilesFolder, { dropDerived: refreshTokens }),
+    onMsaCode: response => {
+      const view = signInView(response);
+      clearTimeout(login);
+      if (!view) { end('sign-in failed'); return; }
+      signingIn = true;
+      post({ op: 'state', state: 'signin', signIn: view });
+      // prismarine-auth gives up when the code expires; this is a backstop.
+      clearTimeout(signInTimer);
+      signInTimer = setTimeout(() => end('sign-in code expired'), Math.max(0, view.expiresAt - Date.now()) + 30_000);
+    } } : { username, auth: 'offline' };
+  startLogin();
+  bot = mineflayer.createBot({ host, port, ...authOptions, version: version || false, hideErrors: true,
     viewDistance: 'short', respawn: true, checkTimeoutInterval: 60_000, logErrors: false });
+  // The session exists (cached or fresh sign-in): report the account's in-game name (never the session itself).
+  bot._client?.on?.('session', () => {
+    session = true; clearTimeout(signInTimer); signingIn = false;
+    post({ op: 'state', state: 'signedin', username: typeof bot._client.username === 'string' ? bot._client.username : null });
+    startLogin();
+  });
   body = new BotBody({ bot, pathfinder, companions, onEvent: event => post({ op: 'event', event }) });
   body.attach();
-  let kicked = null;
-  const login = setTimeout(() => { end('login timed out'); try { bot.quit(); } catch { /* gone */ } }, LOGIN_MS);
   bot.once('spawn', () => { clearTimeout(login); post({ op: 'state', state: 'online', username: bot.username }); });
   bot.on('kicked', reason => { kicked = 'kicked: ' + (text(reason) || 'no reason'); });
-  bot.on('error', error => { kicked ??= error?.code === 'ECONNREFUSED' ? 'server not reachable' : (error?.message ?? 'connection error'); });
-  bot.on('end', reason => { clearTimeout(login); end(kicked ?? (reason || 'disconnected')); });
+  bot.on('error', error => {
+    // Before a session exists there is no socket (no 'end' follows): a sign-in error ends this connection.
+    if (!session) { clearTimeout(login); end(signInFailure(error)); return; }
+    kicked ??= error?.code === 'ECONNREFUSED' ? 'server not reachable' : safeReason(error?.message ?? 'connection error');
+  });
+  // encryptionLoginError: Mojang's session server refused our join (the token is stale or revoked).
+  bot.on('end', reason => { clearTimeout(login); end(reason === 'encryptionLoginError' ? 'session rejected' : kicked ?? (reason || 'disconnected')); });
 } catch (error) {
   end(error?.code === 'DEPENDENCY_MISSING' ? 'DEPENDENCY_MISSING' : 'start failed: ' + (error?.message ?? 'error'));
 }

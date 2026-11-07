@@ -16,6 +16,7 @@ import { constants, openSync, writeSync, closeSync, fstatSync, mkdirSync } from 
 import { join } from 'node:path';
 import { splitFeeling } from './wardrobe.mjs';
 import { validateAction, LIMITS as BODY_LIMITS } from './minecraft-body.mjs';
+import { profilesFolderFor, hasSavedAccount, wipeProfilesFolder, checkedSignIn, safeReason } from './minecraft-auth.mjs';
 
 export const DEFAULTS = Object.freeze({ host: '127.0.0.1', port: 25566, version: '26.1.2',
   minTurnSeconds: 25, perHour: 40, idleMinutes: 5, emptyIdleMinutes: 180, sessionTurns: 30 });
@@ -28,13 +29,17 @@ const clean = (value, max) => String(value ?? '').replace(/[\x00-\x1f\x7f§]/g, 
 
 // ---------- Configuration ----------
 
-// The owner's "minecraft" block in owners.json (src/runtime-config.mjs). No secrets: the server runs in offline mode
-// behind a whitelist (docs/MINECRAFT.md).
+// The owner's "minecraft" block in owners.json (src/runtime-config.mjs). No secrets. "auth": "offline" (the default)
+// joins an offline-mode server under "username"; "microsoft" signs in with the companion's own Minecraft account
+// (device code shown to its owner in Connectors), the in-game name then comes from the account and "username", if
+// given, is only a label and the sign-in cache key (docs/MINECRAFT.md).
+export const AUTH_MODES = Object.freeze(['offline', 'microsoft']);
 export function parseMinecraftConfig(value, label = 'owner') {
   const fail = () => { throw new Error(`Invalid minecraft settings for ${label}`); };
-  if (!object(value) || Object.keys(value).some(key => !['username', 'ownerName', 'host', 'port', 'version', 'turns'].includes(key))) fail();
-  const { username, ownerName = null, host = DEFAULTS.host, port = DEFAULTS.port, version = DEFAULTS.version, turns = {} } = value;
-  if (typeof username !== 'string' || !USERNAME.test(username)) fail();
+  if (!object(value) || Object.keys(value).some(key => !['auth', 'username', 'ownerName', 'host', 'port', 'version', 'turns'].includes(key))) fail();
+  const { auth = 'offline', username = null, ownerName = null, host = DEFAULTS.host, port = DEFAULTS.port, version = DEFAULTS.version, turns = {} } = value;
+  if (!AUTH_MODES.includes(auth)) fail();
+  if (!(username === null && auth === 'microsoft') && (typeof username !== 'string' || !USERNAME.test(username))) fail();
   if (ownerName !== null && (typeof ownerName !== 'string' || !USERNAME.test(ownerName))) fail();
   if (typeof host !== 'string' || !/^[A-Za-z0-9.-]{1,253}$/.test(host) || !int(port, 1, 65535)) fail();
   if (typeof version !== 'string' || !/^[0-9]{1,3}(?:\.[0-9]{1,3}){1,2}$/.test(version)) fail();
@@ -42,7 +47,7 @@ export function parseMinecraftConfig(value, label = 'owner') {
   const { minSeconds = DEFAULTS.minTurnSeconds, perHour = DEFAULTS.perHour, idleMinutes = DEFAULTS.idleMinutes, emptyIdleMinutes = DEFAULTS.emptyIdleMinutes } = turns;
   // Never faster than one turn per 15 s, never more than 120 an hour; emptyIdleMinutes 0 = no turns while nobody is online.
   if (!int(minSeconds, 15, 3600) || !int(perHour, 1, 120) || !int(idleMinutes, 1, 720) || !(emptyIdleMinutes === 0 || int(emptyIdleMinutes, 30, 10_080))) fail();
-  return Object.freeze({ username, ownerName, host, port, version,
+  return Object.freeze({ auth, username, ownerName, host, port, version,
     turns: Object.freeze({ minSeconds, perHour, idleMinutes, emptyIdleMinutes }) });
 }
 
@@ -58,10 +63,14 @@ export function offlineUuid(name) {
 // ---------- Reconnect policy ----------
 
 // Exponential backoff with jitter: 5 s, 10 s, 20 s … up to 5 minutes. Reasons that retrying soon cannot fix (not on the
-// whitelist, banned, the name already logged in, the package missing) wait 30 minutes.
+// whitelist, banned, the name already logged in, the online-mode name check failing, the package missing) wait 30
+// minutes. Microsoft sign-in problems (a code nobody entered, a refused sign-in) back off from 1 minute to 30 minutes,
+// so a new code is never requested in a tight loop.
 export function reconnectDelay(attempt, reason = '', random = Math.random) {
-  if (/DEPENDENCY_MISSING|whitelist|white-listed|banned|logged in from another location|duplicate|name.*(taken|in use)/i.test(String(reason))) return 30 * 60_000;
-  const base = Math.min(5 * 60_000, 5000 * 2 ** Math.max(0, Math.min(attempt, 10)));
+  if (/DEPENDENCY_MISSING|whitelist|white-listed|banned|logged in from another location|failed to verify username|duplicate|name.*(taken|in use)/i.test(String(reason))) return 30 * 60_000;
+  const n = Math.max(0, Math.min(attempt, 10));
+  if (/^sign-in/i.test(String(reason))) { const base = Math.min(30 * 60_000, 60_000 * 2 ** n); return Math.round(base + random() * Math.min(15_000, base / 4)); }
+  const base = Math.min(5 * 60_000, 5000 * 2 ** n);
   return Math.round(base + random() * Math.min(5000, base / 2));
 }
 
@@ -211,8 +220,11 @@ export function workerConnect(config, { onEvent, onState }, { WorkerImpl = Worke
     onState('ended', reason);
   };
   try {
+    // Online mode (#68): profilesFolder is the companion's 0700 sign-in folder; tokens never cross this boundary.
+    const microsoft = config.auth === 'microsoft';
     worker = new WorkerImpl(workerUrl, { workerData: { host: config.host, port: config.port, username: config.username,
-      version: config.version, companions: config.companions ?? [] }, resourceLimits: { maxOldGenerationSizeMb: 768 }, stdout: true, stderr: true });
+      version: config.version, companions: config.companions ?? [], auth: microsoft ? 'microsoft' : 'offline',
+      ...(microsoft ? { profilesFolder: config.profilesFolder, cacheKey: config.cacheKey ?? config.username ?? 'companion', refreshTokens: config.refreshTokens === true } : {}) }, resourceLimits: { maxOldGenerationSizeMb: 768 }, stdout: true, stderr: true });
   } catch (error) { queueMicrotask(() => end('start failed: ' + (error?.message ?? 'error'))); return { perceive: () => Promise.reject(new Error('disconnected')), act: () => Promise.reject(new Error('disconnected')), quit: async () => {} }; }
   // Mineflayer's own console output stays out of the service log.
   worker.stdout?.resume?.(); worker.stderr?.resume?.();
@@ -221,6 +233,8 @@ export function workerConnect(config, { onEvent, onState }, { WorkerImpl = Worke
     if (!object(message)) return;
     if (message.op === 'event' && object(message.event)) onEvent(message.event);
     else if (message.op === 'state' && message.state === 'online') onState('online', message.username ?? null);
+    else if (message.op === 'state' && message.state === 'signin') { const signIn = checkedSignIn(message.signIn); if (signIn) onState('signin', signIn); }
+    else if (message.op === 'state' && message.state === 'signedin') onState('signedin', typeof message.username === 'string' ? message.username : null);
     else if (message.op === 'state' && message.state === 'ended') end(message.reason);
     else if (message.op === 'reply' && pending.has(message.id)) {
       const { resolve, reject, timer } = pending.get(message.id);
@@ -253,24 +267,37 @@ export class MinecraftAgent {
   #config; #companions; #connect; #turn; #diary; #active; #busy; #ownerName; #now; #random; #tickMs; #log; #gate;
   #slot = null; #state = 'stopped'; #problem = null; #running = false; #attempt = 0; #onlineAt = 0; #retry = null; #tick = null;
   #turning = false; #controller = null; #players = []; #events = []; #chat = []; #lastResult = null; #problems = []; #spokeAt = 0;
-  #diaryTimes = []; #actionToken = 0; #username;
+  #diaryTimes = []; #actionToken = 0; #username; #label; #onName; #signIn = null; #refreshTokens = false;
 
   // config: parseMinecraftConfig output. companions: the other companions' in-game names (not counted as people).
   // connect(config, handlers) -> connection (workerConnect). turn({ prompt, signal }) -> reply text.
   // diary(text) -> boolean. active() -> whether the owner has the connector on. busy() -> the agent is busy with a chat.
+  // companions may be a function (names learnt from accounts). username: the last known in-game name (online mode).
+  // onName(name): the in-game name the server gave the bot. label: how log lines name it before it has a name.
   constructor({ config, companions = [], connect = workerConnect, turn, diary = () => false, active = () => true, busy = () => false,
-    ownerName = 'your owner', now = Date.now, random = Math.random, tickMs = 2000, log = () => {} }) {
-    this.#config = config; this.#companions = companions.filter(name => name.toLowerCase() !== config.username.toLowerCase());
+    ownerName = 'your owner', now = Date.now, random = Math.random, tickMs = 2000, log = () => {}, username = null, onName = () => {}, label = 'a companion' }) {
+    this.#config = config; this.#companions = typeof companions === 'function' ? companions : () => companions;
     this.#connect = connect; this.#turn = turn; this.#diary = diary; this.#active = active; this.#busy = busy; this.#ownerName = ownerName;
-    this.#now = now; this.#random = random; this.#tickMs = tickMs; this.#log = log; this.#username = config.username;
+    this.#now = now; this.#random = random; this.#tickMs = tickMs; this.#log = log; this.#username = username ?? config.username ?? null;
+    this.#onName = onName; this.#label = label;
     this.#gate = new TurnGate({ minMs: config.turns.minSeconds * 1000, perHour: config.turns.perHour, idleMs: config.turns.idleMinutes * 60_000,
       emptyIdleMs: config.turns.emptyIdleMinutes * 60_000, now });
   }
 
   get gate() { return this.#gate; }
 
+  // The other companions' names (never this one's own).
+  #others() {
+    let names = [];
+    try { names = this.#companions() ?? []; } catch { names = []; }
+    const own = new Set([this.#username, this.#config.username].filter(Boolean).map(name => name.toLowerCase()));
+    return [...new Set(names.filter(name => typeof name === 'string' && name && !own.has(name.toLowerCase())))];
+  }
+
+  // signIn ({ code, url, expiresAt }) only while a Microsoft sign-in waits for its owner; never any token.
   status() {
-    return { state: this.#state, username: this.#username, ...(this.#problem ? { problem: this.#problem } : {}),
+    const signIn = this.#state === 'signin' && this.#signIn && this.#signIn.expiresAt > this.#now() ? { signIn: { ...this.#signIn } } : {};
+    return { state: this.#state, username: this.#username, auth: this.#config.auth ?? 'offline', ...(this.#problem ? { problem: this.#problem } : {}), ...signIn,
       players: this.#players.length, people: this.#humans().length, turnsThisHour: this.#gate.turnsThisHour };
   }
 
@@ -287,7 +314,7 @@ export class MinecraftAgent {
     clearInterval(this.#tick); clearTimeout(this.#retry);
     this.#controller?.abort();
     const conn = this.#slot?.conn;
-    this.#slot = null; this.#state = 'stopped';
+    this.#slot = null; this.#state = 'stopped'; this.#signIn = null;
     if (conn) await Promise.race([conn.quit().catch(() => {}), new Promise(resolve => setTimeout(resolve, 5000).unref?.())]);
   }
 
@@ -308,12 +335,23 @@ export class MinecraftAgent {
       onState: (state, detail) => this.#safely(() => {
         if (this.#slot !== slot) return;
         if (state === 'online') {
-          this.#state = 'online'; this.#problem = null; this.#onlineAt = this.#now();
-          if (typeof detail === 'string' && detail) this.#username = detail;
+          this.#state = 'online'; this.#problem = null; this.#onlineAt = this.#now(); this.#signIn = null;
+          if (typeof detail === 'string' && USERNAME.test(detail)) { this.#username = detail; this.#safely(() => this.#onName(detail)); }
+        } else if (state === 'signin' && object(detail)) {
+          // The code is for the owner's eyes only (status → their Connectors card); the log never carries it.
+          this.#state = 'signin'; this.#signIn = { code: detail.code, url: detail.url, expiresAt: detail.expiresAt }; this.#problem = null;
+          this.#log(`Minecraft: ${this.#username ?? this.#label} needs a Microsoft sign-in; its owner sees the code in Connectors`);
+        } else if (state === 'signedin') {
+          const pending = this.#state === 'signin';
+          this.#state = 'connecting'; this.#signIn = null;
+          if (typeof detail === 'string' && USERNAME.test(detail)) { this.#username = detail; this.#safely(() => this.#onName(detail)); }
+          if (pending) this.#log(`Minecraft: ${this.#username ?? this.#label} signed in with Microsoft`);
         } else if (state === 'ended') this.#ended(String(detail ?? 'disconnected'));
       })
     };
-    try { slot.conn = this.#connect({ ...this.#config, companions: this.#companions }, handlers); }
+    const refreshTokens = this.#refreshTokens;
+    this.#refreshTokens = false;
+    try { slot.conn = this.#connect({ ...this.#config, companions: this.#others(), ...(refreshTokens ? { refreshTokens: true } : {}) }, handlers); }
     catch (error) { if (this.#slot === slot) this.#ended('start failed: ' + (error?.message ?? 'error')); }
   }
 
@@ -323,18 +361,20 @@ export class MinecraftAgent {
     this.#players = [];
     // A connection that stayed up a minute resets the backoff.
     if (this.#onlineAt && this.#now() - this.#onlineAt > 60_000) this.#attempt = 0;
-    this.#onlineAt = 0;
+    this.#onlineAt = 0; this.#signIn = null;
     const delay = reconnectDelay(this.#attempt++, reason, this.#random);
-    this.#problem = clean(reason, 200);
+    // The session was refused: next time fetch the Xbox and Minecraft tokens again (a new code if that fails too).
+    if (/session rejected|failed to verify username/i.test(reason)) this.#refreshTokens = true;
+    this.#problem = clean(safeReason(reason), 200);
     this.#state = reason === 'DEPENDENCY_MISSING' ? 'error' : 'offline';
     if (!this.#running) return;
-    this.#log(`Minecraft: ${this.#username} disconnected (${this.#problem}); retrying in ${Math.round(delay / 1000)} s`);
+    this.#log(`Minecraft: ${this.#username ?? this.#label} disconnected (${this.#problem}); retrying in ${Math.round(delay / 1000)} s`);
     clearTimeout(this.#retry);
     this.#retry = setTimeout(() => this.#safely(() => this.#open()), delay);
     this.#retry.unref?.();
   }
 
-  #humans() { const companions = new Set(this.#companions.map(name => name.toLowerCase())); return this.#players.filter(name => !companions.has(name.toLowerCase())); }
+  #humans() { const companions = new Set(this.#others().map(name => name.toLowerCase())); return this.#players.filter(name => !companions.has(name.toLowerCase())); }
 
   #log2(event) {
     this.#events.push(event);
@@ -357,7 +397,7 @@ export class MinecraftAgent {
         if (!from || !text) return;
         this.#chat.push({ at, from, text, ...(event.whisper ? { whisper: true } : {}) });
         if (this.#chat.length > PROMPT_LIMITS.chat * 2) this.#chat.splice(0, this.#chat.length - PROMPT_LIMITS.chat);
-        const names = [this.#username, this.#config.username].map(name => name.toLowerCase());
+        const names = [this.#username, this.#config.username].filter(Boolean).map(name => name.toLowerCase());
         const addressed = event.whisper || names.some(name => text.toLowerCase().includes(name))
           || (at - this.#spokeAt < SPOKE_MS && this.#humans().some(name => name.toLowerCase() === from.toLowerCase()));
         if (addressed) this.#gate.note(`${from} ${event.whisper ? 'whispered to' : 'talked to'} you`);
@@ -466,19 +506,22 @@ export class MinecraftAgent {
 // ---------- The service ----------
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS minecraft_sessions(companion_id TEXT PRIMARY KEY, session TEXT, turns INTEGER NOT NULL,
-  at INTEGER NOT NULL)`;
+  at INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS minecraft_accounts(companion_id TEXT PRIMARY KEY, name TEXT NOT NULL, at INTEGER NOT NULL)`;
 
 // All configured companions. owners: runtime owners (with .minecraft when enabled by the admin).
 // runTurn(companionId, { prompt, resume, signal }) -> { text, sessionId }: one native agent turn in the workspace.
 // diary(companionId, text) -> boolean. active(companionId) -> owner switch. busy(companionId) -> agent busy elsewhere.
+// authDir: where the per-companion Microsoft sign-in folders live (<dataDir>/minecraft-auth; needed for "auth": "microsoft").
 export class MinecraftConnector {
   #db; #owners; #companionIdFor; #runTurn; #diary; #active; #busy; #connect; #now; #log; #agents = new Map(); #refresh = null;
-  #ownerName; #sessionTurns; #tickMs;
+  #ownerName; #sessionTurns; #tickMs; #authDir; #random;
   constructor({ store, owners = [], companionIdFor, runTurn, diary = () => false, active = () => true, busy = () => false,
-    connect = workerConnect, ownerName = owner => owner.name ?? owner.label, now = Date.now, log = () => {}, sessionTurns = DEFAULTS.sessionTurns, tickMs = 2000 }) {
+    connect = workerConnect, ownerName = owner => owner.name ?? owner.label, now = Date.now, log = () => {}, sessionTurns = DEFAULTS.sessionTurns, tickMs = 2000,
+    authDir = null, random = Math.random }) {
     this.#db = store.db; this.#owners = owners.filter(owner => owner.minecraft); this.#companionIdFor = companionIdFor; this.#runTurn = runTurn;
     this.#diary = diary; this.#active = active; this.#busy = busy; this.#connect = connect; this.#now = now; this.#log = log;
-    this.#ownerName = ownerName; this.#sessionTurns = sessionTurns; this.#tickMs = tickMs;
+    this.#ownerName = ownerName; this.#sessionTurns = sessionTurns; this.#tickMs = tickMs; this.#authDir = authDir; this.#random = random;
     this.#db.exec(SCHEMA);
   }
 
@@ -492,18 +535,52 @@ export class MinecraftConnector {
     this.#refresh.unref?.();
   }
 
+  // Every companion's in-game name: the configured ones and those learnt from Microsoft accounts.
+  #names() {
+    const learnt = this.#db.prepare('SELECT name FROM minecraft_accounts').all().map(row => row.name);
+    return [...new Set([...this.#owners.map(owner => owner.minecraft.username).filter(Boolean), ...learnt])];
+  }
+  #accountName(companionId) { return this.#db.prepare('SELECT name FROM minecraft_accounts WHERE companion_id=?').get(companionId)?.name ?? null; }
+  #profilesFolder(companionId) {
+    if (!this.#authDir) throw new Error('Minecraft Microsoft sign-in needs the data dir');
+    return profilesFolderFor(this.#authDir, companionId);
+  }
+
+  #startAgent(owner, companionId) {
+    const microsoft = owner.minecraft.auth === 'microsoft';
+    // Online mode: the companion's own 0700 sign-in folder; the cache key is the configured name or the owner label.
+    const config = microsoft ? { ...owner.minecraft, profilesFolder: this.#profilesFolder(companionId), cacheKey: owner.minecraft.username ?? owner.label } : owner.minecraft;
+    const agent = new MinecraftAgent({ config, companions: () => this.#names(), connect: this.#connect, now: this.#now, log: this.#log,
+      ownerName: this.#ownerName(owner), tickMs: this.#tickMs, random: this.#random, label: `${owner.label}'s companion`,
+      username: microsoft ? this.#accountName(companionId) ?? owner.minecraft.username : owner.minecraft.username,
+      onName: name => { if (microsoft) this.#db.prepare(`INSERT INTO minecraft_accounts(companion_id, name, at) VALUES(?,?,?) ON CONFLICT(companion_id)
+        DO UPDATE SET name=excluded.name, at=excluded.at`).run(companionId, name, this.#now()); },
+      turn: ({ prompt, signal }) => this.#turn(companionId, prompt, signal),
+      diary: text => this.#diary(companionId, text), active: () => this.#active(companionId), busy: () => this.#busy(companionId) });
+    this.#agents.set(companionId, agent);
+    agent.start();
+  }
+
   #startAgents() {
-    const names = this.#owners.map(owner => owner.minecraft.username);
     for (const owner of this.#owners) {
       const companionId = this.#companionIdFor(owner);
       if (!companionId || this.#agents.has(companionId)) continue;
-      const agent = new MinecraftAgent({ config: owner.minecraft, companions: names, connect: this.#connect, now: this.#now, log: this.#log,
-        ownerName: this.#ownerName(owner), tickMs: this.#tickMs,
-        turn: ({ prompt, signal }) => this.#turn(companionId, prompt, signal),
-        diary: text => this.#diary(companionId, text), active: () => this.#active(companionId), busy: () => this.#busy(companionId) });
-      this.#agents.set(companionId, agent);
-      agent.start();
+      try { this.#startAgent(owner, companionId); } catch (error) { this.#log(`Minecraft: ${owner.label}'s companion could not start (${clean(error?.message, 120)})`); }
     }
+  }
+
+  // Sign out (online mode): stop the bot, delete the companion's sign-in folder contents and forget the account name;
+  // the agent then starts again and asks for a new device code (if the owner keeps the connector on).
+  async signOut(companionId) {
+    const owner = this.#owners.find(value => this.#companionIdFor(value) === companionId);
+    if (!owner || owner.minecraft.auth !== 'microsoft') throw Object.assign(new Error('CONNECTOR_UNAVAILABLE'), { code: 'CONNECTOR_UNAVAILABLE' });
+    const agent = this.#agents.get(companionId);
+    this.#agents.delete(companionId);
+    if (agent) await agent.stop().catch(() => {});
+    wipeProfilesFolder(this.#profilesFolder(companionId));
+    this.#db.prepare('DELETE FROM minecraft_accounts WHERE companion_id=?').run(companionId);
+    this.#log(`Minecraft: ${owner.label}'s companion signed out of Microsoft`);
+    if (agent) this.#startAgent(owner, companionId);
   }
 
   // One scheduling step for every agent (they also tick on their own timers).
@@ -518,9 +595,14 @@ export class MinecraftConnector {
   status(companionId) {
     const owner = this.#owners.find(value => this.#companionIdFor(value) === companionId);
     if (!owner) return null;
-    const agent = this.#agents.get(companionId);
-    return { username: owner.minecraft.username, server: `${owner.minecraft.host}:${owner.minecraft.port}`,
-      ...(agent ? agent.status() : { state: 'stopped', players: 0, people: 0, turnsThisHour: 0 }) };
+    const agent = this.#agents.get(companionId), microsoft = owner.minecraft.auth === 'microsoft';
+    let signedIn = false;
+    if (microsoft && this.#authDir) { try { signedIn = hasSavedAccount(this.#profilesFolder(companionId)); } catch { signedIn = false; } }
+    const live = agent ? agent.status() : { state: 'stopped', players: 0, people: 0, turnsThisHour: 0 };
+    const status = { ...live, username: live.username ?? (microsoft ? this.#accountName(companionId) : null) ?? owner.minecraft.username ?? null,
+      server: `${owner.minecraft.host}:${owner.minecraft.port}`, auth: microsoft ? 'microsoft' : 'offline' };
+    if (microsoft) status.signedIn = signedIn;
+    return status;
   }
 
   // A game turn starts a fresh native session after sessionTurns turns, two idle hours, or a reset (new instructions,

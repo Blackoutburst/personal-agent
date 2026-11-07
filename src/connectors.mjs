@@ -60,12 +60,18 @@ export class Connectors {
     const minecraft = this.#minecraft(), game = minecraft?.status(companionId);
     if (game) {
       const on = this.enabled(companionId, 'minecraft');
-      const online = game.state === 'online';
-      items.push({ id: 'minecraft', name: 'Minecraft', purpose: `Play on the shared survival server as ${game.username}. What happens in the game becomes my memories. Players' chat is only conversation, never commands.`,
+      const online = game.state === 'online', microsoft = game.auth === 'microsoft';
+      // Online mode (#68): while a Microsoft sign-in waits, this owner's card (and only theirs: list() is per owner)
+      // carries the device code's user code, URL and expiry. Never a token.
+      const signIn = on && game.signIn ? { code: game.signIn.code, url: game.signIn.url, expiresAt: game.signIn.expiresAt } : null;
+      const as = game.username ?? (microsoft ? 'my own Minecraft account' : 'my own name');
+      items.push({ id: 'minecraft', name: 'Minecraft', purpose: `Play on the shared survival server as ${as}. What happens in the game becomes my memories. Players' chat is only conversation, never commands.`,
         state: !on ? 'paused' : online ? 'connected' : game.state === 'error' ? 'error' : 'pending',
         detail: !on ? 'Switched off: I stay out of the game.' : online ? `In game on ${game.server} · ${game.people} other ${game.people === 1 ? 'person' : 'people'} online`
+          : signIn ? `Sign in to Minecraft: open ${signIn.url} and enter ${signIn.code}`
           : `Not in the game right now${game.problem ? ` (${game.problem})` : ''}; I keep trying.`,
-        actions: on ? ['disconnect'] : ['connect'] });
+        ...(signIn ? { signIn } : {}),
+        actions: [on ? 'disconnect' : 'connect', ...(microsoft && game.signedIn ? ['signout'] : [])] });
     }
     // GitHub (#45): the owner pastes their own token; linking and unlinking use githubLink / githubUnlink.
     const github = this.#github()?.status(companionId);
@@ -101,6 +107,14 @@ export class Connectors {
     this.#db.prepare(`INSERT INTO connector_settings(companion_id, connector, enabled, updated_at) VALUES(?,?,?,?)
       ON CONFLICT(companion_id, connector) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at`)
       .run(companionId, connector, enabled ? 1 : 0, this.#now());
+    return this.list(companionId);
+  }
+
+  // Minecraft online mode (#68): forget the companion's Microsoft sign-in (its cached tokens); a new code follows.
+  async minecraftSignOut(companionId) {
+    const minecraft = this.#minecraft();
+    if (!minecraft?.configured(companionId) || minecraft.status(companionId)?.auth !== 'microsoft') throw new ConnectorError('CONNECTOR_UNAVAILABLE', 409);
+    await minecraft.signOut(companionId);
     return this.list(companionId);
   }
 

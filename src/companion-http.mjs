@@ -176,6 +176,11 @@ export function createCompanionHttp({ access, profiles, workspaceFor, runtimeSta
           if (!only(['action', 'id', 'enabled']) || !connectors) break;
           return { status: 200, body: connectors.set(companionId, payload.id, payload.enabled) };
         }
+        // Minecraft online mode (#68): sign the companion out of its Microsoft account.
+        case 'minecraftSignOut': {
+          if (!only(['action']) || !connectors) break;
+          return { status: 200, body: await connectors.minecraftSignOut(companionId) };
+        }
         // GitHub (#45): this owner's own token. The reply is the Connectors list; the token never comes back.
         case 'githubLink': {
           if (!only(['action', 'token']) || !github || !connectors) break;

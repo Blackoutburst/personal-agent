@@ -58,7 +58,7 @@ export function parseRuntimeConfig(text, env = process.env) {
   }
   const players = new Set();
   for (const owner of owners) {
-    const name = owner.minecraft?.username.toLowerCase();
+    const name = owner.minecraft?.username?.toLowerCase();
     if (!name) continue;
     if (players.has(name)) throw new Error(`Two companions cannot share the Minecraft name ${owner.minecraft.username}`);
     players.add(name);

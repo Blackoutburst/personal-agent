@@ -8,8 +8,12 @@
 //
 // The name must be on the whitelist, and C-chan's own bot must not be connected under the same name at the same time
 // (switch the Minecraft connector off in Me › Connectors, or use another whitelisted name). Exit code 0 = all checks pass.
+//
+// Online mode: MC_E2E_AUTH=microsoft MC_E2E_PROFILES=<a private folder of your own> signs in with a Microsoft account;
+// the device code is printed on this terminal only (never pass a companion's live folder from the data dir).
 import { randomBytes } from 'node:crypto';
 import { MinecraftAgent, workerConnect, DEFAULTS } from '../../src/minecraft.mjs';
+import { createAuthCache } from '../../src/minecraft-auth.mjs';
 
 const host = process.env.MC_E2E_HOST ?? DEFAULTS.host, port = Number(process.env.MC_E2E_PORT ?? DEFAULTS.port);
 const username = process.env.MC_E2E_NAME ?? 'SentientToaster', seconds = Number(process.env.MC_E2E_SECONDS ?? 120);
@@ -37,11 +41,20 @@ const turn = async ({ prompt }) => {
 };
 
 // Fast cadence for the check only: turns every few seconds even when nobody else is online.
-const config = { username, ownerName: null, host, port, version: process.env.MC_E2E_VERSION ?? DEFAULTS.version,
+const auth = process.env.MC_E2E_AUTH === 'microsoft' ? 'microsoft' : 'offline', profilesFolder = process.env.MC_E2E_PROFILES ?? null;
+if (auth === 'microsoft' && !profilesFolder) { console.error('MC_E2E_AUTH=microsoft needs MC_E2E_PROFILES (a private folder for the sign-in cache).'); process.exit(2); }
+if (profilesFolder) createAuthCache(profilesFolder); // creates it 0700
+const config = { auth, username, ownerName: null, host, port, version: process.env.MC_E2E_VERSION ?? DEFAULTS.version,
+  ...(auth === 'microsoft' ? { profilesFolder, cacheKey: username } : {}),
   turns: { minSeconds: 4, perHour: 30, idleMinutes: 0.1, emptyIdleMinutes: 0.1 } };
 const agent = new MinecraftAgent({ config, ownerName: 'the tester', tickMs: 1000, turn, log: line => log.push(line),
   connect: (cfg, handlers) => workerConnect(cfg, {
-    onState: (state, detail) => { if (state === 'online') checks.joined = true; else log.push(`ended: ${detail}`); handlers.onState(state, detail); },
+    onState: (state, detail) => {
+      if (state === 'online') checks.joined = true;
+      else if (state === 'signin') console.error(`Sign in to Minecraft: open ${detail.url} and enter ${detail.code}`);
+      else if (state === 'ended') log.push(`ended: ${detail}`);
+      handlers.onState(state, detail);
+    },
     onEvent: event => { if (event.type === 'echo' && String(event.text).includes(nonce)) checks.chatEchoed = true; handlers.onEvent(event); } }) });
 
 agent.start();

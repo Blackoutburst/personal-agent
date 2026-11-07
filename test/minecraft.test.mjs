@@ -25,7 +25,7 @@ test('the connector is off by default and its owner config is strict', () => {
   const owners = parseRuntimeConfig(JSON.stringify({ owners: [{ subject: 'a', label: 'blackout', provider: 'claude' }] }), {});
   assert.equal(owners[0].minecraft, undefined, 'no minecraft block, no connector');
   const on = parseRuntimeConfig(JSON.stringify({ owners: [{ subject: 'a', label: 'blackout', provider: 'claude', minecraft: { username: 'SentientToaster' } }] }), {});
-  assert.deepEqual({ ...on[0].minecraft, turns: { ...on[0].minecraft.turns } }, { username: 'SentientToaster', ownerName: null, host: '127.0.0.1', port: 25566, version: '26.1.2',
+  assert.deepEqual({ ...on[0].minecraft, turns: { ...on[0].minecraft.turns } }, { auth: 'offline', username: 'SentientToaster', ownerName: null, host: '127.0.0.1', port: 25566, version: '26.1.2',
     turns: { minSeconds: 25, perHour: 40, idleMinutes: 5, emptyIdleMinutes: 180 } });
   for (const bad of [{}, { username: 'x' }, { username: 'has space' }, { username: 'SentientToaster', port: 70000 }, { username: 'SentientToaster', extra: 1 },
     { username: 'SentientToaster', turns: { minSeconds: 1 } }, { username: 'SentientToaster', turns: { perHour: 500 } }, { username: 'SentientToaster', turns: { emptyIdleMinutes: 5 } },
