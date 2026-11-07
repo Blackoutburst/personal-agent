@@ -623,22 +623,29 @@ const weaponScore = name => {
 };
 const armorSlot = name => ARMOR.find(([pattern]) => pattern.test(name))?.[1] ?? null;
 
+// The chat type's registry name ("minecraft:chat", "minecraft:msg_command_incoming", ...) of a player chat packet, or ''.
+export function chatTypeName(bot, type) {
+  const index = typeof type === 'object' && type !== null ? type.chatType ?? type.registryIndex : type;
+  try { const name = bot?.registry?.chatFormattingById?.[index]?.name; return typeof name === 'string' ? name : ''; } catch { return ''; }
+}
+
 // Chat lines name their sender by display name: a /nick (companion-survival "Nick" plugin, colours stripped) is mapped
 // back to the account name through the tab list, so her own nicked lines stay echoes and the owner stays the owner.
 export function accountName(bot, shown) {
   if (typeof shown !== 'string' || !shown) return shown;
+  shown = shown.replace(/\u200b/g, '').trim();
   const players = bot?.players && typeof bot.players === 'object' ? Object.values(bot.players) : [];
   if (shown === bot?.username || players.some(player => player?.username === shown)) return shown;
   for (const player of players) {
     let display = '';
     try { display = typeof player?.displayName?.toString === 'function' ? player.displayName.toString() : ''; } catch { display = ''; }
-    if (display.replace(/\u00a7./g, '').trim() === shown && typeof player.username === 'string') return player.username;
+    if (display.replace(/\u00a7./g, '').replace(/\u200b/g, '').trim() === shown && typeof player.username === 'string') return player.username;
   }
   return shown;
 }
 
 export class BotBody {
-  #bot; #pathfinder; #emit; #companions; #now; #scanMs; #pace; #Vec3; #scanTimer = null; #seen = new Set(); #current = null; #lastHealth = null;
+  #bot; #pathfinder; #emit; #companions; #now; #scanMs; #packetChat = false; #pace; #Vec3; #scanTimer = null; #seen = new Set(); #current = null; #lastHealth = null;
   #night = null; #spawnedAt = 0; #players = ''; #commandUntil = 0; #commandLines = 0; #perceivedIds = null; #protectedIds = null; #memory = new Map(); #sight = new Map(); #sightKey = ''; #names = null; #range = null;
 
   // bot: a Mineflayer bot (or a fake). pathfinder: the mineflayer-pathfinder module ({ goals, Movements }) once loaded, or
@@ -742,7 +749,14 @@ export class BotBody {
       this.#scanTimer = setInterval(() => { try { this.#scan(); } catch { /* next scan */ } }, this.#scanMs);
       this.#scanTimer.unref?.();
     });
+    // Player chat by packet: the sender UUID and the plain message, whatever the server's chat format ("Name: text" from a
+    // chat-format plugin, a /nick) and whatever name it shows. The text patterns below are the fallback without packets.
+    if (typeof bot._client?.on === 'function') {
+      this.#packetChat = true;
+      bot._client.on('playerChat', data => { try { this.#playerChat(data); } catch { /* one bad packet must not stop the body */ } });
+    }
     this.#on('chat', (shown, message) => {
+      if (this.#packetChat) return;
       const username = accountName(bot, shown);
       // The server's echo of our own line: proof it was said (the E2E harness checks it); the agent ignores it.
       if (username && username === bot.username) { this.#event({ type: 'echo', text: clean(message, 256) }); return; }
@@ -750,6 +764,7 @@ export class BotBody {
       this.#event({ type: 'chat', from: clean(username, 16), text: clean(message, 256) });
     });
     this.#on('whisper', (shown, message) => {
+      if (this.#packetChat) return;
       const username = accountName(bot, shown);
       if (!username || username === bot.username) return;
       this.#event({ type: 'chat', from: clean(username, 16), text: clean(message, 256), whisper: true });
@@ -786,6 +801,25 @@ export class BotBody {
       if (this.#night === false && night) this.#event({ type: 'nightfall' });
       this.#night = night;
     });
+  }
+
+  #playerChat(data) {
+    const bot = this.#bot, type = chatTypeName(bot, data?.type);
+    // Profileless ("disguised") chat, e.g. an unsigned /msg: no UUID, only the name it shows (maybe a /nick).
+    if (data && typeof data.sender !== 'string' && data.senderName) {
+      const username = accountName(bot, componentText(data.senderName).trim()), text = componentText(data.formattedMessage);
+      if (!username || !text || /outgoing/.test(type)) return;
+      if (username === bot.username) { this.#event({ type: 'echo', text: clean(text, 256) }); return; }
+      this.#event({ type: 'chat', from: clean(username, 16), text: clean(text, 256), ...(/msg_command_incoming/.test(type) ? { whisper: true } : {}) });
+      return;
+    }
+    const uuid = data?.sender, text = data?.plainMessage;
+    if (typeof uuid !== 'string' || typeof text !== 'string' || !text) return;
+    const self = bot.player?.uuid ?? bot.players?.[bot.username]?.uuid;
+    if (uuid === self) { if (!/outgoing/.test(type)) this.#event({ type: 'echo', text: clean(text, 256) }); return; }
+    const player = Object.values(bot.players ?? {}).find(entry => entry?.uuid === uuid);
+    if (!player?.username || player.username === bot.username) return;
+    this.#event({ type: 'chat', from: clean(player.username, 16), text: clean(text, 256), ...(/msg_command_incoming/.test(type) ? { whisper: true } : {}) });
   }
 
   detach() { clearInterval(this.#scanTimer); this.#scanTimer = null; this.#abort('disconnected'); }

@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { BootstrapStore } from '../src/store.mjs';
 import { parseMinecraftConfig, offlineUuid, reconnectDelay, TurnGate, buildPrompt, parseReply, boundedState, appendDiary,
   MinecraftAgent, MinecraftConnector, workerConnect, PROMPT_LIMITS, DEFAULTS } from '../src/minecraft.mjs';
-import { BotBody, validateAction, timeOfDay, LIMITS, accountName } from '../src/minecraft-body.mjs';
+import { BotBody, validateAction, timeOfDay, LIMITS, accountName, chatTypeName } from '../src/minecraft-body.mjs';
 import { parseRuntimeConfig } from '../src/runtime-config.mjs';
 import { Connectors } from '../src/connectors.mjs';
 import { ensureWorkspace, instructions } from '../src/companion.mjs';
@@ -201,6 +201,30 @@ test('a /nick shown in chat maps back to the account name', () => {
   fake.emit('chat', 'C-chan', 'my own nicked line'); fake.emit('chat', 'Blackout', 'hi'); fake.emit('whisper', 'Blackout', 'psst');
   assert.deepEqual(events.filter(e => ['echo', 'chat'].includes(e.type)).map(e => [e.type, e.from ?? null]),
     [['echo', null], ['chat', 'Blackoutburst'], ['chat', 'Blackoutburst']]);
+  body.quit();
+});
+
+test('chat packets name the sender by UUID, whatever the chat format or nick', () => {
+  const events = [], bot = fakeBot(); bot.username = 'Yakusuna'; bot._client = new EventEmitter();
+  bot.registry.chatFormattingById = { 1: { name: 'minecraft:chat' }, 3: { name: 'minecraft:msg_command_incoming' }, 4: { name: 'minecraft:msg_command_outgoing' } };
+  bot.player = { uuid: 'u-self' };
+  bot.players = { Yakusuna: { username: 'Yakusuna', uuid: 'u-self' }, Blackoutburst: { username: 'Blackoutburst', uuid: 'u-owner' } };
+  const body = new BotBody({ bot, onEvent: event => events.push(event) }); body.attach();
+  // Mineflayer's text pattern would also fire (or not, with "Name: text"): ignored once packets are read.
+  bot.emit('chat', 'Blackout', 'pattern duplicate');
+  bot._client.emit('playerChat', { sender: 'u-owner', plainMessage: 'hello C-chan', type: { chatType: 1 } });
+  bot._client.emit('playerChat', { sender: 'u-owner', plainMessage: 'psst', type: 3 });
+  bot._client.emit('playerChat', { sender: 'u-self', plainMessage: 'hi!', type: { chatType: 1 } });
+  bot._client.emit('playerChat', { sender: 'u-self', plainMessage: 'to you', type: 4 });
+  bot._client.emit('playerChat', { sender: 'u-unknown', plainMessage: 'who', type: 1 });
+  bot._client.emit('playerChat', null);
+  // An unsigned /msg arrives profileless: only the shown (nicked) name.
+  bot.players.Blackoutburst.displayName = { toString: () => '\u00a7bBlack\u00a73out' };
+  bot._client.emit('playerChat', { type: { chatType: 3 }, senderName: JSON.stringify({ extra: [{ text: 'Black', color: 'aqua' }, { text: 'out\u200b' }], text: '' }),
+    formattedMessage: JSON.stringify({ text: 'secret plan' }), verified: false });
+  assert.deepEqual(events.filter(e => ['echo', 'chat'].includes(e.type)).map(e => [e.type, e.from ?? null, e.text, e.whisper ?? false]),
+    [['chat', 'Blackoutburst', 'hello C-chan', false], ['chat', 'Blackoutburst', 'psst', true], ['echo', null, 'hi!', false], ['chat', 'Blackoutburst', 'secret plan', true]]);
+  assert.equal(chatTypeName(bot, { chatType: 3 }), 'minecraft:msg_command_incoming'); assert.equal(chatTypeName({}, 9), '');
   body.quit();
 });
 

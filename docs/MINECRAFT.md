@@ -676,6 +676,10 @@ Rules for a nickname:
 - 1 to 16 letters, digits, `_` or `-`, with no spaces, so chat stays `<Nick> message`;
 - it can't copy another player's account name or nickname.
 
-The bot reads the chat sender from that display name. `accountName` in minecraft-body.mjs maps a nick back to the account name through the tab list, so her own nicked lines still count as her own and the owner is still recognised.
+The bot reads player chat from the packet, using the sender UUID and the plain message, so any chat format works (the owner's Hypixel-Chat-Format plugin sends `Name: text`) and so does any nick.
+
+An unsigned `/msg` arrives profileless, with only the shown name. `accountName` maps that name back to the account through the tab list, so her own lines still count as her own and the owner is still recognised. The text-pattern chat events are only a fallback when there are no packets.
+
+The display name used in chat ends with an invisible white character, so a legacy `%s: %s` format doesn't let the nick's colour run into the message.
 
 Build it with `LIB=<api jars> ops/minecraft-plugins/nick/build.sh`, then copy the jar into `/srv/companion-survival/plugins/` and restart the server.
