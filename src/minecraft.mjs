@@ -5,7 +5,7 @@
 // such as being addressed, a player joining, damage, death, a finished or failed plan, plus a short idle while nothing
 // runs and a person is online), under a minimum spacing and an hourly cap; it builds a bounded perception prompt, runs
 // the companion's own agent turn in its workspace (so it keeps its memory files exactly like in chat), and turns the
-// reply, one JSON object, into one chat line, an action or a plan of up to 5 actions from a closed vocabulary, and an
+// reply, one JSON object, into one chat line, an action or a plan of up to 8 actions (#70; 5 in #69) from a closed vocabulary, and an
 // optional diary line. A reply without an action or plan keeps the running one (#69: chatting never stops her work).
 //
 // Off by default: a companion plays only when its owner entry in owners.json has a "minecraft" block, and its owner
@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import { constants, openSync, writeSync, closeSync, fstatSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { splitFeeling } from './wardrobe.mjs';
-import { validateAction, LIMITS as BODY_LIMITS } from './minecraft-body.mjs';
+import { validateAction, actionTimeout, LIMITS as BODY_LIMITS } from './minecraft-body.mjs';
 import { profilesFolderFor, hasSavedAccount, wipeProfilesFolder, checkedSignIn, safeReason } from './minecraft-auth.mjs';
 
 // #69: continuous play while a person is online: a turn at most every 8 s, 150 an hour, and an idle turn after 20 quiet
@@ -25,8 +25,10 @@ export const DEFAULTS = Object.freeze({ host: '127.0.0.1', port: 25566, version:
   minTurnSeconds: 8, perHour: 150, idleSeconds: 20, emptyIdleMinutes: 180, sessionTurns: 30 });
 // Bounds of the "turns" config: spacing never under 5 s, never more than 300 turns an hour, idle 10 s to an hour.
 export const TURN_BOUNDS = Object.freeze({ minSeconds: [5, 3600], perHour: [1, 300], idleSeconds: [10, 3600] });
-export const PROMPT_LIMITS = Object.freeze({ state: 3500, events: 12, chat: 10, chatChars: 200, diaryChars: 300, diaryPerHour: 6, diaryFileBytes: 5000,
-  planSteps: 5, batched: 8 });
+// #70: the state cap went from 3,500 to 6,000 characters for the inventory, armor, items and places she now sees; plans
+// hold up to 8 steps (a craft chain: collect, craft, place, ...).
+export const PROMPT_LIMITS = Object.freeze({ state: 6000, events: 12, chat: 10, chatChars: 200, diaryChars: 300, diaryPerHour: 6, diaryFileBytes: 5000,
+  planSteps: 8, batched: 8, resultChars: BODY_LIMITS.resultChars });
 const TURN_TIMEOUT_MS = 4 * 60_000, PERCEIVE_MS = 5000, HOLD_MS = 30 * 60_000, SESSION_IDLE_MS = 2 * 3600_000, SPOKE_MS = 90_000;
 const USERNAME = /^[A-Za-z0-9_]{3,16}$/;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -143,7 +145,7 @@ const safeJson = value => JSON.stringify(value).replace(/[<>&]/g, char => ({ '<'
 // Bounds the perception to PROMPT_LIMITS.state characters of JSON, dropping detail before essentials.
 export function boundedState(perception, events = [], chat = []) {
   const state = { ...(object(perception) ? perception : {}), chat: chat.slice(-PROMPT_LIMITS.chat), events: events.slice(-PROMPT_LIMITS.events) };
-  const trims = ['blocks', 'mobs', 'inventory', 'events', 'chat', 'players', 'online'];
+  const trims = ['items', 'blocks', 'mobs', 'events', 'inventory', 'chat', 'players', 'online', 'armor'];
   let text = safeJson(state);
   for (let round = 0; text.length > PROMPT_LIMITS.state && round < 40; round++) {
     const key = trims.find(name => Array.isArray(state[name]) && state[name].length) ?? null;
@@ -160,7 +162,7 @@ const describe = action => safeJson(action).slice(0, 160);
 // What the companion did last: a single action's result, or a plan's (finished, or stopped at the failing step).
 function resultLine(result) {
   if (!result) return '';
-  const detail = clean(result.detail, 200);
+  const detail = clean(result.detail, PROMPT_LIMITS.resultChars);
   if (!(result.steps > 1)) return `Your last action (${result.type}) ${result.ok ? 'finished' : 'failed'}: ${detail}.`;
   return result.ok ? `Your plan of ${result.steps} steps finished; the last step (${result.type}): ${detail}.`
     : `Your plan stopped at step ${result.step} of ${result.steps}: ${result.type} failed: ${detail}. The rest of the plan was dropped.`;
@@ -184,20 +186,24 @@ export function buildPrompt({ ownerName = 'your owner', username, reasons = [], 
     boundedState(perception, events, chat),
     '</game_state>',
     'Reply with exactly one JSON object and nothing else (your feeling tag may precede it): {"say":"…","action":{…},"diary":"…"} or {"say":"…","plan":[{…},{…}],"diary":"…"}. Every field is optional.',
-    '- say: one chat line everyone on the server reads, at most 240 characters, plain text, never a /command. Talking never stops what you are doing.',
+    '- say: one chat line everyone on the server reads, at most 240 characters. Talking never stops what you are doing. A line starting with / is a server command, run as a normal player without op (for example /msg Name hi, or what the server offers); its answer shows up in your events.',
     '- No action and no plan (or null) = keep doing what is running now. Only a new action or plan replaces it; {"type":"stop"} stops it. {} just keeps going.',
-    `- plan: up to ${PROMPT_LIMITS.planSteps} actions run one after another (for example walk there, collect, come back, say something). If a step fails the rest is dropped and you hear why. You are woken when it finishes or fails, or when something important happens; small things wait for that turn.`,
-    '- action: one action (the same as a plan of one). The actions:',
-    '  {"type":"goto","x":0,"y":64,"z":0} or {"type":"goto","player":"Name"} (up to 256 blocks away)',
-    '  {"type":"follow","player":"Name","distance":3,"seconds":60}  {"type":"wander","distance":24} (8-64 blocks, explore)',
-    '  {"type":"look_at","player":"Name"}  {"type":"collect","block":"oak_log","count":4} (natural blocks only, up to 16, within 32 blocks)',
-    '  {"type":"pick_up"} (dropped items nearby)  {"type":"eat"}  {"type":"say","text":"…"} (in a plan)  {"type":"stop"} (action only)',
+    `- plan: up to ${PROMPT_LIMITS.planSteps} actions run one after another (for example collect logs, craft planks, craft a crafting table, place it, say something). If a step fails the rest is dropped and you hear why. You are woken when it finishes or fails, or when something important happens; small things wait for that turn.`,
+    '- action: one action (the same as a plan of one), written {"type":"name", ...fields}. Blocks, items and mobs are Minecraft ids (oak_log, cobblestone, zombie); x y z are block coordinates; "?" marks optional fields. The actions:',
+    '  Move: goto {x,y,z | player | block} (up to 256 blocks; walking digs and places dirt or cobblestone to get through) · follow {player,distance?1-8,seconds?5-120} · wander {distance?8-64} · look_at {player | x,y,z} · jump · sprint {on} · sneak {on} · swim {seconds?,forward?}',
+    '  Blocks: dig {x,y,z | block} (any block, best tool) · collect {block,count?1-64} (mine, then pick up) · pick_up · place {item, x,y,z | at:"front"|"below"|"above"} (below while standing on ground = jump and pillar up) · build {x?,y?,z?,blocks:[[dx,dy,dz,"item"],…]} (up to 64, in order, offsets -16..16 from x,y,z or your feet)',
+    '  Make: craft {item,count?} (uses a crafting table nearby, or places one from your inventory) · smelt {item,count?,fuel?} (nearest furnace, or places one)',
+    '  Items: equip {item,slot?:hand|off-hand|head|torso|legs|feet} · unequip {slot} · toss {item,count?} · give {player,item,count?} · use_item {seconds?0-5,offhand?} (hold then release: bow, bucket, throw) · eat {item?}',
+    '  Fight: attack {mob | player} (hits until dead, best weapon; none = nearest hostile) · shield {seconds?} · defend {seconds?5-300} (fight hostile mobs that come close)',
+    '  Storage: open {x,y,z | block?} (shows what is inside) · deposit {item,count?,x?,y?,z?} · withdraw {item,count?,x?,y?,z?} (nearest chest, barrel or shulker box)',
+    '  World: activate {x,y,z | block} (door, lever, button, trapdoor, gate) · sleep {x?,y?,z?} · wake · mount {entity?} · dismount · fish {seconds?} · till {x?,y?,z?,count?} · plant {item,count?,x?,y?,z?} · harvest {block?,count?,replant?} · breed {mob} · trade {index?,count?} (no index = list the offers)',
+    '  Example: {"type":"collect","block":"oak_log","count":8}. {"type":"say","text":"…"} works as a plan step; {"type":"stop"} as an action only.',
     '- diary: one line for today\'s diary, at most 300 characters, only for a moment worth remembering (what you found, built, saw, who you played with, a death, a trip). For something lasting, edit MEMORY.md as usual.'
   ].filter(Boolean).join('\n');
 }
 
 // The companion's reply: one JSON object. Returns { say, action, plan, diary, problems } (problems go into the next
-// turn). action is a single action ({"type":"stop"} included), plan an array of 1-5 actions; at most one of them is set.
+// turn). action is a single action ({"type":"stop"} included), plan an array of 1-8 actions; at most one of them is set.
 // Neither set means: keep what is running.
 export function parseReply(raw) {
   const result = { say: null, action: null, plan: null, diary: null, problems: [] };
@@ -212,7 +218,8 @@ export function parseReply(raw) {
   if (!object(value)) { result.problems.push('the reply was not one JSON object'); return result; }
   for (const key of Object.keys(value)) if (!['say', 'action', 'plan', 'diary'].includes(key)) result.problems.push(`unknown field ${clean(key, 20)}`);
   if (value.say !== undefined && value.say !== null) {
-    const say = typeof value.say === 'string' ? clean(value.say, BODY_LIMITS.sayChars).replace(/^[/\\]+/, '').trim() : '';
+    // #70: a leading "/" stays: she may run commands like any non-op player.
+    const say = typeof value.say === 'string' ? clean(value.say, BODY_LIMITS.sayChars) : '';
     if (say) result.say = say; else result.problems.push('say must be plain text');
   }
   if (value.diary !== undefined && value.diary !== null) {
@@ -223,7 +230,7 @@ export function parseReply(raw) {
   if (hasPlan) {
     // All or nothing: a plan with one bad step is refused whole, and what runs keeps running.
     if (hasAction) result.problems.push('both action and plan given: the plan was used');
-    if (!Array.isArray(value.plan) || !value.plan.length) result.problems.push('plan refused: it must be a list of 1-5 actions; what was running keeps running');
+    if (!Array.isArray(value.plan) || !value.plan.length) result.problems.push(`plan refused: it must be a list of 1-${PROMPT_LIMITS.planSteps} actions; what was running keeps running`);
     else if (value.plan.length > PROMPT_LIMITS.planSteps) result.problems.push(`plan refused: more than ${PROMPT_LIMITS.planSteps} steps; what was running keeps running`);
     else {
       const steps = [];
@@ -312,7 +319,8 @@ export function workerConnect(config, { onEvent, onState }, { WorkerImpl = Worke
   });
   return {
     perceive: () => request('perceive', {}, PERCEIVE_MS),
-    act: action => request('act', { action }, 200_000),
+    // Each action carries its own time limit in the body; the request waits a little longer.
+    act: action => { const checked = validateAction(action).action; return request('act', { action }, (checked ? actionTimeout(checked) : 5000) + 15_000); },
     async quit() {
       if (!ended) { try { worker.postMessage({ op: 'quit' }); } catch { /* gone */ } }
       const timer = setTimeout(() => worker.terminate().catch(() => {}), 3000);
@@ -485,6 +493,14 @@ export class MinecraftAgent {
       case 'nightfall':
         this.#log2({ at, what: 'night is falling' }); this.#gate.note('night is falling', { minor: true });
         return;
+      case 'server': {
+        // The server's answer to her own /command (system lines right after it): data for her next turn.
+        const text = clean(event.text, 200);
+        if (!text) return;
+        this.#log2({ at, what: `the server said: ${text}` });
+        this.#gate.note('the server answered your command', { minor: true });
+        return;
+      }
       case 'found': {
         const block = clean(event.block, 40);
         this.#log2({ at, what: `you spotted ${block} at ${event.x} ${event.y} ${event.z}` });
@@ -584,13 +600,13 @@ export class MinecraftAgent {
       let value;
       try {
         const result = await conn.act(step);
-        value = object(result) ? { type: clean(result.type, 20) || step.type, ok: result.ok === true, detail: clean(result.detail, 200) } : { type: step.type, ok: false, detail: 'no result' };
-      } catch (error) { value = { type: step.type, ok: false, detail: clean(error?.message ?? 'failed', 200) }; }
+        value = object(result) ? { type: clean(result.type, 20) || step.type, ok: result.ok === true, detail: clean(result.detail, PROMPT_LIMITS.resultChars) } : { type: step.type, ok: false, detail: 'no result' };
+      } catch (error) { value = { type: step.type, ok: false, detail: clean(error?.message ?? 'failed', PROMPT_LIMITS.resultChars) }; }
       if (!current()) return;
       // A say step is her own chat line, like a reply's say (people answering it count as talking to her).
       if (step.type === 'say' && value.ok) { this.#spokeAt = this.#now(); this.#chat.push({ at: this.#now(), from: this.#username + ' (you)', text: step.text }); }
       const where = total > 1 ? ` (plan step ${plan.index + 1} of ${total})` : '';
-      this.#log2({ at: this.#now(), what: `your ${value.type}${where} ${value.ok ? 'finished' : 'failed'}: ${value.detail}` });
+      this.#log2({ at: this.#now(), what: `your ${value.type}${where} ${value.ok ? 'finished' : 'failed'}: ${clean(value.detail, 200)}` });
       if (!value.ok) {
         this.#plan = null; this.#lastResult = { ...value, step: plan.index + 1, steps: total };
         this.#gate.activity();

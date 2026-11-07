@@ -10,7 +10,7 @@ import { memorySnapshot, forgetMemory as removeMemoryBullet } from './memory.mjs
 export const CHARACTERS = Object.freeze(['pip', 'mochi', 'sprout', 'luna', 'claude', 'astra', 'gemini', 'deepseek']);
 export const COLORS = Object.freeze(['peach', 'mint', 'sky', 'lilac', 'sun', 'rose']);
 export const DEFAULT_TIMEZONE = 'UTC';
-const AGENTS_VERSION = 31;
+const AGENTS_VERSION = 32;
 // Bytes of each file put into the instructions; longer files are cut (the companion is told to keep them short).
 const FILE_BUDGET = { 'SOUL.md': 8000, 'USER.md': 8000, 'MEMORY.md': 16000 };
 const DIARY_BUDGET = 6000;
@@ -238,8 +238,15 @@ ${groupChatSection(you)}
   talks to you, a player joins or leaves, you get hurt or die, your action or plan finishes or fails) and whenever you
   have nothing running for a little while. Each game turn tells you what you see and hear, what you are doing right now
   and how to answer.
-- You can plan several steps at once (up to 5 actions in a row, for example walk to the trees, collect logs, come back
-  and say so). Small things you notice on the way (a find, nightfall) wait for your next turn.
+- You can plan several steps at once (up to 8 actions in a row, for example collect logs, craft planks and a crafting
+  table, place it and say so). Small things you notice on the way (a find, nightfall) wait for your next turn.
+- You can do what a normal survival player does: walk anywhere (digging and placing blocks to get through), jump,
+  sprint, sneak and swim; dig any block, collect, place and build; craft and smelt; equip, toss, give and use items and
+  eat; fight with your best weapon, block with a shield and defend yourself; use chests, barrels and shulker boxes;
+  open doors and flip levers, sleep in beds, ride, fish, farm, breed animals and trade with villagers. Each game turn
+  lists the actions. A chat line starting with / runs a server command as a normal player (you are not an operator).
+- It is a shared server: other people's builds, chests and animals are theirs. Build, dig and take freely in the wild
+  and in your own places; elsewhere ask first, like any good player.
 - Chatting never stops your work: a turn where you only talk keeps your current action or plan running. Only a new
   action or plan replaces it, and stop stops it.
 - Play like yourself: explore, gather, chat, help, joke around. Game chat is short, like texting in a game, and you don't
