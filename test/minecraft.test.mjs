@@ -148,7 +148,7 @@ const pathfinderModule = { pathfinder: () => {}, Movements: class { constructor(
 test('the body runs skills with time limits and reports results it never throws', async () => {
   const bot = fakeBot(), events = [], body = new BotBody({ bot, pathfinder: pathfinderModule, onEvent: event => events.push(event), scanMs: 60_000, pace: { inventory: 20, sync: 10 } });
   body.attach(); bot.emit('spawn');
-  assert.equal(bot.movements.canDig, true, '#70: walking may dig through blocks');
+  assert.equal(bot.movements.canDig, false, 't70: walking plans on foot (through doors) first; digging is the second pass');
   assert.deepEqual(await body.act({ type: 'say', text: '/msg Blackout hi' }), { type: 'say', ok: true, detail: 'sent the command' });
   assert.deepEqual(bot.said, ['/msg Blackout hi'], '#70: a chat line may be a command, run as a non-op player');
   assert.equal((await body.act({ type: 'goto', x: 20, y: 64, z: 0 })).ok, true);

@@ -33,6 +33,9 @@ const PERCEIVED = /_bed$|_ore$|_log$|_stem$|shulker_box$|^(?:chest|trapped_chest
 const CONTAINER = /shulker_box$|^(?:chest|trapped_chest|barrel|ender_chest)$/;
 const FURNACE = /^(?:furnace|blast_furnace|smoker)$/;
 const OPENABLE = /shulker_box$|^(?:chest|trapped_chest|barrel|ender_chest|hopper|dispenser|dropper|crafter)$/;
+// t70: what dig refuses as "nothing to dig": air and fluids only. Grass, flowers, snow layers, vines and other blocks
+// without a collision box are dug like any other (REPLACEABLE is about placing and standing, not digging).
+const NOTHING = new Set(['air', 'cave_air', 'void_air', 'water', 'lava', 'bubble_column']);
 const REPLACEABLE = new Set(['air', 'cave_air', 'void_air', 'water', 'lava', 'short_grass', 'grass', 'tall_grass', 'fern', 'large_fern', 'snow', 'dead_bush', 'seagrass', 'tall_seagrass', 'vine', 'fire', 'bubble_column']);
 const HOSTILE_NAMES = new Set(['zombie', 'zombie_villager', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'wither_skeleton', 'creeper', 'spider', 'cave_spider',
   'witch', 'slime', 'magma_cube', 'phantom', 'pillager', 'vindicator', 'evoker', 'ravager', 'vex', 'blaze', 'ghast', 'hoglin', 'zoglin', 'piglin_brute',
@@ -57,6 +60,79 @@ const MATERIAL = { wooden: 1, golden: 1, stone: 2, copper: 2, iron: 3, diamond: 
 const SCAFFOLD = /^(?:dirt|cobblestone|cobbled_deepslate|netherrack|stone|andesite|diorite|granite|tuff|blackstone|end_stone|[a-z_]+_planks)$/;
 const WATERY = new Set(['water', 'bubble_column', 'seagrass', 'tall_seagrass', 'kelp', 'kelp_plant']);
 const SIDES = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+// t70 (doors): walking takes the door, not the wall. mineflayer-pathfinder 2.4.5 cannot use doors: its "openable" set
+// holds only fence gates, a door is a solid block to it (open or closed), and with digging on (#70) a house wall was
+// the cheapest way in. Walking now plans twice: first without digging (doors and fence gates count as passable and the
+// body opens them on the way, see #doorKeeper), and only when that finds no way, with digging at a high cost. Neither
+// pass breaks what players build (BUILT) or anything near a door or bed; logs stay breakable (trees).
+export const BUILT = /_planks$|_door$|_trapdoor$|_fence$|_fence_gate$|_wall$|_stairs$|_slab$|glass|_pane$|^iron_bars$|_wool$|_carpet$|^bricks$|_bricks$|_brick_|_concrete$|_concrete_powder$|terracotta$|_bed$|chest$|^barrel$|shulker_box$|^(?:hopper|dispenser|dropper|crafter)$|furnace$|^smoker$|^crafting_table$|torch$|lantern$|_sign$|^(?:rail|powered_rail|detector_rail|activator_rail)$|^glowstone$|^sea_lantern$|^farmland$|^(?:wheat|carrots|potatoes|beetroots|melon_stem|pumpkin_stem|attached_melon_stem|attached_pumpkin_stem|sweet_berry_bush|nether_wart|cocoa|torchflower_crop|pitcher_crop)$|^ladder$|^bookshelf$|^chiseled_bookshelf$|anvil$|^(?:enchanting_table|brewing_stand|lectern|composter|bell|beacon|cartography_table|fletching_table|smithing_table|stonecutter|loom|grindstone|jukebox|note_block|respawn_anchor|lodestone|decorated_pot|flower_pot)$|^potted_|_banner$|^(?:smooth_stone|smooth_sandstone|smooth_red_sandstone|smooth_quartz)$|^polished_|^chiseled_|^cut_|^quartz_|^(?:iron|gold|diamond|emerald|lapis|redstone|netherite|copper|coal)_block$|_candle$/;
+// What escape may dig through: natural ground only.
+export const NATURAL = /^(?:dirt|grass_block|coarse_dirt|podzol|rooted_dirt|mud|clay|mycelium|moss_block|sand|red_sand|gravel|stone|deepslate|andesite|diorite|granite|tuff|calcite|dripstone_block|sandstone|red_sandstone|netherrack|soul_sand|soul_soil|basalt|blackstone|end_stone|magma_block|snow_block|snow|ice|packed_ice|[a-z_]+_ore|[a-z_]+_leaves|obsidian)$/;
+const DOORWAY = /^(?!iron_)[a-z_]+_(?:door|fence_gate)$/;
+export const DIG_COST = 12;
+const NEAR_PROTECTED = 3;
+
+// Configures one pathfinder Movements for a walk pass. dig: false = the first pass (no digging, building blocks only
+// at a high cost); dig: true = the fallback. protectedAt: door and bed positions nearby (nothing within 3 blocks of
+// them is broken). Works on mineflayer-pathfinder 2.4.5's Movements (getBlock, blocksCantBreak, exclusionAreasBreak).
+export function configureMovements(movements, registry, { dig = false, protectedAt = [] } = {}) {
+  const blocks = Object.values(registry?.blocksByName ?? {}), items = registry?.itemsByName ?? {};
+  movements.canDig = dig; movements.digCost = DIG_COST;
+  movements.allow1by1towers = true; movements.allowParkour = true; movements.allowSprinting = true;
+  // The pathfinder's own gate opening (canOpenDoors) toggles gates blindly; the body opens doors and gates itself.
+  movements.canOpenDoors = false;
+  movements.placeCost = dig ? 2 : 6;
+  const names = Object.keys(items).filter(name => SCAFFOLD.test(name));
+  movements.scafoldingBlocks = [...new Set(names.map(name => items[name].id).filter(Number.isInteger))];
+  if (movements.blocksCantBreak instanceof Set) for (const block of blocks) if (BUILT.test(block.name)) movements.blocksCantBreak.add(block.id);
+  const doorways = new Set(blocks.filter(block => DOORWAY.test(block.name)).map(block => block.id));
+  if (typeof movements.getBlock === 'function' && !movements.getBlock.doorways) {
+    const base = movements.getBlock.bind(movements);
+    movements.getBlock = Object.assign((pos, dx, dy, dz) => {
+      const b = base(pos, dx, dy, dz);
+      if (b && doorways.has(b.type)) { b.safe = true; b.physical = false; b.replaceable = false; b.doorway = true; }
+      return b;
+    }, { doorways: true });
+    // A door's panel blocks a diagonal step through its block: diagonals touching a doorway are dropped.
+    if (typeof movements.getMoveDiagonal === 'function') {
+      const diagonal = movements.getMoveDiagonal.bind(movements);
+      movements.getMoveDiagonal = (node, dir, neighbors) => {
+        const before = neighbors.length;
+        diagonal(node, dir, neighbors);
+        if (neighbors.length === before) return;
+        const touches = [[dir.x, 0], [0, dir.z], [dir.x, dir.z]].some(([dx, dz]) => [-1, 0, 1, 2].some(dy => movements.getBlock(node, dx, dy, dz)?.doorway));
+        if (touches) neighbors.length = before;
+      };
+    }
+  }
+  if (Array.isArray(movements.exclusionAreasBreak) && protectedAt.length) {
+    movements.exclusionAreasBreak.push(block => {
+      const p = block?.position;
+      return p && protectedAt.some(q => Math.max(Math.abs(p.x - q.x), Math.abs(p.y - q.y), Math.abs(p.z - q.z)) <= NEAR_PROTECTED) ? 100 : 0;
+    });
+  }
+  return movements;
+}
+const isDoorway = block => Boolean(block?.name && DOORWAY.test(block.name));
+// mineflayer-pathfinder's postProcessPath puts every path node "on top of" the shape of the block there: a door's
+// lower half is a full-height panel, so the step through the doorway became a point one block up, on the door
+// (measured: node 0.297,-59,8.5 for the doorway at 0,-60,8; she stood still and the pathfinder reset "stuck" every
+// 3.5 s). The nodes are fixed in place on each path_update, before the pathfinder walks them (same array).
+export function fixDoorNodes(blockAt, path) {
+  if (!Array.isArray(path) || typeof blockAt !== 'function') return 0;
+  let fixed = 0;
+  for (const node of path) {
+    if (!node || !finite(node.x) || !finite(node.y) || !finite(node.z) || (node.toBreak?.length ?? 0) || (node.toPlace?.length ?? 0)) continue;
+    // The node sits on top of the shape: the doorway block is just below it (a door: 1 below, a closed gate: 1.5).
+    const x = Math.floor(node.x), z = Math.floor(node.z), top = Math.floor(node.y - 0.001);
+    const door = [top, top - 1].map(y => blockAt({ x, y, z })).find(block => isDoorway(block) && block.getProperties?.().half !== 'upper' && node.y - block.position.y > 0.5);
+    if (!door?.position) continue;
+    node.x = x + 0.5; node.y = door.position.y; node.z = z + 0.5; fixed++;
+  }
+  return fixed;
+}
+const isOpen = block => { try { const open = block.getProperties?.().open; return open === true || open === 'true'; } catch { return false; } };
 
 // t70: prismarine-physics 1.11.1 (the newest on npm, used by mineflayer 4.39.0) gives the player a hitbox exactly 0.6
 // wide (half-width 0.3), so pressed against a wall its box ends exactly on the block face. The 26.1 server's own
@@ -525,7 +601,7 @@ const armorSlot = name => ARMOR.find(([pattern]) => pattern.test(name))?.[1] ?? 
 
 export class BotBody {
   #bot; #pathfinder; #emit; #companions; #now; #scanMs; #pace; #Vec3; #scanTimer = null; #seen = new Set(); #current = null; #lastHealth = null;
-  #night = null; #spawnedAt = 0; #players = ''; #commandUntil = 0; #commandLines = 0; #perceivedIds = null;
+  #night = null; #spawnedAt = 0; #players = ''; #commandUntil = 0; #commandLines = 0; #perceivedIds = null; #protectedIds = null;
 
   // bot: a Mineflayer bot (or a fake). pathfinder: the mineflayer-pathfinder module ({ goals, Movements }) once loaded, or
   // null (movement skills then fail cleanly). onEvent(event): what the body noticed. companions: other companions' names.
@@ -544,14 +620,69 @@ export class BotBody {
   #event(event) { try { this.#emit({ at: this.#now(), ...event }); } catch { /* the agent isolates itself */ } }
 
   // #70: walking may dig through blocks and place scaffolding blocks from the inventory, like a player getting out of a
-  // pit or across a gap. Chests stay unbreakable for the pathfinder (its default), so walking never breaks a container.
-  #movements() {
-    const bot = this.#bot, movements = new this.#pathfinder.Movements(bot), items = this.#registry().itemsByName ?? {};
-    movements.canDig = true; movements.allow1by1towers = true; movements.allowParkour = true; movements.allowSprinting = true;
-    movements.canOpenDoors = true;
-    const names = Object.keys(items).filter(name => SCAFFOLD.test(name));
-    movements.scafoldingBlocks = [...new Set(names.map(name => items[name].id).filter(Number.isInteger))];
-    return movements;
+  // pit or across a gap. t70 (doors): two passes, see configureMovements: on foot through doors first, digging (never
+  // building blocks, never near a door or bed) only when that finds no way.
+  #movements(dig = false) {
+    const bot = this.#bot, movements = new this.#pathfinder.Movements(bot);
+    return configureMovements(movements, this.#registry(), { dig, protectedAt: dig ? this.#protectedSpots() : [] });
+  }
+  // Doors and beds within 48 blocks: the dig pass breaks nothing within 3 blocks of them.
+  #protectedSpots() {
+    const bot = this.#bot;
+    if (typeof bot.findBlocks !== 'function' || !bot.entity) return [];
+    this.#protectedIds ??= this.#ids(/_door$|_bed$/);
+    if (!this.#protectedIds.length) return [];
+    try { return (bot.findBlocks({ matching: this.#protectedIds, maxDistance: 48, count: 128 }) ?? []).map(p => ({ x: p.x, y: p.y, z: p.z })); } catch { return []; }
+  }
+  #setMoves(dig) { try { this.#bot.pathfinder?.setMovements?.(this.#movements(dig)); } catch { /* fake or missing pathfinder */ } }
+
+  // t70 (doors): while she walks, opens a closed wooden door or fence gate on the next steps of her path and closes it
+  // behind her once she is through (at most 2 blocks past, within reach), like a player. Returns a stop function.
+  #doorKeeper() {
+    const bot = this.#bot, opened = new Map();
+    let path = [], busy = false, last = 0;
+    const onPath = results => { path = Array.isArray(results?.path) ? results.path.slice(0, 64) : []; };
+    bot.on?.('path_update', onPath);
+    const key = p => `${p.x},${p.y},${p.z}`;
+    const doorAt = (x, y, z) => { const block = bot.blockAt?.(this.#vec(Math.floor(x), Math.floor(y), Math.floor(z))); return isDoorway(block) ? block : null; };
+    const toggle = async block => { busy = true; try { await bot.activateBlock(block); } catch { /* next tick */ } finally { busy = false; last = this.#now(); } };
+    const tick = (final = false) => {
+      if (busy || !bot.entity?.position || typeof bot.activateBlock !== 'function' || this.#now() - last < 250) return;
+      const here = bot.entity.position, feet = this.#feet();
+      // The path does not shrink as she walks it: drop the steps up to the one she stands on.
+      const reached = path.findIndex(p => Math.floor(p.x) === feet.x && Math.floor(p.z) === feet.z && Math.abs(Math.floor(p.y) - feet.y) <= 1);
+      if (reached >= 0) path = path.slice(reached + 1);
+      const ahead = [{ x: feet.x, y: feet.y, z: feet.z }, ...path.map(p => ({ x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }))];
+      for (const p of ahead) {
+        for (const dy of [0, 1]) {
+          const door = doorAt(p.x, p.y + dy, p.z);
+          if (!door || distance(here, centre(door.position)) > 3) continue;
+          const lower = door.getProperties?.().half === 'upper' ? (doorAt(p.x, p.y + dy - 1, p.z) ?? door) : door;
+          // Only a door she opened herself is closed again; one standing open stays open.
+          if (!isOpen(lower)) { opened.set(key(lower.position), lower.position); toggle(lower); return; }
+        }
+      }
+      for (const [k, position] of opened) {
+        const door = doorAt(position.x, position.y, position.z), d = distance(here, centre(position));
+        if (!door) { opened.delete(k); continue; }
+        const inIt = feet.x === position.x && feet.z === position.z && Math.abs(feet.y - position.y) <= 1;
+        const upcoming = ahead.slice(1).some(p => p.x === position.x && p.z === position.z);
+        // At the end of the walk she closes it once she is out of the doorway, however close.
+        if (!inIt && (final || (!upcoming && d >= 1.8)) && d <= 4.5) { opened.delete(k); if (isOpen(door)) { toggle(door); return; } }
+        else if (d > 4.5) opened.delete(k);
+      }
+    };
+    const timer = setInterval(() => { try { tick(); } catch { /* next tick */ } }, 100);
+    timer.unref?.();
+    return { tick, stop: async () => {
+      clearInterval(timer); bot.removeListener?.('path_update', onPath);
+      path = [];
+      // Close what she walked through, if still in reach.
+      for (let i = 0; i < 40 && busy; i++) await new Promise(resolve => setTimeout(resolve, 50));
+      last = 0;
+      try { tick(true); } catch { /* gone */ }
+      for (let i = 0; i < 40 && busy; i++) await new Promise(resolve => setTimeout(resolve, 50));
+    } };
   }
 
   attach() {
@@ -559,12 +690,13 @@ export class BotBody {
     if (this.#pathfinder && typeof bot.loadPlugin === 'function' && !bot.pathfinder) bot.loadPlugin(this.#pathfinder.pathfinder);
     // Mineflayer injects its physics plugin after attach() (once the version is known): patch it at login and spawn.
     patchChatAcks(bot._client);
+    this.#on('path_update', results => { fixDoorNodes(position => bot.blockAt?.(this.#vec(position.x, position.y, position.z)), results?.path); });
     this.#on('login', () => { patchPhysics(bot); patchWindowState(bot); patchOxygen(bot); });
     this.#on('spawn', () => {
       patchPhysics(bot); patchWindowState(bot);
       if (this.#spawnedAt) return;
       this.#spawnedAt = this.#now();
-      if (this.#pathfinder && bot.pathfinder) bot.pathfinder.setMovements(this.#movements());
+      if (this.#pathfinder && bot.pathfinder) this.#setMoves(false);
       this.#event({ type: 'spawn' });
       this.#playersChanged();
       this.#scanTimer = setInterval(() => { try { this.#scan(); } catch { /* next scan */ } }, this.#scanMs);
@@ -774,9 +906,18 @@ export class BotBody {
     if (!this.#pathfinder || !this.#bot.pathfinder) throw new Error('walking is unavailable');
     return this.#pathfinder.goals;
   }
+  // t70 (doors): on foot first (through doors, no digging); only when that finds no way (or takes too long to decide),
+  // once more with digging at a high cost. Doors on the way are opened and closed behind her.
   async #walk(goal, signal) {
     if (signal.aborted) throw new Error('stopped');
-    await this.#bot.pathfinder.goto(goal);
+    const pathfinder = this.#bot.pathfinder, doors = this.#doorKeeper();
+    try {
+      this.#setMoves(false);
+      try { await pathfinder.goto(goal); return; } catch (error) { if (signal.aborted || !/^(?:NoPath|Timeout)$/.test(error?.name ?? '')) throw error; }
+      if (signal.aborted) throw new Error('stopped');
+      this.#setMoves(true);
+      await pathfinder.goto(goal);
+    } finally { this.#setMoves(false); await doors.stop(); }
   }
   // Walk until the position is within reach (4.5 blocks of its centre) unless it already is.
   async #reach(position, signal, { look = false } = {}) {
@@ -883,6 +1024,8 @@ export class BotBody {
   async #equipBestTool(block) {
     let tool = null;
     try { tool = this.#bot.pathfinder?.bestHarvestTool?.(block) ?? null; } catch { tool = null; }
+    // For blocks that break at once (grass, flowers) any item "harvests" as fast: hold only a real tool.
+    if (tool && !/_(?:pickaxe|axe|shovel|hoe|sword)$|^shears$/.test(tool.name ?? '')) tool = null;
     if (tool && this.#bot.heldItem?.name !== tool.name) await this.#bot.equip(tool, 'hand');
     return tool;
   }
@@ -898,9 +1041,10 @@ export class BotBody {
   }
 
   async #dig(block, signal) {
-    if (!block || REPLACEABLE.has(block.name)) fail(`nothing to dig at ${block ? at(block.position) : 'that spot'}`);
+    if (!block || NOTHING.has(block.name)) fail(`nothing to dig at ${block ? at(block.position) : 'that spot'}`);
     if (block.diggable === false || block.hardness === null || block.hardness < 0) fail(`${block.name} cannot be broken`);
-    await this.#reach(block.position, signal, { look: true });
+    // A block without a collision box (grass, a flower) is invisible to the line-of-sight goal: walk near it instead.
+    await this.#reach(block.position, signal, { look: block.boundingBox !== 'empty' });
     const fresh = this.#bot.blockAt(block.position) ?? block;
     if (fresh.name !== block.name) fail(`the ${block.name} at ${at(block.position)} is gone`);
     if (typeof this.#bot.canDigBlock === 'function' && !this.#bot.canDigBlock(fresh)) fail(`cannot reach the ${fresh.name} at ${at(fresh.position)}`);
@@ -1196,7 +1340,9 @@ export class BotBody {
         let blocked = false;
         for (const [bx, by, bz] of [[f.x, f.y + 2, f.z], [x, f.y + 1, z], [x, f.y + 2, z]]) {
           if (!this.#solid(bx, by, bz)) continue;
-          try { await this.#dig(this.#block({ x: bx, y: by, z: bz }), signal); } catch (error) { if (signal.aborted) throw error; blocked = true; break; }
+          const block = this.#block({ x: bx, y: by, z: bz });
+          if (!NATURAL.test(block?.name ?? '')) { blocked = true; break; } // escape digs natural ground only, never a build
+          try { await this.#dig(block, signal); } catch (error) { if (signal.aborted) throw error; blocked = true; break; }
         }
         if (blocked) break;
         if (!this.#solid(x, f.y, z)) {
@@ -1250,10 +1396,20 @@ export class BotBody {
         return `arrived near ${Math.floor(action.x)} ${Math.floor(action.y)} ${Math.floor(action.z)}; now at ${this.#where()}${note}`;
       }
       case 'follow': {
-        const goals = this.#goals(), entity = this.#player(action.player);
-        bot.pathfinder.setGoal(new goals.GoalFollow(entity, action.distance), true);
-        await this.#wait(action.seconds * 1000, signal);
-        bot.pathfinder.setGoal(null);
+        const goals = this.#goals(), entity = this.#player(action.player), doors = this.#doorKeeper();
+        // On foot through doors; digging (the second pass) only after the pathfinder found no way.
+        let digging = false;
+        const onPath = results => { if (!digging && ['noPath', 'timeout'].includes(results?.status)) { digging = true; this.#setMoves(true); } };
+        this.#setMoves(false);
+        bot.on?.('path_update', onPath);
+        try {
+          bot.pathfinder.setGoal(new goals.GoalFollow(entity, action.distance), true);
+          await this.#wait(action.seconds * 1000, signal);
+        } finally {
+          bot.removeListener?.('path_update', onPath);
+          try { bot.pathfinder.setGoal(null); } catch { /* not moving */ }
+          this.#setMoves(false); await doors.stop();
+        }
         return `followed ${action.player} for ${action.seconds}s`;
       }
       case 'wander': {

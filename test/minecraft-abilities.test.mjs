@@ -19,7 +19,7 @@ class Vec {
   scaled(k) { return new Vec(this.x * k, this.y * k, this.z * k); }
 }
 const BLOCKS = ['air', 'stone', 'oak_log', 'diamond_ore', 'iron_ore', 'crafting_table', 'furnace', 'chest', 'barrel', 'red_bed', 'oak_door', 'lever', 'dirt',
-  'grass_block', 'farmland', 'wheat', 'bedrock', 'cobblestone', 'oak_planks', 'carrots'];
+  'grass_block', 'farmland', 'wheat', 'bedrock', 'cobblestone', 'oak_planks', 'carrots', 'short_grass', 'tall_grass', 'poppy', 'snow', 'water'];
 const ITEMS = ['oak_log', 'oak_planks', 'stick', 'crafting_table', 'furnace', 'raw_iron', 'iron_ingot', 'coal', 'dirt', 'cobblestone', 'netherrack', 'wooden_pickaxe',
   'stone_pickaxe', 'iron_axe', 'iron_sword', 'diamond_sword', 'shield', 'iron_helmet', 'bread', 'wheat_seeds', 'wheat', 'iron_hoe', 'fishing_rod', 'emerald', 'cod',
   'bow', 'stone', 'diamond', 'carrot', 'red_bed', 'oak_door'];
@@ -54,7 +54,7 @@ function fakeBot() {
   const blockAt = position => {
     const p = new Vec(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z)), entry = world.get(key(p)) ?? { name: 'air' };
     const props = entry.props ?? {};
-    return { name: entry.name, type: REGISTRY.blocksByName[entry.name]?.id ?? 0, position: p, boundingBox: ['air', 'wheat', 'carrots', 'lever'].includes(entry.name) ? 'empty' : 'block',
+    return { name: entry.name, type: REGISTRY.blocksByName[entry.name]?.id ?? 0, position: p, boundingBox: ['air', 'wheat', 'carrots', 'lever', 'short_grass', 'tall_grass', 'poppy', 'snow', 'water'].includes(entry.name) ? 'empty' : 'block',
       hardness: entry.name === 'bedrock' ? null : 1, getProperties: () => ({ ...props }), metadata: props.age ?? 0, biome: { name: 'plains' } };
   };
   const drop = (name, position, n = 1) => { const id = nextEntity++; bot.entities[id] = { id, name: 'item', type: 'other', position: new Vec(position.x + 0.5, position.y, position.z + 0.5), getDroppedItem: () => ({ name, count: n }), drop: name, n }; };
@@ -251,7 +251,7 @@ test('#70: every new action validates its shape, with defaults, and refuses bad 
 
 test('#70: pathfinding may dig and place scaffolding from the inventory; jump, sprint, sneak, swim and goto a block', async () => {
   const { bot, body } = spawned();
-  assert.equal(bot.movements.canDig, true); assert.equal(bot.movements.allow1by1towers, true);
+  assert.equal(bot.movements.canDig, false, 't70: the first pass walks (through doors) without digging'); assert.equal(bot.movements.allow1by1towers, true);
   for (const name of ['dirt', 'cobblestone', 'netherrack', 'oak_planks', 'stone']) assert.ok(bot.movements.scafoldingBlocks.includes(itemId(name)), name);
   assert.ok(!bot.movements.scafoldingBlocks.includes(itemId('diamond_sword')));
   assert.deepEqual(await body.act({ type: 'jump' }), { type: 'jump', ok: true, detail: 'jumped (1.2 blocks up)' });
@@ -280,6 +280,19 @@ test('#70: dig picks the best tool, any block, and refuses unbreakable ones', as
   assert.equal((await body.act({ type: 'dig', x: 0, y: 62, z: 0 })).detail, 'bedrock cannot be broken');
   assert.equal((await body.act({ type: 'dig', x: 5, y: 70, z: 0 })).detail, 'nothing to dig at 5 70 0');
   assert.equal((await body.act({ type: 'dig', x: 500, y: 64, z: 0 })).detail, '500 64 0 is too far (more than 64 blocks)');
+});
+
+test('t70: dig breaks blocks without a collision box (grass, a tall plant\'s upper half, a flower, a snow layer); air and water are nothing to dig', async () => {
+  const { bot, body } = spawned();
+  bot.set(1, 64, 0, 'short_grass'); bot.set(0, 64, 1, 'tall_grass', { props: { half: 'lower' } }); bot.set(0, 65, 1, 'tall_grass', { props: { half: 'upper' } });
+  bot.set(-1, 64, 0, 'poppy'); bot.set(0, 64, -1, 'snow'); bot.set(2, 64, 2, 'water');
+  assert.deepEqual(await body.act({ type: 'dig', x: 1, y: 64, z: 0 }), { type: 'dig', ok: true, detail: 'dug short_grass at 1 64 0' });
+  assert.equal((await body.act({ type: 'dig', x: 0, y: 65, z: 1 })).detail, 'dug tall_grass at 0 65 1', 'either half');
+  assert.equal((await body.act({ type: 'dig', block: 'poppy' })).detail, 'dug poppy at -1 64 0');
+  assert.equal((await body.act({ type: 'dig', x: 0, y: 64, z: -1 })).ok, true, 'a snow layer');
+  assert.deepEqual(bot.log.filter(entry => entry[0] === 'dig').map(entry => entry[1]), ['short_grass', 'tall_grass', 'poppy', 'snow']);
+  assert.equal((await body.act({ type: 'dig', x: 2, y: 64, z: 2 })).detail, 'nothing to dig at 2 64 2');
+  assert.equal(bot.pathfinder.goals.filter(goal => goal.kind === 'lookat').length, 0, 'no line-of-sight goal for a block without a box');
 });
 
 test('#70: collect mines N blocks, then picks up the drops; partial results say so', async () => {

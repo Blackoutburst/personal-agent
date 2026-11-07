@@ -290,6 +290,57 @@ back over Mineflayer's value and resets to 20 on (re)spawn; perception reports `
 a salmon and a squid beached beside her for 12 s: no `oxygen` in her perception; submerged herself: 16, 12, 8 at
 3 s steps; back on land: no `oxygen`.
 
+### Doors and building blocks: walking takes the door, not the wall (t70)
+
+**Symptom** (owner): "pathfinding doesn't acknowledge doors and the bot breaks the wall instead of going through the
+door".
+
+**Root causes** (mineflayer-pathfinder 2.4.5, read and run): its "openable" set holds only fence gates; a door, open or
+closed, is a solid block to it (its panel has a collision box), so with digging on since #70 (dig cost 1) breaking the
+door or two wall planks was the cheapest way in. The real planner on a fake 26.1.2 plank hut broke 2 oak_planks with the
+old setup (test/minecraft-pathing.test.mjs). On the local server, main went into a closed 5x5 plank hut with a wooden
+door by breaking 2 of its blocks (the door in one run, two wall blocks in the other). And even with a door counted as
+passable, its `postProcessPath` puts each path step "on top of" the block's shape: the doorway step became a point one
+block up on the door (0.297, -59, 8.5 for the doorway at 0, -60, 8), she stood still and the pathfinder reset "stuck"
+every 3.5 s until the 90 s limit.
+
+**Fix** (`configureMovements`, `fixDoorNodes`, `#doorKeeper` in src/minecraft-body.mjs):
+- Two passes for goto, follow, wander and every walk to a block: first without digging (scaffolding only at a high
+  place cost), wooden doors and fence gates counted as passable (iron ones are not: they need redstone), diagonal steps
+  through a doorway dropped; only when that finds no way (NoPath or Timeout), once more with digging at cost 12.
+  follow switches to the digging pass after the pathfinder reports no path.
+- Neither pass breaks building blocks (`BUILT`: planks, doors, trapdoors, fences and gates, walls, stairs, slabs, glass
+  and panes, wool, carpets, bricks, concrete, terracotta, beds, containers, furnaces, tables and work blocks, torches,
+  lanterns, signs, rails, glowstone, farmland, crops, ladders, polished/chiseled/cut blocks, metal blocks, …) or
+  anything within 3 blocks of a door or bed. Logs stay breakable (trees). `dig`, `collect` and `harvest` still break what
+  they are told to; `escape` digs natural ground only (`NATURAL`: dirt, grass, stone, sand, gravel, ores, leaves, …).
+- The doorway steps are put back in the doorway on each `path_update`; while she walks, a closed wooden door or gate on
+  the next steps of her path (within 3 blocks) is opened, and one she opened is closed behind her (at least 1.8 blocks
+  past it while walking, or at the end of the walk once she is out of the doorway, within reach). A door standing open
+  stays open.
+
+Measured on the local server (a closed 5x5 hut, walls 3 high and a roof, wooden door facing north; she starts 5 blocks
+from it; the hut is compared block by block with a copy after each walk):
+
+| Walk | main 2ba0390 | this branch |
+| --- | --- | --- |
+| outside -> inside (oak_planks) | arrived, 9.2-11.3 s, 2 of 73 hut blocks broken | arrived, 2.7-3.7 s, door opened and closed, 73/73 |
+| inside -> outside | arrived (through the hole) | arrived, 2.4-3.6 s, door opened and closed, 73/73 |
+| from the far side, around the hut -> inside | arrived (through the hole) | arrived, 4.6-5.7 s, 73/73 |
+| inside -> the far side | arrived | arrived, 4.4-4.7 s, door closed behind her, 73/73 |
+| the same four in a stone_bricks hut | | all arrived, door closed, 73/73 |
+| a sealed plank hut (no door) -> inside | | fails: "did not get there: the path finder found no way", 73/73 |
+
+### Digging plants (t70)
+
+**Symptom** (owner): "she can't break tall grass, it says nothing to dig". `dig` refused every block in the
+"replaceable" set (the set placing uses: grass, tall grass, ferns, snow layers, vines, seagrass, dead bushes).
+**Fix**: only air, cave_air, void_air and fluids are "nothing to dig"; blocks without a collision box are walked up to
+(the line-of-sight goal cannot see them) and dug like any other; a block that breaks at once is dug with an empty hand
+or a real tool, never "with wheat_seeds". Measured on the local server: short_grass, the upper half of tall_grass (both
+halves went), a second tall_grass by its lower half, a poppy (`dig {block: "poppy"}`) and a 2-layer snow layer were each
+dug ("dug short_grass at 2 -60 0"), every spot air on the server afterwards; `collect short_grass` mined one.
+
 ### Commands (#70)
 
 A chat line starting with `/` is sent as a command (the leading-slash stripping of #68 is gone, in the body and in the
