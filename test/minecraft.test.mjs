@@ -135,7 +135,7 @@ function fakeBot({ goto = async () => {} } = {}) {
     findBlocks({ matching }) { return [...bot.blocks.entries()].filter(([, block]) => matching.includes(block.id)).map(([key]) => new Vec(...key.split(',').map(Number))); },
     blockAt(position) { const block = bot.blocks.get(`${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`); return block ? { ...block, position } : { name: 'air', biome: { name: 'plains' } }; },
     async dig(block) { bot.dug.push(block.name); bot.blocks.delete(`${block.position.x},${block.position.y},${block.position.z}`); },
-    async equip() {}, async consume() { bot.food = 20; }, async lookAt(target) { bot.looked = target; } });
+    async equip() {}, async consume() { bot.food = 20; bot.items[0].count--; }, async lookAt(target) { bot.looked = target; } });
   bot.pathfinder = { goals: [], setGoal(goal) { bot.goal = goal; }, stop() { bot.stopped = (bot.stopped ?? 0) + 1; }, setMovements(m) { bot.movements = m; },
     // t70: a walk that resolves ends at the goal (the body checks where she really is afterwards).
     goto: async goal => { bot.pathfinder.goals.push(goal); const result = await goto(goal); if (goal.kind === 'near') bot.entity.position = new Vec(...goal.args.slice(0, 3)); return result; } };
@@ -146,7 +146,7 @@ const pathfinderModule = { pathfinder: () => {}, Movements: class { constructor(
   goals: { GoalNear: goal('near'), GoalNearXZ: goal('nearxz'), GoalFollow: goal('follow'), GoalLookAtBlock: goal('lookat') } };
 
 test('the body runs skills with time limits and reports results it never throws', async () => {
-  const bot = fakeBot(), events = [], body = new BotBody({ bot, pathfinder: pathfinderModule, onEvent: event => events.push(event), scanMs: 60_000 });
+  const bot = fakeBot(), events = [], body = new BotBody({ bot, pathfinder: pathfinderModule, onEvent: event => events.push(event), scanMs: 60_000, pace: { inventory: 20, sync: 10 } });
   body.attach(); bot.emit('spawn');
   assert.equal(bot.movements.canDig, true, '#70: walking may dig through blocks');
   assert.deepEqual(await body.act({ type: 'say', text: '/msg Blackout hi' }), { type: 'say', ok: true, detail: 'sent the command' });
@@ -156,9 +156,9 @@ test('the body runs skills with time limits and reports results it never throws'
   assert.equal((await body.act({ type: 'goto', player: 'Nobody' })).detail, 'Nobody is not in sight');
   assert.equal((await body.act({ type: 'build' })).ok, false);
   bot.blocks.set('12,64,-3', { id: 1, name: 'oak_log' }); bot.blocks.set('13,64,-3', { id: 1, name: 'oak_log' });
-  assert.deepEqual(await body.act({ type: 'collect', block: 'oak_log', count: 5 }), { type: 'collect', ok: true, detail: 'mined 2 oak_log (only 2 of 5 found)' });
+  assert.deepEqual(await body.act({ type: 'collect', block: 'oak_log', count: 5 }), { type: 'collect', ok: true, detail: 'mined 2 oak_log (only 2 of 5 found); nothing reached your inventory yet (the drops may still be on the ground)' });
   assert.equal((await body.act({ type: 'collect', block: 'oak_log' })).detail, 'no oak_log within 32 blocks');
-  assert.deepEqual(await body.act({ type: 'eat' }), { type: 'eat', ok: true, detail: 'ate bread' });
+  assert.deepEqual(await body.act({ type: 'eat' }), { type: 'eat', ok: true, detail: 'ate bread (food 15 -> 20)' });
   assert.equal((await body.act({ type: 'eat' })).detail, 'not hungry');
   assert.equal((await body.act({ type: 'pick_up' })).detail, 'no dropped items nearby');
   bot.players.Blackout = { username: 'Blackout', entity: { position: new Vec(12, 64, -3) } };

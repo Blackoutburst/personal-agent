@@ -73,6 +73,37 @@ export function patchPhysics(bot) {
   return true;
 }
 
+// t70 (windows): every window click carries the state id of the window it clicks. Mineflayer 4.39.0 keeps ONE state id,
+// taken from every set_slot / window_items packet whatever window it is for. The 26.1 server keeps syncing the player
+// inventory (window 0: a set_slot for the off-hand slot after each click) while a crafting table, furnace or chest is
+// open, so every click on that window went out with window 0's id. The server then answers each click with a full
+// resync of the window's state from before Mineflayer's next (already predicted) clicks; Mineflayer's model of the
+// window falls behind, it clicks the wrong slots, and a craft "succeeds" while the server made nothing and used
+// nothing (measured on a local 26.1.2 server; docs/MINECRAFT.md, "Windows on 26.1"). The fix keeps the state id per
+// window and hands Mineflayer only the open window's. Idempotent; false when Mineflayer's listener is not there (yet).
+const STATE_LISTENER = /^\(?packet\)?=>\{stateId=packet\.stateId;?\}$/;
+const WINDOWS_PATCHED = Symbol('t70 window state ids');
+export function patchWindowState(bot) {
+  const client = bot?._client;
+  if (!client || typeof client.listeners !== 'function') return false;
+  if (client[WINDOWS_PATCHED]) return true;
+  const original = client.listeners('set_slot').find(fn => STATE_LISTENER.test(String(fn).replace(/\s/g, '')));
+  if (!original || !client.listeners('window_items').includes(original)) return false;
+  const latest = new Map(), active = () => bot.currentWindow?.id ?? 0;
+  const perWindow = packet => {
+    if (!packet || typeof packet.stateId !== 'number') return;
+    latest.set(packet.windowId, packet.stateId);
+    if (packet.windowId === active()) original(packet);
+  };
+  client.removeListener('set_slot', original); client.removeListener('window_items', original);
+  client.prependListener('set_slot', perWindow); client.prependListener('window_items', perWindow);
+  // A window's contents can arrive just before its open_window (villagers); a closed window hands back window 0's id.
+  client.on('open_window', packet => { if (latest.has(packet?.windowId)) original({ stateId: latest.get(packet.windowId) }); });
+  bot.on?.('windowClose', window => { if (window && window.id !== 0) latest.delete(window.id); original({ stateId: latest.get(0) ?? -1 }); });
+  client[WINDOWS_PATCHED] = true;
+  return true;
+}
+
 const round = value => Math.round(value * 10) / 10;
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 const centre = p => ({ x: p.x + 0.5, y: p.y + 0.5, z: p.z + 0.5 });
@@ -321,6 +352,20 @@ const summarise = (items, max = 16) => {
   const list = [...counts].sort((a, b) => b[1] - a[1]);
   return list.slice(0, max).map(([name, n]) => `${n} ${name}`).join(', ') + (list.length > max ? `, +${list.length - max} more kinds` : '');
 };
+// Counts by item name: what she carries (see #items), compared before and after an action.
+const carried = bot => { const window = bot.currentWindow; return (window && typeof window.items === 'function' ? window.items() : bot.inventory?.items?.()) ?? []; };
+const counts = items => { const map = new Map(); for (const item of items) map.set(item.name, (map.get(item.name) ?? 0) + (item.count ?? 1)); return map; };
+const delta = (before, after, name) => (after.get(name) ?? 0) - (before.get(name) ?? 0);
+const changed = (before, after) => [...new Set([...before.keys(), ...after.keys()])].some(name => delta(before, after, name) !== 0);
+const changes = (before, after, skip = new Set()) => {
+  const gained = [], lost = [];
+  for (const name of new Set([...before.keys(), ...after.keys()])) {
+    if (skip.has(name)) continue;
+    const d = delta(before, after, name);
+    if (d > 0) gained.push({ name, count: d }); else if (d < 0) lost.push({ name, count: -d });
+  }
+  return { gained, lost };
+};
 const isHostile = entity => entity?.type === 'hostile' || HOSTILE_NAMES.has(entity?.name);
 const weaponScore = name => {
   const match = /^([a-z]+)_(sword|axe)$/.exec(name ?? '');
@@ -335,10 +380,10 @@ export class BotBody {
 
   // bot: a Mineflayer bot (or a fake). pathfinder: the mineflayer-pathfinder module ({ goals, Movements }) once loaded, or
   // null (movement skills then fail cleanly). onEvent(event): what the body noticed. companions: other companions' names.
-  // pace: waits in ms ({ hit, poll, settle, rise, swim, step }); tests make them short.
+  // pace: waits in ms ({ hit, poll, settle, rise, swim, step, inventory, sync, collect, look }); tests make them short.
   constructor({ bot, pathfinder = null, onEvent = () => {}, companions = [], now = Date.now, scanMs = 5000, pace = {}, Vec3 = null }) {
     this.#bot = bot; this.#pathfinder = pathfinder; this.#emit = onEvent; this.#companions = new Set(companions.map(name => name.toLowerCase()));
-    this.#now = now; this.#scanMs = scanMs; this.#pace = { hit: 650, poll: 250, settle: 400, rise: 1500, swim: 12_000, step: 1500, ...pace }; this.#Vec3 = Vec3;
+    this.#now = now; this.#scanMs = scanMs; this.#pace = { hit: 650, poll: 250, settle: 400, rise: 1500, swim: 12_000, step: 1500, inventory: 2000, sync: 1500, collect: 3500, look: 150, ...pace }; this.#Vec3 = Vec3;
   }
 
   get username() { return this.#bot.username; }
@@ -364,9 +409,9 @@ export class BotBody {
     const bot = this.#bot;
     if (this.#pathfinder && typeof bot.loadPlugin === 'function' && !bot.pathfinder) bot.loadPlugin(this.#pathfinder.pathfinder);
     // Mineflayer injects its physics plugin after attach() (once the version is known): patch it at login and spawn.
-    this.#on('login', () => patchPhysics(bot));
+    this.#on('login', () => { patchPhysics(bot); patchWindowState(bot); });
     this.#on('spawn', () => {
-      patchPhysics(bot);
+      patchPhysics(bot); patchWindowState(bot);
       if (this.#spawnedAt) return;
       this.#spawnedAt = this.#now();
       if (this.#pathfinder && bot.pathfinder) bot.pathfinder.setMovements(this.#movements());
@@ -478,9 +523,7 @@ export class BotBody {
         blocks = [...nearest.values()].sort((a, b) => a.distance - b.distance).slice(0, LIMITS.blocks);
       }
     } catch { blocks = []; }
-    const counts = new Map();
-    for (const item of bot.inventory?.items?.() ?? []) counts.set(item.name, (counts.get(item.name) ?? 0) + (item.count ?? 1));
-    const inventory = [...counts].sort((a, b) => b[1] - a[1]).slice(0, LIMITS.inventory).map(([name, count]) => `${clean(name, 40)} ${count}`);
+    const inventory = [...counts(carried(bot))].sort((a, b) => b[1] - a[1]).slice(0, LIMITS.inventory).map(([name, count]) => `${clean(name, 40)} ${count}`);
     const slots = bot.inventory?.slots ?? [];
     const armor = [5, 6, 7, 8].map(slot => slots[slot]?.name).filter(Boolean).map(name => clean(name, 40));
     let biome = null;
@@ -597,15 +640,69 @@ export class BotBody {
     const goals = this.#goals();
     await this.#walk(new goals.GoalNear(entity.position.x, entity.position.y, entity.position.z, range), signal);
   }
-  #items() { return this.#bot.inventory?.items?.() ?? []; }
-  #item(name) { return this.#items().find(item => item.name === name) ?? null; }
+  // What she carries. While a window (crafting table, furnace, chest) is open the server updates that window's copy
+  // of her inventory, and Mineflayer's bot.inventory only catches up when the window closes: count from the window.
+  #items() { return carried(this.#bot); }
+  // An inventory item to equip or toss: its slot must be an inventory slot, never a window slot.
+  #item(name) { return (this.#bot.inventory?.items?.() ?? []).find(item => item.name === name) ?? null; }
   #count(name) { return this.#items().filter(item => item.name === name).reduce((sum, item) => sum + (item.count ?? 1), 0); }
-  #snapshot() { const map = new Map(); for (const item of this.#items()) map.set(item.name, (map.get(item.name) ?? 0) + (item.count ?? 1)); return map; }
+  #snapshot() { return counts(this.#items()); }
   #gained(before) {
     const gains = [];
     for (const [name, n] of this.#snapshot()) if (n > (before.get(name) ?? 0)) gains.push({ name, count: n - (before.get(name) ?? 0) });
     return summarise(gains, 8);
   }
+  // ---------- Inventory checks (t70 windows) ----------
+  // Every action that changes the inventory measures it: counts before, the server's answer after (waiting up to
+  // pace.inventory ms, 2 s, for its slot updates), and the result says what really changed.
+
+  // Asks the server for the real contents of the open window (or the inventory): a click it must answer with a full
+  // resync (Mineflayer's own _syncWindow). Resolves to false when that is not available or it did not answer in time.
+  async #sync() {
+    const bot = this.#bot;
+    if (typeof bot._syncWindow !== 'function') return false;
+    const window = bot.currentWindow ?? bot.inventory;
+    if (!window) return false;
+    let timer;
+    try {
+      return await Promise.race([Promise.resolve(bot._syncWindow(window)).then(() => true), new Promise(resolve => { timer = setTimeout(() => resolve(false), this.#pace.sync); })]);
+    } catch { return false; } finally { clearTimeout(timer); }
+  }
+  async #fresh() { await this.#sync(); return this.#snapshot(); }
+  // Waits until test(counts) holds, up to pace.inventory ms; if it never does, asks the server once and counts again.
+  async #settle(before, test = counts => changed(before, counts), signal = null) {
+    if (await this.#until(() => test(this.#snapshot()), this.#pace.inventory, signal)) return this.#snapshot();
+    await this.#sync();
+    return this.#snapshot();
+  }
+  // Pickups arrive one stack at a time: wait for the first change, then until nothing changed for a moment (300 ms), up
+  // to pace.inventory ms in all.
+  async #settleAll(before, signal) {
+    const key = counts => [...counts].sort().join(','), quiet = Math.min(300, this.#pace.inventory / 4);
+    let last = key(this.#snapshot()), since = this.#now();
+    const done = await this.#until(() => {
+      const now = this.#snapshot(), k = key(now);
+      if (k !== last) { last = k; since = this.#now(); }
+      return changed(before, now) && this.#now() - since >= quiet;
+    }, this.#pace.inventory, signal);
+    if (!done && !changed(before, this.#snapshot())) await this.#sync();
+    return this.#snapshot();
+  }
+  // Ingredients left in her 2x2 grid by a failed craft, or a result left on the cursor, go back into the inventory when
+  // the inventory "closes", as when a player closes the inventory screen. (Seen twice on 26.1 during testing: right
+  // after a 2x2 craft the server's full state had the result outside her inventory slots; it showed up there later.)
+  // Resolves to whether there was anything to put back.
+  async #clearGrid() {
+    const bot = this.#bot;
+    if (bot.currentWindow || !bot.inventory) return false;
+    await this.#sync();
+    const slots = bot.inventory.slots ?? [];
+    if (![1, 2, 3, 4].some(slot => slots[slot]) && !bot.inventory.selectedItem) return false;
+    try { bot._client?.write?.('close_window', { windowId: 0 }); } catch { /* not connected */ }
+    await this.#sync();
+    return true;
+  }
+
   #block(position) { return this.#bot.blockAt(this.#vec(position.x, position.y, position.z)); }
   // The nearest blocks matching (ids or a name test), nearest first.
   #find(match, range, count = 1, filter = () => true) {
@@ -1059,7 +1156,7 @@ export class BotBody {
       }
       case 'collect': {
         if (!this.#registry().blocksByName?.[action.block]) fail(`no block called ${action.block}`);
-        const before = this.#snapshot();
+        const before = await this.#fresh();
         let got = 0, problem = null;
         for (let attempt = 0; got < action.count && attempt < action.count + 4 && !signal.aborted; attempt++) {
           const block = this.#find(action.block, LIMITS.collectRange)[0];
@@ -1068,14 +1165,16 @@ export class BotBody {
         }
         if (!got) throw problem ?? new Error(`no ${action.block} within ${LIMITS.collectRange} blocks`);
         await this.#pickUp(signal).catch(() => {});
-        const gained = this.#gained(before);
-        return `mined ${got} ${action.block}${got < action.count ? ` (only ${got} of ${action.count} found)` : ''}${gained ? `; picked up ${gained}` : ''}`;
+        // Drops reach the inventory a moment after she walks over them: wait for them (up to 2 s) before counting.
+        const { gained } = changes(before, await this.#settleAll(before, signal));
+        return `mined ${got} ${action.block}${got < action.count ? ` (only ${got} of ${action.count} found)` : ''}; ${gained.length ? `picked up ${summarise(gained, 8)}` : 'nothing reached your inventory yet (the drops may still be on the ground)'}`;
       }
       case 'pick_up': {
-        const before = this.#snapshot(), count = await this.#pickUp(signal);
+        const before = await this.#fresh(), count = await this.#pickUp(signal);
         if (!count) throw new Error('no dropped items nearby');
-        const gained = this.#gained(before);
-        return `picked up ${plural(count, 'item stack')}${gained ? `: ${gained}` : ''}`;
+        const { gained } = changes(before, await this.#settleAll(before, signal));
+        if (!gained.length) fail(`walked over ${plural(count, 'item stack')} but nothing reached your inventory (full, or not pickable yet)`);
+        return `picked up ${summarise(gained, 8)} (${plural(count, 'item stack')} nearby)`;
       }
       case 'place': {
         if (action.x !== undefined) {
@@ -1128,11 +1227,13 @@ export class BotBody {
         if (!recipe) {
           recipe = bot.recipesFor(item.id, null, 1, true)?.[0] ?? null;
           if (!recipe) {
-            const any = bot.recipesAll?.(item.id, null, true)?.[0];
-            if (!any) fail(`${action.item} cannot be crafted`);
+            const all = bot.recipesAll?.(item.id, null, true) ?? [];
+            if (!all.length) fail(`${action.item} cannot be crafted`);
+            // Name what is missing for the variant she is closest to (oak planks she has, not cherry planks she has not).
             const names = this.#registry().items ?? {};
-            const missing = (any.delta ?? []).filter(d => d.count < 0 && this.#bot.inventory.count?.(d.id, d.metadata) < -d.count)
-              .map(d => `${-d.count} ${names[d.id]?.name ?? 'item ' + d.id}`);
+            const short = recipe => (recipe.delta ?? []).filter(d => d.count < 0 && (this.#bot.inventory.count?.(d.id, d.metadata) ?? 0) < -d.count);
+            const best = all.map(recipe => ({ recipe, missing: short(recipe) })).sort((a, b) => a.missing.length - b.missing.length)[0];
+            const missing = best.missing.map(d => `${-d.count} ${names[d.id]?.name ?? 'item ' + d.id}`);
             fail(`missing ingredients for ${action.item}${missing.length ? `: one craft needs ${missing.join(', ')}` : ''}`);
           }
           if (!table) {
@@ -1143,12 +1244,41 @@ export class BotBody {
           await this.#reach(table.position, signal);
           used ??= `used the crafting table at ${at(table.position)}`;
         }
-        const per = recipe.result?.count ?? 1, needs = recipe.requiresTable ? table : null;
-        let times = Math.ceil(action.count / per);
-        while (times > 1 && !bot.recipesFor(item.id, null, times * per, needs ?? (recipe.requiresTable ? true : null))?.length) times--;
-        await bot.craft(recipe, times, needs ?? undefined);
-        const made = times * per;
-        return `crafted ${made} ${action.item}${made < action.count ? ` (only enough ingredients for ${made} of ${action.count})` : ''}${used ? `; ${used}` : ''}`;
+        // t70: crafts in rounds and measures each one: what the server really made, never what was asked. At a table
+        // one craft per round (the window is opened fresh, so its slots are the server's); in the 2x2 grid as many as
+        // the ingredients cover. A round that made nothing is tried once more, then the craft stops.
+        const atTable = Boolean(recipe.requiresTable), before = await this.#fresh();
+        let made = 0, problem = null, retried = false;
+        while (made < action.count && !signal.aborted) {
+          const current = bot.recipesFor(item.id, null, 1, atTable ? true : null)?.[0];
+          if (!current) break;
+          const per = current.result?.count ?? 1;
+          let times = atTable ? 1 : Math.ceil((action.count - made) / per);
+          while (times > 1 && !bot.recipesFor(item.id, null, times * per, null)?.length) times--;
+          const start = this.#snapshot();
+          problem = null;
+          try { await bot.craft(current, times, atTable ? table : undefined); } catch (error) { if (signal.aborted) throw error; problem = error; }
+          const enough = counts => delta(start, counts, action.item) >= times * per;
+          let after = await this.#settle(start, enough, signal);
+          if (delta(start, after, action.item) <= 0 && await this.#clearGrid()) after = await this.#settle(start, enough, signal);
+          const got = delta(start, after, action.item);
+          if (got > 0) { made += got; this.#progress(`crafted ${made} ${action.item}`); continue; }
+          if (problem || retried) break;
+          retried = true;
+        }
+        await this.#clearGrid();
+        // The result can arrive before the ingredients' updates: count after the server's full answer.
+        await this.#settle(before, counts => delta(before, counts, action.item) >= made, signal);
+        const after = await this.#fresh();
+        const real = delta(before, after, action.item), { lost } = changes(before, after, new Set([action.item]));
+        const why = problem ? clean(problem.message, 80) : null, where = used ? `; ${used}` : '';
+        if (real <= 0) {
+          fail(`crafting ${action.item} did not work: the server made none${why ? ` (${why})` : ''}; ${lost.length ? `your inventory lost ${summarise(lost, 8)}` : 'your inventory is unchanged'}${where}`);
+        }
+        const more = Boolean(bot.recipesFor(item.id, null, 1, atTable ? true : null)?.length);
+        const short = real >= action.count ? '' : why ? ` (only ${real} of ${action.count}: ${why})`
+          : more ? ` (only ${real} of ${action.count}: the server made no more)` : ` (only enough ingredients for ${real} of ${action.count})`;
+        return `crafted ${real} ${action.item}${short}${where}${lost.length ? `; it took ${summarise(lost, 8)}` : ''}`;
       }
       case 'smelt': {
         const have = this.#count(action.item);
@@ -1160,33 +1290,65 @@ export class BotBody {
           block = await this.#placeNearby('furnace', signal); placed = '; placed a furnace';
         }
         await this.#reach(block.position, signal);
-        const furnace = await bot.openFurnace(block), registry = this.#registry().itemsByName ?? {};
-        const before = this.#snapshot();
+        // t70: the result is what really came out, counted in her inventory after the furnace window is closed.
+        const before = await this.#fresh();
+        // The furnace's state (0 burn time left, 2 cooking progress) comes as window properties. Mineflayer attaches its
+        // listener only after the window opened and misses the first burst (measured on 26.1: a furnace still burning
+        // from the last smelt looked cold), so the body keeps its own copy.
+        const properties = new Map(), onProperty = packet => {
+          if (!properties.has(packet?.windowId)) properties.set(packet?.windowId, new Map());
+          properties.get(packet?.windowId).set(packet?.property, packet?.value);
+        };
+        bot._client?.on?.('craft_progress_bar', onProperty);
+        let furnace;
+        try { furnace = await bot.openFurnace(block); } catch (error) { bot._client?.removeListener?.('craft_progress_bar', onProperty); throw error; }
+        const registry = this.#registry().itemsByName ?? {}, property = n => properties.get(furnace.id)?.get(n);
+        const lit = () => furnace.fuel > 0 || property(0) > 0, cooking = () => furnace.progress > 0 || property(2) > 0;
+        let fuelName = null, put = 0, left = 0, problem = null, stuckOut = null;
         try {
+          // A furnace still burning from an earlier smelt needs no fuel: wait for its burn time to arrive.
+          if (!furnace.fuelItem?.() && bot._client) await this.#until(() => property(0) !== undefined, this.#pace.settle * 2.5, signal);
           const fuelHere = furnace.fuelItem?.();
-          if (!fuelHere && !(furnace.fuel > 0)) {
+          if (!fuelHere && !lit()) {
             const choices = action.fuel ? [[action.fuel, action.fuel === 'stick' ? 0.5 : WOOD_FUEL.test(action.fuel) ? 1.5 : FUELS.find(([name]) => name === action.fuel)?.[1] ?? 1]]
               : [...FUELS, ...this.#items().filter(i => WOOD_FUEL.test(i.name)).map(i => [i.name, 1.5])];
             const fuel = choices.find(([name]) => this.#count(name) > 0) ?? fail(action.fuel ? `no ${action.fuel} in the inventory` : 'no fuel in the inventory (coal, charcoal, planks or logs)');
+            fuelName = fuel[0];
             await furnace.putFuel(registry[fuel[0]].id, null, Math.min(this.#count(fuel[0]), Math.max(1, Math.ceil(count / fuel[1]))));
           }
+          const inBefore = furnace.inputItem?.()?.name === action.item ? furnace.inputItem().count : 0;
           await furnace.putInput(registry[action.item].id, null, count);
-          // Wait while it cooks: until the input is used up, or the fuel runs out.
+          await this.#sync();
+          put = (furnace.inputItem?.()?.name === action.item ? furnace.inputItem().count : 0) - inBefore;
+          if (put <= 0) fail(`the furnace did not take the ${action.item}`);
+          // Wait while it cooks: until everything put in came out, or nothing is left cooking, or the fuel ran out.
+          const out0 = furnace.outputItem?.()?.count ?? 0;
           for (let idle = 0; !signal.aborted;) {
-            const input = furnace.inputItem?.(), output = furnace.outputItem?.();
-            if (!input) break;
-            if (!furnace.fuelItem?.() && !(furnace.fuel > 0) && ++idle > 8) break;
-            if (output?.count >= 64) break;
-            this.#progress(`${output?.count ?? 0} smelted so far`);
+            const input = furnace.inputItem?.(), out = furnace.outputItem?.()?.count ?? 0;
+            if (out - out0 >= put || out >= 64) break;
+            const burning = lit() || Boolean(furnace.fuelItem?.());
+            if (!input && !cooking()) { if (++idle > 4) break; } else if (!burning) { if (++idle > 8) break; } else idle = 0;
+            this.#progress(`${out - out0} of ${put} smelted so far`);
             await this.#wait(this.#pace.poll * 4, signal);
           }
-          if (furnace.outputItem?.()) await furnace.takeOutput();
-          const left = furnace.inputItem?.();
-          if (left) await furnace.takeInput();
-          const gained = this.#gained(before);
-          if (!gained) fail(`nothing came out of the furnace${left ? ' (it ran out of fuel)' : ''}`);
-          return `smelted ${action.item}: got ${gained}${left ? `; ${left.count} ${action.item} not smelted (out of fuel) taken back` : ''}${placed}`;
-        } finally { try { furnace.close(); } catch { /* closed */ } }
+          try { if (furnace.outputItem?.()) await furnace.takeOutput(); } catch (error) { problem = error; }
+          left = furnace.inputItem?.()?.name === action.item ? furnace.inputItem().count : 0;
+          if (left) { try { await furnace.takeInput(); } catch (error) { problem ??= error; } }
+          await this.#sync();
+          stuckOut = furnace.outputItem?.() ?? null;
+        } finally { try { furnace.close(); } catch { /* closed */ } bot._client?.removeListener?.('craft_progress_bar', onProperty); }
+        const skip = new Set([action.item, ...(fuelName ? [fuelName] : [])]);
+        await this.#settle(before, counts => changes(before, counts, skip).gained.length > 0, signal);
+        const after = await this.#fresh(), { gained } = changes(before, after, skip);
+        const used = -delta(before, after, action.item);
+        const stuck = stuckOut ? `; ${stuckOut.count ?? 1} ${stuckOut.name} still in the furnace's output at ${at(block.position)}${problem ? ` (${clean(problem.message, 60)})` : ''}`
+          : problem ? ` (${clean(problem.message, 60)})` : '';
+        if (!gained.length) {
+          const input = left ? ` (it ran out of fuel${used > 0 ? '' : `; your ${action.item} is back in your inventory`})` : '';
+          fail(`nothing came out of the furnace${input}${stuck}${placed}`);
+        }
+        const back = left && used < put ? `; ${put - used} ${action.item} not smelted (out of fuel) taken back` : '';
+        return `smelted ${used} ${action.item}: got ${summarise(gained, 8)}${back}${stuck}${placed}`;
       }
 
       case 'equip': {
@@ -1199,21 +1361,37 @@ export class BotBody {
         await bot.unequip(action.slot);
         return `unequipped ${action.slot}`;
       case 'toss': {
-        const have = this.#count(action.item);
+        const before = await this.#fresh(), have = before.get(action.item) ?? 0;
         if (!have) fail(`no ${action.item} in the inventory`);
         const n = Math.min(have, action.count);
         await bot.toss(this.#item(action.item).type, null, n);
-        return `tossed ${n} ${action.item}${n < action.count ? ` (all you had)` : ''}`;
+        const gone = -delta(before, await this.#settle(before, counts => -delta(before, counts, action.item) >= n, signal), action.item);
+        if (gone <= 0) fail(`tossing ${action.item} did not work: you still have ${have}`);
+        return `tossed ${gone} ${action.item}${gone < n ? ` (only ${gone} of ${n} left your inventory)` : n < action.count ? ' (all you had)' : ''}`;
       }
       case 'give': {
-        const have = this.#count(action.item);
+        const before = await this.#fresh(), have = before.get(action.item) ?? 0;
         if (!have) fail(`no ${action.item} in the inventory`);
         const entity = this.#player(action.player);
         await this.#approach(entity, signal, 2);
-        await bot.lookAt(entity.position.offset(0, 1.6, 0), true);
+        // Aimed low, and only thrown once the server has her new look (sent with the next physics tick): tossed right
+        // after lookAt, the items flew off in her old direction (measured on 26.1).
+        await bot.lookAt(entity.position.offset(0, 0.5, 0), true);
+        await this.#wait(this.#pace.look, signal);
         const n = Math.min(have, action.count);
-        await bot.toss(this.#item(action.item).type, null, n);
-        return `gave ${action.player} ${n} ${action.item}${n < action.count ? ' (all you had)' : ''}`;
+        // Giving is dropping the items in front of them: watch whether they pick them up (dropped items wait 2 s).
+        let collected = false;
+        const onCollect = collector => { if (collector === entity || (collector?.username && collector.username === action.player)) collected = true; };
+        bot.on?.('playerCollect', onCollect);
+        try {
+          await bot.toss(this.#item(action.item).type, null, n);
+          const gone = -delta(before, await this.#settle(before, counts => -delta(before, counts, action.item) >= n, signal), action.item);
+          if (gone <= 0) fail(`giving ${action.item} did not work: you still have ${have}`);
+          await this.#until(() => collected, this.#pace.collect, signal);
+          const all = gone < n ? ` (only ${gone} of ${n} left your inventory)` : n < action.count ? ' (all you had)' : '';
+          return collected ? `gave ${action.player} ${gone} ${action.item}${all}; they picked it up`
+            : `dropped ${gone} ${action.item} for ${action.player}${all}; they have not picked it up yet (it is on the ground near them)`;
+        } finally { bot.removeListener?.('playerCollect', onCollect); }
       }
       case 'use_item': {
         const held = action.offhand ? bot.inventory?.slots?.[45] : bot.heldItem;
@@ -1229,9 +1407,12 @@ export class BotBody {
         const food = action.item ? (foods[action.item] ? this.#item(action.item) : fail(`${action.item} is not food`)) ?? fail(`no ${action.item} in the inventory`)
           : this.#items().filter(item => foods[item.name] && !/^(?:rotten_flesh|spider_eye|poisonous_potato|pufferfish|suspicious_stew|chorus_fruit)$/.test(item.name))
             .sort((a, b) => (foods[b.name].foodPoints ?? 0) - (foods[a.name].foodPoints ?? 0))[0] ?? fail('no food in the inventory');
-        await bot.equip(food, 'hand');
+        const before = await this.#fresh(), hunger = bot.food;
+        await bot.equip(this.#item(food.name) ?? food, 'hand');
         await bot.consume();
-        return `ate ${food.name}`;
+        const eaten = -delta(before, await this.#settle(before, counts => delta(before, counts, food.name) < 0, signal), food.name);
+        if (eaten <= 0) fail(`eating ${food.name} did not work: it is still in your inventory`);
+        return `ate ${food.name}${finite(hunger) && finite(bot.food) && bot.food !== hunger ? ` (food ${Math.round(hunger)} -> ${Math.round(bot.food)})` : ''}`;
       }
 
       case 'attack': {
@@ -1265,21 +1446,24 @@ export class BotBody {
         try { return this.#contents(block, window); } finally { try { window.close(); } catch { /* closed */ } }
       }
       case 'deposit': case 'withdraw': {
+        const type = this.#registry().itemsByName?.[action.item]?.id ?? fail(`no item called ${action.item}`);
         const { block, window } = await this.#container(action, signal);
         try {
-          const type = this.#registry().itemsByName?.[action.item]?.id ?? fail(`no item called ${action.item}`);
-          if (action.type === 'deposit') {
-            const have = this.#count(action.item);
-            if (!have) fail(`no ${action.item} in the inventory`);
-            const n = Math.min(have, action.count ?? have);
-            await window.deposit(type, null, n);
-            return `put ${n} ${action.item} in; ${this.#contents(block, window)}`;
-          }
-          const inside = (window.containerItems?.() ?? []).filter(item => item.name === action.item).reduce((sum, item) => sum + (item.count ?? 1), 0);
-          if (!inside) fail(`no ${action.item} in it; ${this.#contents(block, window)}`);
-          const n = Math.min(inside, action.count ?? inside);
-          await window.withdraw(type, null, n);
-          return `took ${n} ${action.item}; ${this.#contents(block, window)}`;
+          // t70: counted in the open window (its copy of her inventory is the one the server updates), after asking the
+          // server for the window's real contents: what really moved, never what was asked.
+          await this.#sync();
+          const before = this.#snapshot(), inside = () => counts(window.containerItems?.() ?? []).get(action.item) ?? 0;
+          const deposit = action.type === 'deposit', have = deposit ? before.get(action.item) ?? 0 : inside();
+          if (!have) fail(deposit ? `no ${action.item} in the inventory` : `no ${action.item} in it; ${this.#contents(block, window)}`);
+          const n = Math.min(have, action.count ?? have);
+          let problem = null;
+          try { await (deposit ? window.deposit(type, null, n) : window.withdraw(type, null, n)); } catch (error) { if (signal.aborted) throw error; problem = error; }
+          await this.#sync();
+          const moved = (deposit ? -1 : 1) * delta(before, this.#snapshot(), action.item);
+          const why = problem ? ` (${clean(problem.message, 60)})` : '';
+          if (moved <= 0) fail(`${deposit ? `putting ${action.item} in` : `taking ${action.item} out`} did not work${why}; ${this.#contents(block, window)}`);
+          const part = moved < n ? ` (only ${moved} of ${n}${why || (deposit ? ': it is full' : ': your inventory is full')})` : '';
+          return `${deposit ? 'put' : 'took'} ${moved} ${action.item}${deposit ? ' in' : ''}${part}; ${this.#contents(block, window)}`;
         } finally { try { window.close(); } catch { /* closed */ } }
       }
 
@@ -1386,6 +1570,7 @@ export class BotBody {
           }
         }
         await this.#pickUp(signal).catch(() => {});
+        await this.#settleAll(before, signal);
         const gained = this.#gained(before);
         return `harvested ${done}${replanted ? `, replanted ${replanted}` : ''}${gained ? `; got ${gained}` : ''}`;
       }

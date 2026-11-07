@@ -82,23 +82,23 @@ found)", "placed 10 of 12 blocks; 2 failed: …"), and a failed or timed-out act
 | | `swim` | `seconds` 1-30, `forward` | hold jump (swim up, stay afloat), optionally sprint-swim forward; reports how far she really rose and moved, fails when she did not move with her head under water | the seconds + 5 s |
 | | `escape` | none | out of water, a hole or a pit: swim up (sprint-swim) and over the rim, else pillar up with dirt, cobblestone or planks, else dig a staircase out; says what failed | 120 s |
 | Blocks | `dig` | `x, y, z` or `block` (nearest within 32) | break any breakable block with the best tool from the inventory | 60 s |
-| | `collect` | `block`, `count` 1-64 | mine that many of the nearest, then pick up the drops (reports what was picked up) | 30 s + 15 s per block |
-| | `pick_up` | none | walk over dropped items within 16 blocks | 30 s |
+| | `collect` | `block`, `count` 1-64 | mine that many of the nearest, then pick up the drops (reports what really reached the inventory, waiting up to 2 s for it) | 30 s + 15 s per block |
+| | `pick_up` | none | walk over dropped items within 16 blocks; reports what really reached the inventory (up to 2 s later), fails when nothing did | 30 s |
 | | `place` | `item` and `x, y, z` or `at`: `front`, `below`, `above` | place a block from the inventory against a solid neighbour; `below` over a gap bridges, on the ground it jumps and pillars up | 30 s |
 | | `build` | `blocks`: up to 64 `[dx, dy, dz, "item"]` (offsets -16..16), optional `x, y, z` origin (default: her feet) | ordered placements; each one walks near, places or reports why not, and the rest go on | 20 s + 6 s per block |
-| Make | `craft` | `item`, `count` 1-64 | `bot.recipesFor` in the 2x2 grid; a 3x3 recipe uses a crafting table within 32 blocks (she walks to it) or places one from the inventory; missing ingredients are named | 60 s + 2 s per item |
-| | `smelt` | `item`, `count` 1-64, optional `fuel` | nearest furnace, blast furnace or smoker within 32 (or places a furnace), adds fuel (coal, charcoal, blaze rods, planks, logs…) when it has none, waits, takes the output (and any unsmelted input back) | 45 s + 11 s per item |
+| Make | `craft` | `item`, `count` 1-64 | `bot.recipesFor` in the 2x2 grid; a 3x3 recipe uses a crafting table within 32 blocks (she walks to it) or places one from the inventory, one craft per round; reports what the server really made and used (t70), fails when it made nothing; missing ingredients are named | 60 s + 2 s per item |
+| | `smelt` | `item`, `count` 1-64, optional `fuel` | nearest furnace, blast furnace or smoker within 32 (or places a furnace), adds fuel (coal, charcoal, blaze rods, planks, logs…) when it has none and is not still burning, waits for the last item, takes the output (and any unsmelted input back); reports what really came out | 45 s + 11 s per item |
 | Items | `equip` | `item`, optional `slot`: `hand`, `off-hand`, `head`, `torso`, `legs`, `feet` | armor goes to its slot by itself | 5 s |
 | | `unequip` | `slot` (default hand) | | 5 s |
-| | `toss` (or `drop`) | `item`, `count` 1-2304 (default 1) | throw items on the ground | 10 s |
-| | `give` | `player`, `item`, `count` | walk to the player, look at them, toss | 60 s |
+| | `toss` (or `drop`) | `item`, `count` 1-2304 (default 1) | throw items on the ground; counts what left the inventory | 10 s |
+| | `give` | `player`, `item`, `count` | walk to the player, aim low at them, toss; says whether they picked it up (watched for 3.5 s) | 60 s |
 | | `use_item` | `seconds` 0-5, `offhand` | activate the held item (food and drinks are consumed; with seconds it holds then releases: bow, crossbow, trident; buckets, throwables) | seconds + 8 s |
-| | `eat` | optional `item` | the best food in the inventory (never rotten flesh or poison by choice) | 10 s |
+| | `eat` | optional `item` | the best food in the inventory (never rotten flesh or poison by choice); fails when it was not eaten | 10 s |
 | Fight | `attack` | `mob`, `player`, or none (nearest hostile within 16) | equips the best weapon, follows and hits until the target is dead, or reports that it got away (more than 32 blocks) | 60 s |
 | | `shield` | `seconds` 1-30 | shield to the off-hand if needed, raise it, lower it after | seconds + 5 s |
 | | `defend` | `seconds` 5-300 | fight every hostile mob that comes within 12 blocks for that long | seconds + 5 s |
 | Storage | `open` | `x, y, z`, `block` or none (nearest chest, barrel, shulker box) | open it and list the contents | 45 s |
-| | `deposit`, `withdraw` | `item`, optional `count` (default all), optional `x, y, z` | move items in or out; the result lists the contents after | 45 s |
+| | `deposit`, `withdraw` | `item`, optional `count` (default all), optional `x, y, z` | move items in or out; reports how many really moved and lists the contents after | 45 s |
 | World | `activate` | `x, y, z` or `block` (nearest within 16) | use a door, lever, button, trapdoor, gate, bell…; reports the new state | 30 s |
 | | `sleep`, `wake` | optional `x, y, z` of a bed | nearest bed within 32 (night or thunderstorm only, the server decides) | 45 s / 5 s |
 | | `mount`, `dismount` | optional `entity` (boat, minecart, horse…) | nearest rideable within 16 | 30 s / 5 s |
@@ -162,6 +162,73 @@ Measured through the real worker and BotBody on the local server (before = main 
 | escape from a dry 3-deep pit in stone, with dirt | | pillared 2 dirt and stepped out, 2.8 s |
 | escape from a dry 3-deep pit in dirt, no blocks | | dug 3 stair steps out, 6.6 s |
 | goto 6 blocks on flat ground | ok, 1.3 s | ok, 1.3 s |
+
+### Windows on 26.1: crafting, smelting and honest inventory results (t70)
+
+**Symptom** (live, Yakusuna): "it says it crafted the iron pick but my bag still has 4 ingots and no pick" (twice),
+"4 iron ingots! the furnace says it failed but my bag says otherwise", "got 3 raw iron! (my bag just took a sec to
+notice)". Crafting planks, sticks and a table in the 2x2 grid seemed fine.
+
+**Root causes**, measured on a private local Paper 26.1.2 server (offline, 127.0.0.1:25599) through the real worker and
+BotBody, with the server's own count (`clear <player> <item> 0` on the console) before and after every action:
+
+1. *Clicks on an open window carried the wrong state id.* Mineflayer 4.39.0 keeps one state id and takes it from every
+   `set_slot`/`window_items` packet, whatever window it is for. While a crafting table, furnace or chest is open the
+   26.1 server keeps syncing the player inventory (window 0: a `set_slot` for the off-hand slot after each click), so
+   every click on the table went out with window 0's id. The server then answered each click with a full resync of
+   the window *as it was before Mineflayer's next clicks*, which Mineflayer had already predicted; its model fell
+   behind, it clicked the wrong slots (a packet trace showed the second stick never placed and the result slot empty),
+   and `bot.craft` still resolved, because Mineflayer writes the expected result into the result slot itself. Whether a
+   table craft worked was a race: right after placing the table, after a pickup or after crafting sticks it made
+   nothing and used nothing (the live symptom); a second craft at the same table always failed.
+   **Fix**: `patchWindowState` (src/minecraft-body.mjs, at login and spawn like `patchPhysics`) keeps the state id per
+   window and hands Mineflayer only the open window's (window 0's again once it closes). A runtime patch because the
+   pinned Mineflayer has no option for it; a unit test checks the listener it replaces is still in the installed
+   Mineflayer.
+2. *Results were what was asked, not what happened.* `craft` reported `times x per` (12 planks asked from 3 logs: the
+   server made 8), `smelt` counted Mineflayer's `bot.inventory`, which is only updated when the furnace window closes
+   (so a smelt that worked "failed"), and it stopped waiting when the input slot emptied, while the last item was still
+   cooking. `pick_up`/`collect` counted right after walking over the items, before the server's pickup arrived.
+   **Fix**: every inventory action (craft, smelt, deposit, withdraw, give, toss, pick_up, collect, eat; harvest too)
+   counts before, then waits up to 2 s for the server's slot updates, asks the server for the full state if they never
+   come (Mineflayer's `_syncWindow`: a click with an impossible state id that the server answers with a full resync),
+   and reports what really changed. While a window is open, counts (and perception) come from that window's copy of
+   her inventory. `craft` runs in rounds, one craft per round at a table (a fresh window each time), measures each
+   round, tries an empty round once more, then stops: "crafted 1 wooden_pickaxe (only 1 of 2: the server made no
+   more)", or a failure "the server made none; your inventory is unchanged". Ingredients left in the 2x2 grid or a
+   result left on the cursor are put back by closing the inventory (window 0), as a player closing the inventory
+   screen does. `smelt` waits until everything put in came out (or nothing is cooking, or the fuel ran out) and reports
+   what came out. Missing ingredients name the closest recipe variant (oak planks she has, not cherry planks).
+3. *A furnace still burning from the last smelt looked cold.* Mineflayer attaches its window-property listener after
+   the window opened and misses the first burst, so `furnace.fuel` stays 0. **Fix**: the body keeps its own copy of
+   the furnace properties (burn time left, cooking progress) and uses no new fuel while it burns.
+4. *give* tossed right after `lookAt`, before the server had her new look (it goes out with the next physics tick):
+   in one of two runs on main the other player got nothing while the result said "gave" (aimed at the feet without
+   the wait, the bread landed 2.2 blocks from them). **Fix**: aim low (half a block up), wait 150 ms, toss; the result says whether they picked it
+   up (watched for 3.5 s: dropped items wait 2 s) or that it is on the ground near them.
+
+Measured (before = main 4d71840, after = this branch; server counts). The table-craft sequences were run four times
+after the fix (once in the full run, three times more on their own), all right; before the cursor/grid clean-up was
+added, two of seven 2x2 crafts in one run had been reported as "made none" while the server had made them:
+
+| Scenario | Before | After |
+| --- | --- | --- |
+| 2x2: oak_planks x12 from 3 logs | "crafted 12"; server: 8 planks, 1 log left | "crafted 12 oak_planks; it took 3 oak_log"; server: 12, 0 logs |
+| table: iron_pickaxe after crafting planks and sticks in the 2x2 grid | "crafted 1 iron_pickaxe"; server: 3 ingots, 4 sticks, no pick | ok; server: 0 ingots, 2 sticks, 1 pick |
+| table: iron_pickaxe right after placing the table from the inventory | "crafted 1"; server: 3 ingots, 2 sticks, no pick | ok; server: 0, 0, 1 pick |
+| table: iron_pickaxe after a pick_up of the ingots | "crafted 1"; server: no pick | ok; server: 1 pick |
+| table: wooden_pickaxe x2 | "crafted 2"; server: 1 pick, 3 planks and 2 sticks left | "crafted 2"; server: 2 picks, 0 left |
+| table: iron_pickaxe, wooden_pickaxe, furnace, chest (fresh table) | ok in this run (a race; it failed in a packet-traced run) | ok, each one counted |
+| smelt 3 raw_iron with 1 coal | "nothing came out of the furnace"; server: 3 iron_ingot | "smelted 3 raw_iron: got 3 iron_ingot" |
+| smelt 2 more, furnace still burning, no coal left | "no fuel in the inventory" | "smelted 2 raw_iron: got 2 iron_ingot"; server 3 -> 5 ingots |
+| smelt 3 raw_iron with 1 stick (half an item of fuel) | | fails: "nothing came out of the furnace (it ran out of fuel; your raw_iron is back in your inventory)"; server: 3 raw_iron |
+| smelt without fuel anywhere | "no fuel in the inventory" | same (nothing moved) |
+| deposit 12 / withdraw 5 / withdraw 64 cobblestone | right (12, 5, 7) | right, counted (12, 5, 7) |
+| toss 4 dirt | right | right, counted |
+| give 3 bread to a player 3 blocks away | "gave" both runs; the other player got 0 in one, 3 in the other | "gave Friend 3 bread; they picked it up"; Friend: 3 (3 runs) |
+| pick_up 3 raw_iron + 2 cobblestone | right | right, counted after the pickup arrived |
+| eat (food 2, after a hunger effect) | "ate bread" (not checked; her view still showed 3 bread); server 3 -> 2 | "ate bread (food 2 -> 11)", counted; server 3 -> 2 |
+| collect 2 oak_log (a 2-high trunk) | "picked up 2 oak_log"; server 2 | "picked up 2 oak_log"; server 2. One run got 1 (the other drop stayed on the ground) and said "picked up 1 oak_log"; since then pickups are counted until nothing changed for 300 ms, as stacks arrive one at a time |
 
 ### Commands (#70)
 
