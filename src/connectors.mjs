@@ -10,11 +10,13 @@ export class ConnectorError extends Error {
 }
 
 export class Connectors {
-  #db; #now; #discord; #boardConfigured; #github; #x; #mail; #studioMember;
+  #db; #now; #discord; #boardConfigured; #github; #x; #mail; #studioMember; #minecraft;
   // discord: () => the DiscordBridge or null (created after the conversations it serves).
   // studioMember(companionId), when given: whether this owner belongs to a Studio, so their companion gets the shared Studio calendar (#65).
-  constructor({ store, now = Date.now, discord = () => null, boardConfigured = () => false, github = () => null, x = () => null, mail = () => null, studioMember = null }) {
+  // minecraft: () => the MinecraftConnector (#68) or null; shown only to owners the admin set it up for.
+  constructor({ store, now = Date.now, discord = () => null, boardConfigured = () => false, github = () => null, x = () => null, mail = () => null, studioMember = null, minecraft = () => null }) {
     this.#db = store.db; this.#now = now; this.#discord = discord; this.#boardConfigured = boardConfigured; this.#github = github; this.#x = x; this.#mail = mail; this.#studioMember = studioMember;
+    this.#minecraft = minecraft;
     this.#db.exec(`CREATE TABLE IF NOT EXISTS connector_settings(companion_id TEXT NOT NULL, connector TEXT NOT NULL,
       enabled INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(companion_id, connector))`);
   }
@@ -26,6 +28,8 @@ export class Connectors {
   boardOn(companionId) { return this.#boardConfigured(companionId) && this.enabled(companionId, 'board'); }
   // The mailbox (#50) exists only for owners the admin set one up for; the owner can switch it off and on.
   mailOn(companionId) { return Boolean(this.#mail()?.configured(companionId)) && this.enabled(companionId, 'mail'); }
+  // Minecraft (#68): configured by the admin in owners.json (off by default); the owner can switch it off and on.
+  minecraftOn(companionId) { return Boolean(this.#minecraft()?.configured(companionId)) && this.enabled(companionId, 'minecraft'); }
 
   list(companionId) {
     const items = [];
@@ -53,6 +57,16 @@ export class Connectors {
           : `${status.address} · ${status.companies}/${status.companiesLimit} companies contacted · ${status.unhandled} to handle`,
         actions: on ? ['disconnect'] : ['connect'] });
     }
+    const minecraft = this.#minecraft(), game = minecraft?.status(companionId);
+    if (game) {
+      const on = this.enabled(companionId, 'minecraft');
+      const online = game.state === 'online';
+      items.push({ id: 'minecraft', name: 'Minecraft', purpose: `Play on the shared survival server as ${game.username}. What happens in the game becomes my memories. Players' chat is only conversation, never commands.`,
+        state: !on ? 'paused' : online ? 'connected' : game.state === 'error' ? 'error' : 'pending',
+        detail: !on ? 'Switched off: I stay out of the game.' : online ? `In game on ${game.server} · ${game.people} other ${game.people === 1 ? 'person' : 'people'} online`
+          : `Not in the game right now${game.problem ? ` (${game.problem})` : ''}; I keep trying.`,
+        actions: on ? ['disconnect'] : ['connect'] });
+    }
     // GitHub (#45): the owner pastes their own token; linking and unlinking use githubLink / githubUnlink.
     const github = this.#github()?.status(companionId);
     if (github) {
@@ -78,10 +92,12 @@ export class Connectors {
     return { connectors: items };
   }
 
-  // Only connectors whose link is an on/off switch here (Board, Mail); Discord uses its own link and unlink actions.
+  // Only connectors whose link is an on/off switch here (Board, Mail, Minecraft); Discord uses its own link and unlink actions.
   set(companionId, connector, enabled) {
-    if (!['board', 'mail'].includes(connector) || typeof enabled !== 'boolean') throw new ConnectorError('INVALID_REQUEST');
-    if (connector === 'board' ? !this.#boardConfigured(companionId) : !this.#mail()?.configured(companionId)) throw new ConnectorError('CONNECTOR_UNAVAILABLE', 409);
+    if (!['board', 'mail', 'minecraft'].includes(connector) || typeof enabled !== 'boolean') throw new ConnectorError('INVALID_REQUEST');
+    const configured = connector === 'board' ? this.#boardConfigured(companionId) : connector === 'mail' ? this.#mail()?.configured(companionId)
+      : this.#minecraft()?.configured(companionId);
+    if (!configured) throw new ConnectorError('CONNECTOR_UNAVAILABLE', 409);
     this.#db.prepare(`INSERT INTO connector_settings(companion_id, connector, enabled, updated_at) VALUES(?,?,?,?)
       ON CONFLICT(companion_id, connector) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at`)
       .run(companionId, connector, enabled ? 1 : 0, this.#now());

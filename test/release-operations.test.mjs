@@ -279,3 +279,36 @@ test('an invalid newline-suffixed runtime label cannot produce an unrestorable c
   assert.ok(allFiles(set).every(path => !path.includes('invalid\n')));
   assert.equal((await tool.restore(set)).restored, set, 'Every published set must validate for restore');
 });
+
+test('npm dependencies install once per lock file outside the release folder, before the service is touched (#68)', async t => {
+  const f = fixture(t), lock = JSON.stringify({ name: 'x', lockfileVersion: 3, packages: { '': {}, 'node_modules/fake': { version: '1.0.0' } } });
+  writeFileSync(join(f.repoDir, 'package.json'), '{"name":"x","dependencies":{"fake":"1.0.0"}}');
+  writeFileSync(join(f.repoDir, 'package-lock.json'), lock);
+  f.git('add', '--', 'package.json', 'package-lock.json'); f.git('commit', '--quiet', '-m', 'deps');
+  const installs = [];
+  const install = async dir => {
+    installs.push(dir); f.trace.push('install');
+    assert.equal(readFileSync(join(dir, 'package-lock.json'), 'utf8'), lock);
+    mkdirSync(join(dir, 'node_modules', 'fake'), { recursive: true }); writeFileSync(join(dir, 'node_modules', 'fake', 'index.js'), 'module.exports = 1;\n');
+  };
+  const key = createHash('sha256').update(lock).digest('hex');
+  await f.tool({ install }).release(f.git('rev-parse', 'HEAD'));
+  assert.deepEqual(f.trace.slice(0, 2), ['install', 'stop'], 'installed before the service stops');
+  assert.equal(readFileSync(join(f.rootDir, 'deps', key, 'node_modules', 'fake', 'index.js'), 'utf8'), 'module.exports = 1;\n');
+  assert.equal(existsSync(join(f.current(), 'node_modules')), false, 'the release folder stays Git source only');
+  f.git('commit', '--quiet', '--allow-empty', '-m', 'same lock');
+  await f.tool({ install }).release(f.git('rev-parse', 'HEAD'));
+  assert.equal(installs.length, 1, 'the same lock file reuses its folder');
+  assert.deepEqual(readdirSync(join(f.rootDir, 'deps')), [key], 'no stage folder is left behind');
+
+  // A failed install refuses the release before any service command and leaves nothing half installed.
+  writeFileSync(join(f.repoDir, 'package-lock.json'), lock.replace('1.0.0', '2.0.0'));
+  f.git('add', '--', 'package-lock.json'); f.git('commit', '--quiet', '-m', 'new lock');
+  f.trace.length = 0;
+  await assert.rejects(f.tool({ install: async () => { throw new Error('npm failed'); } }).release(f.git('rev-parse', 'HEAD')), error => error.code === 'SOURCE');
+  assert.deepEqual(f.trace, []); assert.deepEqual(readdirSync(join(f.rootDir, 'deps')), [key]);
+  // An installer that leaves a link behind is refused too.
+  await assert.rejects(f.tool({ install: async dir => { mkdirSync(join(dir, 'node_modules')); symlinkSync('/etc', join(dir, 'node_modules', 'bad')); } })
+    .release(f.git('rev-parse', 'HEAD')));
+  assert.deepEqual(f.trace, []); assert.deepEqual(readdirSync(join(f.rootDir, 'deps')), [key]);
+});

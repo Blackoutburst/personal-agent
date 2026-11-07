@@ -171,13 +171,19 @@ function extractArchive(archive, destination) {
   } finally { closeSync(fd); }
 }
 
-export function createReleaseTool({ repoDir = process.cwd(), rootDir, dataDir, runtimeDir, service, health, now = () => new Date() } = {}) {
+// npm dependencies (#68): `npm ci` into a stage folder, without install scripts or bin links (release trees hold no links).
+const npmBinary = () => process.env.COMPANION_NPM
+  ?? (present(join(dirname(process.execPath), 'npm')) ? join(dirname(process.execPath), 'npm') : 'npm');
+export const npmInstall = dir => execute(npmBinary(), ['ci', '--omit=dev', '--ignore-scripts', '--no-bin-links', '--no-audit', '--no-fund'],
+  { cwd: dir, maxBuffer: 16 * 1024 * 1024, timeout: 15 * 60_000 });
+
+export function createReleaseTool({ repoDir = process.cwd(), rootDir, dataDir, runtimeDir, service, health, now = () => new Date(), install = npmInstall } = {}) {
   if (![repoDir, rootDir, dataDir, runtimeDir].every(path => typeof path === 'string' && isAbsolute(path))
-      || typeof service !== 'function' || typeof health !== 'function' || typeof now !== 'function') refuse('INVALID');
+      || typeof service !== 'function' || typeof health !== 'function' || typeof now !== 'function' || typeof install !== 'function') refuse('INVALID');
   repoDir = resolve(repoDir); rootDir = resolve(rootDir); dataDir = resolve(dataDir); runtimeDir = resolve(runtimeDir);
-  const releases = join(rootDir, 'releases'), backups = join(rootDir, 'backups'), lock = join(rootDir, '.release-lock');
+  const releases = join(rootDir, 'releases'), backups = join(rootDir, 'backups'), lock = join(rootDir, '.release-lock'), deps = join(rootDir, 'deps');
   if (dataDir === rootDir || runtimeDir === rootDir || dataDir === runtimeDir || inside(rootDir, dataDir)
-      || [dataDir, runtimeDir].some(path => path === releases || path === backups || inside(path, releases) || inside(path, backups))
+      || [dataDir, runtimeDir].some(path => [releases, backups, join(rootDir, 'deps')].some(root => path === root || inside(path, root)))
       || runtimeDir === join(dataDir, 'files') || inside(runtimeDir, join(dataDir, 'files'))) refuse('INVALID');
 
   const callService = async action => { try { await service(action); } catch { refuse('SERVICE'); } };
@@ -299,6 +305,32 @@ export function createReleaseTool({ repoDir = process.cwd(), rootDir, dataDir, r
     finally { cleanTemporary(stage, releases, '.stage-'); cleanTemporary(tar, releases, '.archive-'); }
   };
 
+  // #68: a release's npm packages live outside the release folder, in deps/<sha256 of package-lock.json>, shared by every
+  // release with the same lock file (src/deps.mjs finds them there). Installed once, before the service is touched.
+  const dependencies = async sha => {
+    const source = join(releases, sha), lockPath = join(source, 'package-lock.json');
+    if (!present(lockPath)) return null;
+    let lockBytes, packages;
+    try { lockBytes = readRegular(lockPath, 64 * 1024 * 1024); packages = Object.keys(JSON.parse(lockBytes.toString('utf8')).packages ?? {}).filter(Boolean); }
+    catch { refuse('SOURCE'); }
+    if (!packages.length) return null;
+    const key = createHash('sha256').update(lockBytes).digest('hex'), target = join(deps, key);
+    directory(deps, true, true);
+    if (present(target)) { directory(target); walk(target, () => {}); if (!present(join(target, 'node_modules'))) refuse('SOURCE'); return key; }
+    const stage = join(deps, '.stage-' + randomUUID());
+    directory(stage, true, true);
+    try {
+      copyRegular(join(source, 'package.json'), join(stage, 'package.json')); copyRegular(lockPath, join(stage, 'package-lock.json'));
+      try { await install(stage); } catch { refuse('SOURCE'); }
+      directory(join(stage, 'node_modules')); walk(stage, () => {});
+      renameSync(stage, target);
+    } finally {
+      // Our own direct stage child; npm output may hold a link walk() refuses, and rmSync never follows links.
+      if (present(stage)) { try { cleanTemporary(stage, deps, '.stage-'); } catch { rmSync(stage, { recursive: true, force: true }); } }
+    }
+    return key;
+  };
+
   const changeRelease = async target => {
     const original = links(); let stopped = false, started = false, backup;
     try {
@@ -374,9 +406,9 @@ export function createReleaseTool({ repoDir = process.cwd(), rootDir, dataDir, r
       let sha;
       try { directory(repoDir); const result = await execute('git', ['-C', repoDir, 'rev-parse', '--verify', '--end-of-options', rev + '^{commit}'], { maxBuffer: 1024 * 1024 }); sha = result.stdout.trim(); }
       catch { refuse('SOURCE'); }
-      if (!SHA.test(sha)) refuse('SOURCE'); await archive(sha); return changeRelease(sha);
+      if (!SHA.test(sha)) refuse('SOURCE'); await archive(sha); await dependencies(sha); return changeRelease(sha);
     }),
-    rollback: () => locked(async () => { const target = linkValue('previous'); if (!target) refuse('INVALID'); await archive(target); return changeRelease(target); }),
+    rollback: () => locked(async () => { const target = linkValue('previous'); if (!target) refuse('INVALID'); await archive(target); await dependencies(target); return changeRelease(target); }),
     backup: () => locked(async () => {
       let started = false;
       try { await callService('stop'); const set = snapshot(); started = true; await start(); return set; }

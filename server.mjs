@@ -42,6 +42,8 @@ import { BoardInbox } from './src/board-inbox.mjs';
 import { PushDevices, FcmSender, PushNotifier } from './src/push.mjs';
 import { WebPushSubscriptions, WebPushSender, WebPushNotifier, loadVapidKeys } from './src/web-push.mjs';
 import { ActiveClients, PushHold } from './src/active-clients.mjs';
+import { MinecraftConnector, appendDiary, localDate } from './src/minecraft.mjs';
+import { CLAUDE_FILE_TOOLS } from './src/tool-policy.mjs';
 
 const BOARD_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CONTENT_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
@@ -107,7 +109,7 @@ function androidRelease(dataDir) {
 }
 
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, githubOptions = {}, mailOptions = {}, xOptions = {}, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {}, pushOptions = {}, groupOptions = {} } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, githubOptions = {}, mailOptions = {}, xOptions = {}, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {}, pushOptions = {}, groupOptions = {}, minecraftOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -137,7 +139,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let schedulerHttp, schedulerService, schedulerStore, calendar = null, studioCalendar = null, github = null, mail = null, x = null, discord = null;
   let groupChat = null, groupHttp = null;
   let asr = null, files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
-  let activeClients = null, pushHold = null;
+  let activeClients = null, pushHold = null, minecraft = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
   const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
@@ -446,7 +448,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         nameFor: (companionId, kind) => kind === 'human' ? ownerProfiles.publicProfile(companionId).displayName : profiles.get(companionId)?.name ?? null,
         ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
       studioHttp = createStudioHttp({ access, calendar: studioCalendar, studio: new Studio({ store, owners, ...(mailOptions.now ? { now: mailOptions.now } : {}) }) });
-      connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, mail: () => mail,
+      connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, mail: () => mail, minecraft: () => minecraft,
         studioMember: companionId => studioCalendar.member(companionId), boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
       // Board inbox (#55, docs/BOARD-INBOX.md): one sub-conversation per Board thread or ticket, out of the main chat.
       // #59 (docs/PUSH.md): while the owner actively uses a client, a finished message waits a short while before it is
@@ -486,7 +488,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           if (!companionId) continue;
           const workspace = workspaceFor(companionId);
           if (workspace) ensureWorkspace(workspace.dir, workspace.owner, {
-            beforeInstructionsChange: () => conversations.resetSessions(companionId)
+            beforeInstructionsChange: () => { conversations.resetSessions(companionId); minecraft?.resetSessions(companionId); }
           });
         }
       };
@@ -552,14 +554,42 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
       discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, files, boardInbox, ...discordOptions,
         log: message => console.error(message) });
+      // Minecraft (#68, docs/MINECRAFT.md): companions whose owners.json entry has a "minecraft" block play on the shared
+      // survival server. A game turn is a native turn in the companion's own workspace with its usual instructions and
+      // memory files, so it keeps memories exactly like in chat; it gets the workspace file tools only (no web, Board,
+      // mail or app tools), whatever a player says in game.
+      // minecraftOptions (tests): { start: false } builds the connector without connecting; other keys go to the connector.
+      const { start: _start, ...minecraftSettings } = minecraftOptions;
+      if (runner && owners.some(owner => owner.minecraft)) {
+        minecraft = new MinecraftConnector({ store, owners, companionIdFor: owner => companionIdFor(store, owner),
+          log: message => console.error(message), active: companionId => connectors.minecraftOn(companionId),
+          busy: companionId => runner.busy(companionId),
+          runTurn: async (companionId, { prompt, resume, signal }) => {
+            const workspace = workspaceFor(companionId);
+            if (!workspace) throw Object.assign(new Error('NO_RUNTIME'), { code: 'NO_RUNTIME' });
+            ensureWorkspace(workspace.dir, workspace.owner);
+            const current = weather.current(companionId), place = current ? weather.snapshot(companionId).place : null;
+            const systemPrompt = instructions({ owner: workspace.owner, profile: profiles.get(companionId), dir: workspace.dir,
+              files: workspace.owner.provider === 'claude' || !resume, weather: current ? { place, current } : null });
+            try {
+              return await runner.turn(companionId, { prompt, resume, systemPrompt, signal, toolFilter: name => CLAUDE_FILE_TOOLS.includes(name) });
+            } finally {
+              try { personality.observe(companionId); } catch { /* history observation is best effort */ }
+            }
+          },
+          diary: (companionId, text) => {
+            const workspace = workspaceFor(companionId);
+            return workspace ? appendDiary(workspace.dir, localDate(Date.now(), profiles.get(companionId)?.timezone ?? 'UTC'), text) : false;
+          }, ...minecraftSettings });
+      }
       companionHttp = createCompanionHttp({ access, profiles, workspaceFor, personality, contacts, weather,
         runtimeStatus: async companionId => runner ? runner.status(companionId) : { state: 'unconfigured' },
         discord, push: pushDevices, webPush, activeClients, connectors, github, x,
         assertMemoryIdle: companionId => conversations.assertMemoryIdle(companionId),
-        onForget: companionId => conversations.resetSessions(companionId),
+        onForget: companionId => { conversations.resetSessions(companionId); minecraft?.resetSessions(companionId); },
         // Claude reads the look every turn; Codex keeps its first instructions, so it starts afresh.
         onLook: companionId => {
-          conversations.resetSessions(companionId);
+          conversations.resetSessions(companionId); minecraft?.resetSessions(companionId);
           boardCompanion?.syncProfile(companionId).catch(() => console.error('Board profile sync failed; retried on the next check.'));
         } });
     }
@@ -582,12 +612,13 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     if (weatherOptions.poll !== false) weather?.start();
     if (boardOptions.poll !== false) boardCompanion?.start();
     if (discordOptions.connect !== false) discord?.start();
+    if (minecraftOptions.start !== false) minecraft?.start();
     // Pushes a previous run still held go out now (fail open).
     pushHold?.recover();
   } catch (error) {
     pushHold?.stop();
     weather?.stop(); boardCompanion?.stop();
-    discord?.stop();
+    discord?.stop(); await minecraft?.stop();
     await schedulerService?.stop();
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await groupChat?.shutdown();
@@ -596,11 +627,11 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   }
   return {
     server, store, url: `http://127.0.0.1:${server.address().port}`,
-    conversations, files, scheduler: schedulerService, discord, groupChat, mail,
+    conversations, files, scheduler: schedulerService, discord, groupChat, mail, minecraft,
     async close() {
       pushHold?.stop();
       weather?.stop(); boardCompanion?.stop();
-      discord?.stop();
+      discord?.stop(); await minecraft?.stop();
       await schedulerService?.stop();
       await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       // Running replies end as interrupted; nothing writes to a closed store.

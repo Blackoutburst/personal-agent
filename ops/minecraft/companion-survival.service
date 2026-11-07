@@ -1,0 +1,59 @@
+# Companion survival server (#68, docs/MINECRAFT.md): Paper 26.1.2 build 74 on Temurin 25, offline mode behind a
+# whitelist, port 25566. Install as /etc/systemd/system/companion-survival.service (root steps in docs/MINECRAFT.md).
+# Never touches the separate Paper server on 25565. No RCON.
+[Unit]
+Description=Companion survival Minecraft server (Paper 26.1.2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=companion-survival
+Group=companion-survival
+WorkingDirectory=/srv/companion-survival
+# Paper's recommended (Aikar) G1 flags; heap fixed at 1-3 GiB on a 15 GiB host shared with other services.
+ExecStart=/opt/companion-survival/runtime/bin/java -Xms1G -Xmx3G \
+  -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions \
+  -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 \
+  -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 \
+  -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 \
+  -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1 \
+  -Dusing.aikars.flags=https://mcflags.emc.gs -Daikars.new.flags=true \
+  -jar /opt/companion-survival/paper.jar --nogui
+# Paper saves the world on SIGTERM; give it time.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+SuccessExitStatus=0 143
+Restart=on-failure
+RestartSec=30
+
+# Hardening: the server writes only its own data folder.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/companion-survival
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+# Heap 3 GiB + metaspace, threads and direct buffers.
+MemoryMax=4G
+MemoryHigh=3800M
+CPUQuota=200%
+TasksMax=512
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

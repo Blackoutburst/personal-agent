@@ -3,6 +3,7 @@ import { principalKey } from './provisioning.mjs';
 import { ISSUER } from './pilot-config.mjs';
 import { CLAUDE_FILE_TOOLS, WEB_TOOLS, normalizeToolPolicy } from './tool-policy.mjs';
 import { parseMailConfig } from './mail.mjs';
+import { parseMinecraftConfig } from './minecraft.mjs';
 
 export const PROVIDERS = ['claude', 'codex'];
 const LABEL = /^[a-z][a-z0-9-]{0,31}$/;
@@ -19,7 +20,7 @@ export function parseRuntimeConfig(text, env = process.env) {
   const labels = new Set(), subjects = new Set();
   const owners = config.owners.map(owner => {
     if (!owner || typeof owner !== 'object' || Array.isArray(owner)
-        || Object.keys(owner).some(key => !['subject', 'label', 'provider', 'model', 'issuer', 'name', 'tools', 'board', 'mail'].includes(key))) {
+        || Object.keys(owner).some(key => !['subject', 'label', 'provider', 'model', 'issuer', 'name', 'tools', 'board', 'mail', 'minecraft'].includes(key))) {
       throw new Error('Invalid runtime owner fields');
     }
     const { subject, label, provider, model = null, issuer = ISSUER, name = null } = owner ?? {};
@@ -38,9 +39,11 @@ export function parseRuntimeConfig(text, env = process.env) {
     }
     // "mail" (#50, docs/MAIL.md): the mailbox this owner's companion handles (may be shared, #64); no secret, only the password file's path.
     const mail = owner.mail === undefined ? null : parseMailConfig(owner.mail, label);
+    // "minecraft" (#68, docs/MINECRAFT.md): this companion plays on the shared survival server. Absent = off.
+    const minecraft = owner.minecraft === undefined ? null : parseMinecraftConfig(owner.minecraft, label);
     if (labels.has(label) || subjects.has(subject)) throw new Error(`Duplicate owner ${label}`);
     labels.add(label); subjects.add(subject);
-    return Object.freeze({ subject, label, provider, model, issuer, ...(name !== null ? { name: name.trim() } : {}), ...(mail ? { mail } : {}), ...toolPolicy });
+    return Object.freeze({ subject, label, provider, model, issuer, ...(name !== null ? { name: name.trim() } : {}), ...(mail ? { mail } : {}), ...(minecraft ? { minecraft } : {}), ...toolPolicy });
   });
   // #64: owners may share one mailbox (their companions share its state); the same address must mean the same mailbox.
   const mailboxes = new Map();
@@ -52,6 +55,13 @@ export function parseRuntimeConfig(text, env = process.env) {
     if (a.maildir !== b.maildir || ['port', 'servername', 'user', 'passwordFile'].some(key => a.smtp[key] !== b.smtp[key])) {
       throw new Error(`Owners ${first.label} and ${owner.label} share the mail address ${b.address} but not its maildir and smtp settings`);
     }
+  }
+  const players = new Set();
+  for (const owner of owners) {
+    const name = owner.minecraft?.username.toLowerCase();
+    if (!name) continue;
+    if (players.has(name)) throw new Error(`Two companions cannot share the Minecraft name ${owner.minecraft.username}`);
+    players.add(name);
   }
   const viewers = new Set();
   for (const owner of owners) for (const label of owner.mail?.studioViewers ?? []) {

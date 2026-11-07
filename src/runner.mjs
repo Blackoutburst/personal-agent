@@ -100,6 +100,12 @@ export class CompanionRunner {
     return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, images, appServers, onEvent, signal, group });
   }
 
+  // Whether this owner's agent is running or has a queued turn (the Minecraft connector, #68, lets chat go first).
+  busy(companionId) {
+    const owner = this.ownerFor(companionId);
+    return Boolean(owner && this.queues.has(owner.label));
+  }
+
   groupDir(owner, groupId) {
     if (typeof groupId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(groupId)) throw new TypeError('Invalid group');
     const base = join(this.runtimeDir, owner.label), groups = join(base, 'groups'), dir = join(groups, groupId);
