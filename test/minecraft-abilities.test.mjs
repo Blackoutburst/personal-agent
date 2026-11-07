@@ -264,7 +264,7 @@ test('#70: pathfinding may dig and place scaffolding from the inventory; jump, s
   assert.equal((await swim).ok, false); assert.equal(bot.controls.jump, false); assert.equal(bot.controls.forward, false);
   bot.set(8, 64, 2, 'crafting_table');
   assert.deepEqual(await body.act({ type: 'goto', block: 'crafting_table' }), { type: 'goto', ok: true, detail: 'reached the crafting_table at 8 64 2; now at 10 64 2' });
-  assert.equal((await body.act({ type: 'goto', block: 'furnace' })).detail, 'no furnace within 64 blocks');
+  assert.equal((await body.act({ type: 'goto', block: 'furnace' })).detail, "you haven't seen any furnace nearby; explore or mine to find some");
 });
 
 // ---------- Blocks ----------
@@ -305,7 +305,7 @@ test('#70: collect mines N blocks, then picks up the drops; partial results say 
   bot.set(3, 64, 2, 'iron_ore'); bot.set(-3, 64, 1, 'iron_ore');
   const rest = await body.act({ type: 'collect', block: 'iron_ore', count: 5 });
   assert.deepEqual(rest, { type: 'collect', ok: true, detail: 'mined 2 iron_ore (only 2 of 5 found); picked up 2 raw_iron' });
-  assert.equal((await body.act({ type: 'collect', block: 'diamond_ore' })).detail, 'no diamond_ore within 32 blocks');
+  assert.equal((await body.act({ type: 'collect', block: 'diamond_ore' })).detail, "you haven't seen any diamond_ore nearby; explore or mine to find some");
   assert.equal((await body.act({ type: 'collect', block: 'unobtainium' })).detail, 'no block called unobtainium');
 });
 
@@ -472,7 +472,7 @@ test('#70: activate doors and levers, sleep in a bed and wake, mount and dismoun
   bot.set(2, 64, 2, 'oak_door', { props: { open: false } }); bot.set(-2, 64, 0, 'lever', { props: { powered: false } });
   assert.equal((await body.act({ type: 'activate', block: 'oak_door' })).detail, 'activated oak_door at 2 64 2 (now open)');
   assert.equal((await body.act({ type: 'activate', x: -2, y: 64, z: 0 })).detail, 'activated lever at -2 64 0 (now on)');
-  assert.equal((await body.act({ type: 'sleep' })).detail, 'no bed within 32 blocks');
+  assert.equal((await body.act({ type: 'sleep' })).detail, "you haven't seen any bed nearby; explore or mine to find some");
   bot.set(4, 64, -2, 'red_bed');
   assert.equal((await body.act({ type: 'sleep' })).detail, "it's not night and it's not a thunderstorm");
   bot.time.timeOfDay = 18000;
@@ -582,7 +582,7 @@ test('#70: perception shows inventory, armor, held item, vitals, time, entities 
   bot.add('oak_log', 12); bot.add('iron_sword', 1); bot.heldItem = bot.inventory.items().find(i => i.name === 'iron_sword');
   bot.inventory.slots[5] = { name: 'iron_helmet' }; bot.inventory.slots[45] = { name: 'shield' };
   bot.oxygenLevel = 12; bot.food = 9;
-  bot.set(3, 64, 0, 'chest'); bot.set(4, 64, 0, 'crafting_table'); bot.set(-3, 64, 0, 'furnace'); bot.set(5, 64, 5, 'red_bed'); bot.set(2, 60, 0, 'iron_ore'); bot.set(6, 64, -2, 'oak_log');
+  bot.set(3, 64, 0, 'chest'); bot.set(4, 64, 0, 'crafting_table'); bot.set(-3, 64, 0, 'furnace'); bot.set(5, 64, 5, 'red_bed'); bot.set(2, 64, -3, 'iron_ore'); bot.set(6, 64, -2, 'oak_log');
   bot.entities[201] = { id: 201, name: 'zombie', type: 'hostile', position: new Vec(4, 64, 0) };
   bot.entities[202] = { id: 202, name: 'cow', type: 'animal', position: new Vec(2, 64, 0) };
   bot.drop('diamond', new Vec(1, 64, 0), 2);
@@ -842,4 +842,33 @@ test('t70: pickups arriving one stack at a time are all counted', async () => {
       if (entry?.count) { const n = entry.count; entry.count = 0; setTimeout(() => bot.add(name, n), ms); }
     } };
   assert.equal((await body.act({ type: 'pick_up' })).detail, 'picked up 3 raw_iron, 2 cobblestone (2 item stacks nearby)');
+});
+
+test('t70: no X-ray: a buried ore and an ore behind a wall are neither listed nor targeted; an exposed one is, and what she saw is remembered', async () => {
+  const { bot, body } = spawned();
+  bot.add('stone_pickaxe', 1);
+  // Buried: stone on every side (the floor below).
+  bot.set(3, 64, 0, 'iron_ore'); for (const [x, y, z] of [[4, 64, 0], [2, 64, 0], [3, 64, 1], [3, 64, -1], [3, 65, 0]]) bot.set(x, y, z, 'stone');
+  // In a cave: open air around it.
+  bot.set(-3, 64, 2, 'diamond_ore');
+  // Behind a wall: air around the ore, but a stone wall between her and it.
+  for (let y = 64; y <= 70; y++) for (let z = -5; z <= 5; z++) bot.set(-6, y, z, 'stone');
+  bot.set(-8, 64, 0, 'iron_ore');
+  const names = () => body.perceive().blocks.map(block => block.name);
+  assert.deepEqual(names().filter(name => /_ore$/.test(name)), ['diamond_ore'], 'only the exposed ore');
+  assert.equal((await body.act({ type: 'dig', block: 'iron_ore' })).detail, "you haven't seen any iron_ore nearby; explore or mine to find some");
+  assert.equal((await body.act({ type: 'goto', block: 'iron_ore' })).detail, "you haven't seen any iron_ore nearby; explore or mine to find some");
+  // Explicit coordinates stay allowed (she can only know them from what she was shown or told).
+  assert.equal((await body.act({ type: 'dig', x: 3, y: 65, z: 0 })).ok, true, 'dig the stone on top');
+  assert.ok(names().includes('iron_ore'), 'mined open: now she sees it');
+  // The ore behind the wall: seen from the other side, then remembered back here.
+  bot.entity.position = new Vec(-9.5, 64, 0.5);
+  assert.ok(body.perceive().blocks.some(block => block.name === 'iron_ore' && block.x === -8), 'seen from the other side');
+  bot.entity.position = new Vec(0.5, 64, 0.5);
+  const far = await body.act({ type: 'dig', block: 'iron_ore' });
+  assert.equal(far.ok, true, far.detail);
+  // A remembered block that changed is forgotten.
+  bot.set(-8, 64, 0, 'stone'); bot.set(3, 64, 0, 'stone');
+  assert.equal((await body.act({ type: 'collect', block: 'iron_ore' })).detail, "you haven't seen any iron_ore nearby; explore or mine to find some");
+  assert.equal((await body.act({ type: 'collect', block: 'diamond_ore' })).ok, true, 'the exposed one is collected');
 });

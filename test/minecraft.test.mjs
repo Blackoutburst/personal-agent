@@ -157,7 +157,7 @@ test('the body runs skills with time limits and reports results it never throws'
   assert.equal((await body.act({ type: 'build' })).ok, false);
   bot.blocks.set('12,64,-3', { id: 1, name: 'oak_log' }); bot.blocks.set('13,64,-3', { id: 1, name: 'oak_log' });
   assert.deepEqual(await body.act({ type: 'collect', block: 'oak_log', count: 5 }), { type: 'collect', ok: true, detail: 'mined 2 oak_log (only 2 of 5 found); nothing reached your inventory yet (the drops may still be on the ground)' });
-  assert.equal((await body.act({ type: 'collect', block: 'oak_log' })).detail, 'no oak_log within 32 blocks');
+  assert.equal((await body.act({ type: 'collect', block: 'oak_log' })).detail, "you haven't seen any oak_log nearby; explore or mine to find some");
   assert.deepEqual(await body.act({ type: 'eat' }), { type: 'eat', ok: true, detail: 'ate bread (food 15 -> 20)' });
   assert.equal((await body.act({ type: 'eat' })).detail, 'not hungry');
   assert.equal((await body.act({ type: 'pick_up' })).detail, 'no dropped items nearby');

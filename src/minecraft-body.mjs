@@ -114,6 +114,30 @@ export function configureMovements(movements, registry, { dig = false, protected
   }
   return movements;
 }
+// t70 (fair play): she knows a block only when she could see it, like a player (no X-ray). A block counts as seen
+// when one of its faces touches a block she can see through and a straight line from her eyes reaches it first.
+export const SIGHT = Object.freeze({ range: 32, underground: 16, candidates: 48, memory: 300, cacheMs: 1000 });
+const SEE_THROUGH = /glass|_pane$|leaves$|^(?:ice|iron_bars|barrier|chain|ladder|scaffolding|cobweb|water|lava|bubble_column)$|_fence$|_fence_gate$|_door$|_trapdoor$|_slab$|_stairs$|_carpet$|_wall$|torch$|lantern$|_sign$|rail$|_bed$|chest$|shulker_box$|^(?:snow|farmland|composter|bell|lectern|enchanting_table|brewing_stand|anvil|cauldron|hopper)$/;
+const FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+// Does a straight line from `from` to the point `to` (inside the block at `target`) reach that block before any block she
+// cannot see through? A voxel walk (Amanatides-Woo) over blockAt.
+export function lineOfSight(blockAt, from, to, target, opaque) {
+  let x = Math.floor(from.x), y = Math.floor(from.y), z = Math.floor(from.z);
+  const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z, length = Math.hypot(dx, dy, dz);
+  if (!length) return x === target.x && y === target.y && z === target.z;
+  const step = [Math.sign(dx), Math.sign(dy), Math.sign(dz)];
+  const next = (p, d, s) => s > 0 ? (Math.floor(p) + 1 - p) / d : s < 0 ? (p - Math.floor(p)) / -d : Infinity;
+  let tx = next(from.x, dx, step[0]), ty = next(from.y, dy, step[1]), tz = next(from.z, dz, step[2]);
+  const ddx = step[0] ? Math.abs(1 / dx) : Infinity, ddy = step[1] ? Math.abs(1 / dy) : Infinity, ddz = step[2] ? Math.abs(1 / dz) : Infinity;
+  for (let i = 0; i < 256; i++) {
+    if (tx <= ty && tx <= tz) { if (tx > 1) return false; x += step[0]; tx += ddx; }
+    else if (ty <= tz) { if (ty > 1) return false; y += step[1]; ty += ddy; }
+    else { if (tz > 1) return false; z += step[2]; tz += ddz; }
+    if (x === target.x && y === target.y && z === target.z) return true;
+    if (opaque(blockAt({ x, y, z }))) return false;
+  }
+  return false;
+}
 const isDoorway = block => Boolean(block?.name && DOORWAY.test(block.name));
 // mineflayer-pathfinder's postProcessPath puts every path node "on top of" the shape of the block there: a door's
 // lower half is a full-height panel, so the step through the doorway became a point one block up, on the door
@@ -601,7 +625,7 @@ const armorSlot = name => ARMOR.find(([pattern]) => pattern.test(name))?.[1] ?? 
 
 export class BotBody {
   #bot; #pathfinder; #emit; #companions; #now; #scanMs; #pace; #Vec3; #scanTimer = null; #seen = new Set(); #current = null; #lastHealth = null;
-  #night = null; #spawnedAt = 0; #players = ''; #commandUntil = 0; #commandLines = 0; #perceivedIds = null; #protectedIds = null;
+  #night = null; #spawnedAt = 0; #players = ''; #commandUntil = 0; #commandLines = 0; #perceivedIds = null; #protectedIds = null; #memory = new Map(); #sight = new Map(); #sightKey = ''; #names = null; #range = null;
 
   // bot: a Mineflayer bot (or a fake). pathfinder: the mineflayer-pathfinder module ({ goals, Movements }) once loaded, or
   // null (movement skills then fail cleanly). onEvent(event): what the body noticed. companions: other companions' names.
@@ -690,6 +714,8 @@ export class BotBody {
     if (this.#pathfinder && typeof bot.loadPlugin === 'function' && !bot.pathfinder) bot.loadPlugin(this.#pathfinder.pathfinder);
     // Mineflayer injects its physics plugin after attach() (once the version is known): patch it at login and spawn.
     patchChatAcks(bot._client);
+    // A changed block can open or close a line of sight: forget the cached answers (cheap: they are per second).
+    this.#on('blockUpdate', () => { this.#sight.clear(); });
     this.#on('path_update', results => { fixDoorNodes(position => bot.blockAt?.(this.#vec(position.x, position.y, position.z)), results?.path); });
     this.#on('login', () => { patchPhysics(bot); patchWindowState(bot); patchOxygen(bot); });
     this.#on('spawn', () => {
@@ -760,18 +786,87 @@ export class BotBody {
 
   #ids(pattern) { return Object.values(this.#registry().blocksByName ?? {}).filter(block => pattern.test(block.name)).map(block => block.id); }
 
+  // ---------- Sight (t70: no X-ray) ----------
+
+  #opaque(block) { return !block || (block.boundingBox === 'block' && !SEE_THROUGH.test(block.name ?? '')); }
+  #eyes() { const p = this.#bot.entity.position; return { x: p.x, y: p.y + (this.#bot.entity.eyeHeight ?? 1.62), z: p.z }; }
+  // Under a roof of rock (an opaque block within 24 above her head) she sees less far.
+  #sightRange() {
+    const e = this.#eyes(), x = Math.floor(e.x), z = Math.floor(e.z);
+    for (let y = Math.floor(e.y) + 1; y <= Math.floor(e.y) + 24; y++) {
+      const block = this.#bot.blockAt(this.#vec(x, y, z));
+      if (block && block.boundingBox === 'block' && !SEE_THROUGH.test(block.name ?? '') && !/_log$|_planks$|leaves$/.test(block.name ?? '')) return SIGHT.underground;
+    }
+    return SIGHT.range;
+  }
+  // Could she see this block from where she stands? Cached per block for her current cell and one second.
+  #canSee(block) {
+    const bot = this.#bot, p = block?.position;
+    if (!p || !bot.entity?.position) return false;
+    const f = this.#feet(), now = this.#now(), cell = `${f.x},${f.y},${f.z}|${Math.floor(now / SIGHT.cacheMs)}`;
+    if (cell !== this.#sightKey) { this.#sight.clear(); this.#sightKey = cell; this.#range = null; }
+    const key = `${p.x},${p.y},${p.z}`;
+    if (this.#sight.has(key)) return this.#sight.get(key);
+    let seen = false;
+    try {
+      const eyes = this.#eyes(), range = (this.#range ??= this.#sightRange()), blockAt = q => bot.blockAt(this.#vec(q.x, q.y, q.z));
+      if (distance(eyes, centre(p)) <= range) {
+        // Faces that touch something see-through, and face her.
+        const faces = FACES.filter(([dx, dy, dz]) => !this.#opaque(blockAt({ x: p.x + dx, y: p.y + dy, z: p.z + dz }))
+          && (dx * (eyes.x - (p.x + 0.5)) + dy * (eyes.y - (p.y + 0.5)) + dz * (eyes.z - (p.z + 0.5))) > 0);
+        const opaque = b => this.#opaque(b);
+        seen = faces.some(([dx, dy, dz]) => lineOfSight(blockAt, eyes, { x: p.x + 0.5 + dx * 0.45, y: p.y + 0.5 + dy * 0.45, z: p.z + 0.5 + dz * 0.45 }, p, opaque));
+      }
+    } catch { seen = false; }
+    this.#sight.set(key, seen);
+    if (seen) this.#remember(block);
+    return seen;
+  }
+  // Blocks she has seen this session (capped; forgotten when the block there changes).
+  #remember(block) {
+    const p = block.position, key = `${p.x},${p.y},${p.z}`;
+    this.#memory.delete(key);
+    this.#memory.set(key, { name: block.name, x: p.x, y: p.y, z: p.z });
+    while (this.#memory.size > SIGHT.memory) this.#memory.delete(this.#memory.keys().next().value);
+  }
+  #remembered(block) {
+    const p = block?.position;
+    if (!p) return false;
+    const entry = this.#memory.get(`${p.x},${p.y},${p.z}`);
+    if (!entry) return false;
+    if (entry.name !== block.name) { this.#memory.delete(`${p.x},${p.y},${p.z}`); return false; }
+    return true;
+  }
+  #known(block) { return this.#canSee(block) || this.#remembered(block); }
+  // Remembered blocks of these ids within range, still there.
+  #recall(ids, range) {
+    const here = this.#bot.entity.position, names = new Set(ids.map(id => this.#nameOf(id)).filter(Boolean)), out = [];
+    for (const entry of this.#memory.values()) {
+      if (!names.has(entry.name) || distance(here, centre(entry)) > range) continue;
+      const block = this.#bot.blockAt(this.#vec(entry.x, entry.y, entry.z));
+      if (block?.name === entry.name) out.push(block);
+    }
+    return out;
+  }
+  #nameOf(id) {
+    this.#names ??= new Map(Object.values(this.#registry().blocksByName ?? {}).map(block => [block.id, block.name]));
+    return this.#names.get(id);
+  }
+
   #scan() {
     const bot = this.#bot;
     if (!bot.entity || typeof bot.findBlocks !== 'function') return;
     const ids = this.#ids(NOTABLE);
     if (!ids.length) return;
-    for (const position of (bot.findBlocks({ matching: ids, maxDistance: LIMITS.scanRange, count: 8 }) ?? []).slice(0, 8)) {
+    // Only what she can see is "found" (t70: no X-ray).
+    for (const position of (bot.findBlocks({ matching: ids, maxDistance: LIMITS.scanRange, count: SIGHT.candidates }) ?? []).slice(0, SIGHT.candidates)) {
       const key = `${position.x},${position.y},${position.z}`;
       if (this.#seen.has(key)) continue;
+      const block = bot.blockAt(position);
+      if (!block?.name || !this.#canSee(block)) continue;
       if (this.#seen.size > 2000) this.#seen.clear();
       this.#seen.add(key);
-      const block = bot.blockAt(position);
-      if (block?.name) this.#event({ type: 'found', block: block.name, x: position.x, y: position.y, z: position.z });
+      this.#event({ type: 'found', block: block.name, x: position.x, y: position.y, z: position.z });
     }
   }
 
@@ -798,8 +893,12 @@ export class BotBody {
       this.#perceivedIds ??= this.#ids(PERCEIVED);
       if (this.#perceivedIds.length && typeof bot.findBlocks === 'function') {
         const nearest = new Map();
-        for (const position of (bot.findBlocks({ matching: this.#perceivedIds, maxDistance: LIMITS.scanRange, count: 96 }) ?? [])) {
-          const name = bot.blockAt(position)?.name ?? 'block', d = round(distance(here, centre(position)));
+        // Only blocks she can see (t70: no X-ray): the nearest candidates, checked for a visible face and a line of sight.
+        for (const position of (bot.findBlocks({ matching: this.#perceivedIds, maxDistance: LIMITS.scanRange, count: 96 }) ?? []).slice(0, 96)) {
+          const block = bot.blockAt(position);
+          if (!block || (nearest.has(block.name) && nearest.get(block.name).distance <= round(distance(here, centre(position))))) continue;
+          if (!this.#canSee(block)) continue;
+          const name = block.name ?? 'block', d = round(distance(here, centre(position)));
           if (!nearest.has(name) || nearest.get(name).distance > d) nearest.set(name, { name, x: position.x, y: position.y, z: position.z, distance: d });
         }
         blocks = [...nearest.values()].sort((a, b) => a.distance - b.distance).slice(0, LIMITS.blocks);
@@ -996,16 +1095,26 @@ export class BotBody {
 
   #block(position) { return this.#bot.blockAt(this.#vec(position.x, position.y, position.z)); }
   // The nearest blocks matching (ids or a name test), nearest first.
+  // t70 (no X-ray): only blocks she can see now or has seen this session (and that are still there).
   #find(match, range, count = 1, filter = () => true) {
     const bot = this.#bot;
     if (typeof bot.findBlocks !== 'function') return [];
     const ids = typeof match === 'string' ? [this.#registry().blocksByName?.[match]?.id].filter(value => value !== undefined) : match instanceof RegExp ? this.#ids(match) : match;
     if (!ids.length) return [];
-    const here = bot.entity.position;
-    return (bot.findBlocks({ matching: ids, maxDistance: range, count: Math.max(count * 4, 16) }) ?? [])
-      .map(position => bot.blockAt(position)).filter(block => block?.position && filter(block))
+    const here = bot.entity.position, byKey = new Map();
+    for (const block of this.#recall(ids, range)) byKey.set(`${block.position.x},${block.position.y},${block.position.z}`, block);
+    let checked = 0;
+    for (const position of (bot.findBlocks({ matching: ids, maxDistance: range, count: Math.max(count * 4, 64) }) ?? [])) {
+      const key = `${position.x},${position.y},${position.z}`;
+      if (byKey.has(key)) continue;
+      const block = bot.blockAt(position);
+      if (!block?.position) continue;
+      if (this.#remembered(block) || (checked++ < SIGHT.candidates * 2 && this.#canSee(block))) byKey.set(key, block);
+    }
+    return [...byKey.values()].filter(block => filter(block))
       .sort((a, b) => distance(here, centre(a.position)) - distance(here, centre(b.position))).slice(0, count);
   }
+  #unseen(what) { return `you haven't seen any ${what} nearby; explore or mine to find some`; }
   #blockTarget(action, match, range, what) {
     if (action.x !== undefined) {
       if (distance(this.#bot.entity.position, action) > LIMITS.blockRange) fail(`${at(action)} is too far (more than ${LIMITS.blockRange} blocks)`);
@@ -1014,7 +1123,7 @@ export class BotBody {
       return block;
     }
     if (typeof match === 'string' && !this.#registry().blocksByName?.[match]) fail(`no block called ${match}`);
-    return this.#find(match, range)[0] ?? fail(`no ${what} within ${range} blocks`);
+    return this.#find(match, range)[0] ?? fail(this.#unseen(what));
   }
   #entities(test, range) {
     const here = this.#bot.entity.position;
@@ -1050,6 +1159,7 @@ export class BotBody {
     if (typeof this.#bot.canDigBlock === 'function' && !this.#bot.canDigBlock(fresh)) fail(`cannot reach the ${fresh.name} at ${at(fresh.position)}`);
     const tool = await this.#equipBestTool(fresh);
     await this.#bot.dig(fresh, true);
+    this.#sight.clear(); // what she sees changed
     return { name: fresh.name, tool: tool?.name ?? null };
   }
 
@@ -1387,7 +1497,7 @@ export class BotBody {
           return `reached ${action.player}; now at ${this.#where()}${note}`;
         }
         if (action.block) {
-          const block = this.#find(action.block, LIMITS.findRange)[0] ?? fail(`no ${action.block} within ${LIMITS.findRange} blocks`);
+          const block = this.#find(action.block, LIMITS.findRange)[0] ?? fail(this.#unseen(action.block));
           const how = near(block.position, 2), note = await this.#walkTo(how.makeGoal(), signal, how);
           return `reached the ${action.block} at ${at(block.position)}; now at ${this.#where()}${note}`;
         }
@@ -1469,7 +1579,7 @@ export class BotBody {
           if (!block) break;
           try { await this.#dig(block, signal); got++; this.#progress(`mined ${got} ${action.block}`); } catch (error) { if (signal.aborted) throw error; problem = error; }
         }
-        if (!got) throw problem ?? new Error(`no ${action.block} within ${LIMITS.collectRange} blocks`);
+        if (!got) throw problem ?? new Error(this.#unseen(action.block));
         await this.#pickUp(signal).catch(() => {});
         // Drops reach the inventory a moment after she walks over them: wait for them (up to 2 s) before counting.
         const { gained } = changes(before, await this.#settleAll(before, signal));

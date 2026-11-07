@@ -37,7 +37,7 @@ References studied for ideas only (no code copied): Mineflayer, Mindcraft, Voyag
    last action's or plan's result, **what is running now** (the action, or the plan with its current step, what is
    still to come and how long ago it started), the reply rules, and a bounded game state: position, dimension, biome,
    time of day, health, food, oxygen (her own, when under water) and level, who is online (person or companion), nearby players,
-   mobs (hostile marked) and dropped items with their distance, notable blocks nearby (the nearest bed, chest, barrel,
+   mobs (hostile marked) and dropped items with their distance, notable blocks nearby that she can see (the nearest bed, chest, barrel,
    crafting table, furnace, ores, logs… one per kind, with coordinates), the inventory (names and counts), armor, the
    held and off-hand items, whether she rides or sleeps, the recent chat and the recent events (her own commands'
    answers included). Chat and names are marked as untrusted data.
@@ -340,6 +340,31 @@ from it; the hut is compared block by block with a copy after each walk):
 or a real tool, never "with wheat_seeds". Measured on the local server: short_grass, the upper half of tall_grass (both
 halves went), a second tall_grass by its lower half, a poppy (`dig {block: "poppy"}`) and a 2-layer snow layer were each
 dug ("dug short_grass at 2 -60 0"), every spot air on the server afterwards; `collect short_grass` mined one.
+
+### Fair sight: no X-ray (t70)
+
+**Symptom** (owner): "Bot has Xray, this is not normal." Perception listed notable blocks (ores, chests, beds, logs…)
+within 16 blocks whatever was in between, the "found" events did the same, and `collect`, `dig`/`goto`/`open`/`sleep`
+"nearest of type" used `bot.findBlocks`, which sees through walls. Measured on the local server with main: an iron ore
+embedded in stone 5 blocks away was listed (`iron_ore@5,-59,0 (5.2)`) and `dig {block: iron_ore}` dug it.
+
+**Fix** (`#canSee`, `lineOfSight`, `#find` in src/minecraft-body.mjs): a block counts as seen only when one of its
+faces that points at her touches a block she can see through (air, water, glass, leaves, doors, slabs, …) and a straight
+line from her eyes to just inside that face reaches it before any block she cannot see through (a voxel walk over
+`blockAt`). Range 32 blocks, 16 under a roof of rock (an opaque block within 24 above her head, not counting wood and
+leaves). Perception and "found" events list only seen blocks (the 96 nearest candidates are checked; answers are cached
+for her current cell for one second and dropped on any block update or dig). What she saw is remembered for the session
+(type and position, at most 300, forgotten when the block there changes). Targeting by type picks only seen or
+remembered blocks; otherwise the result is "you haven't seen any iron_ore nearby; explore or mine to find some".
+Explicit coordinates stay allowed: the model only knows coordinates from what it was shown or what players said.
+
+Measured on the local server (iron ore at 5 blocks inside a 9x5x9 stone block):
+
+| Step | main 2ba0390 | this branch |
+| --- | --- | --- |
+| ore embedded in stone | listed; `dig {block}` dug it | not listed; "you haven't seen any iron_ore nearby; explore or mine to find some" |
+| a 1x2 tunnel dug to it | (already dug) | listed: `iron_ore@5,-59,0 (5.2)` |
+| tunnel filled again | | not listed (not visible), remembered: `goto {block: iron_ore}` reached it |
 
 ### Commands (#70)
 
