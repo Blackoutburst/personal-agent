@@ -665,3 +665,17 @@ Me › Connectors first, or whitelist and use another name).
 - **Cirno's account** (TheScreamer's companion): its own Minecraft account; then add its `minecraft` block
   (`"auth": "microsoft"`) and whitelist entry.
 - Whether game turns should count against a daily budget as well (now: up to 150 an hour per companion while people play).
+
+## Nick plugin (companion-survival)
+
+`ops/minecraft-plugins/nick` holds a small Paper plugin. `/nick <nick|off>` sets your own coloured nickname, and `/nick <player> <nick|off>` sets someone else's (op only). Colour codes are `&0-&9 &a-&f &l &o &n &m &r` and `&#RRGGBB`; `&k` is refused.
+
+The nickname changes your chat name and your tab list name. Nicks are saved by UUID in `plugins/Nick/nicks.yml`.
+
+Rules for a nickname:
+- 1 to 16 letters, digits, `_` or `-`, with no spaces, so chat stays `<Nick> message`;
+- it can't copy another player's account name or nickname.
+
+The bot reads the chat sender from that display name. `accountName` in minecraft-body.mjs maps a nick back to the account name through the tab list, so her own nicked lines still count as her own and the owner is still recognised.
+
+Build it with `LIB=<api jars> ops/minecraft-plugins/nick/build.sh`, then copy the jar into `/srv/companion-survival/plugins/` and restart the server.

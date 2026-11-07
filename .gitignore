@@ -7,3 +7,4 @@ node_modules/
 coverage/
 *.log
 __pycache__/
+ops/minecraft-plugins/*/*.jar

@@ -1,0 +1,16 @@
+name: Nick
+version: 1.0.0
+main: dev.blackoutburst.nick.NickPlugin
+api-version: '26.1'
+description: /nick with & colour codes for chat and the tab list
+commands:
+  nick:
+    description: Set a coloured nickname (&a-&f, &0-&9, &l &o &n &m, &#RRGGBB), or "off"
+    usage: "/nick <nick|off>  or  /nick <player> <nick|off>"
+permissions:
+  nick.use:
+    description: Change your own nickname
+    default: true
+  nick.others:
+    description: Change other players' nicknames
+    default: op

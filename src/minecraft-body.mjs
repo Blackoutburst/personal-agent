@@ -623,6 +623,20 @@ const weaponScore = name => {
 };
 const armorSlot = name => ARMOR.find(([pattern]) => pattern.test(name))?.[1] ?? null;
 
+// Chat lines name their sender by display name: a /nick (companion-survival "Nick" plugin, colours stripped) is mapped
+// back to the account name through the tab list, so her own nicked lines stay echoes and the owner stays the owner.
+export function accountName(bot, shown) {
+  if (typeof shown !== 'string' || !shown) return shown;
+  const players = bot?.players && typeof bot.players === 'object' ? Object.values(bot.players) : [];
+  if (shown === bot?.username || players.some(player => player?.username === shown)) return shown;
+  for (const player of players) {
+    let display = '';
+    try { display = typeof player?.displayName?.toString === 'function' ? player.displayName.toString() : ''; } catch { display = ''; }
+    if (display.replace(/\u00a7./g, '').trim() === shown && typeof player.username === 'string') return player.username;
+  }
+  return shown;
+}
+
 export class BotBody {
   #bot; #pathfinder; #emit; #companions; #now; #scanMs; #pace; #Vec3; #scanTimer = null; #seen = new Set(); #current = null; #lastHealth = null;
   #night = null; #spawnedAt = 0; #players = ''; #commandUntil = 0; #commandLines = 0; #perceivedIds = null; #protectedIds = null; #memory = new Map(); #sight = new Map(); #sightKey = ''; #names = null; #range = null;
@@ -728,13 +742,15 @@ export class BotBody {
       this.#scanTimer = setInterval(() => { try { this.#scan(); } catch { /* next scan */ } }, this.#scanMs);
       this.#scanTimer.unref?.();
     });
-    this.#on('chat', (username, message) => {
+    this.#on('chat', (shown, message) => {
+      const username = accountName(bot, shown);
       // The server's echo of our own line: proof it was said (the E2E harness checks it); the agent ignores it.
       if (username && username === bot.username) { this.#event({ type: 'echo', text: clean(message, 256) }); return; }
       if (!username) return;
       this.#event({ type: 'chat', from: clean(username, 16), text: clean(message, 256) });
     });
-    this.#on('whisper', (username, message) => {
+    this.#on('whisper', (shown, message) => {
+      const username = accountName(bot, shown);
       if (!username || username === bot.username) return;
       this.#event({ type: 'chat', from: clean(username, 16), text: clean(message, 256), whisper: true });
     });

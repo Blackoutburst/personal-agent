@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { BootstrapStore } from '../src/store.mjs';
 import { parseMinecraftConfig, offlineUuid, reconnectDelay, TurnGate, buildPrompt, parseReply, boundedState, appendDiary,
   MinecraftAgent, MinecraftConnector, workerConnect, PROMPT_LIMITS, DEFAULTS } from '../src/minecraft.mjs';
-import { BotBody, validateAction, timeOfDay, LIMITS } from '../src/minecraft-body.mjs';
+import { BotBody, validateAction, timeOfDay, LIMITS, accountName } from '../src/minecraft-body.mjs';
 import { parseRuntimeConfig } from '../src/runtime-config.mjs';
 import { Connectors } from '../src/connectors.mjs';
 import { ensureWorkspace, instructions } from '../src/companion.mjs';
@@ -182,6 +182,26 @@ test('the body runs skills with time limits and reports results it never throws'
   const plain = new BotBody({ bot: fakeBot() }); plain.attach();
   assert.equal((await plain.act({ type: 'wander' })).detail, 'walking is unavailable');
   stuck.detach(); body.quit(); assert.equal(bot.quitReason, 'bye');
+});
+
+test('a /nick shown in chat maps back to the account name', () => {
+  const nick = text => ({ toString: () => text });
+  const bot = { username: 'Yakusuna', players: { Yakusuna: { username: 'Yakusuna', displayName: nick('\u00a7dC-chan') },
+    Blackoutburst: { username: 'Blackoutburst', displayName: nick('\u00a7bBlackout') }, Cirno: { username: 'Cirno' } } };
+  assert.equal(accountName(bot, 'C-chan'), 'Yakusuna');
+  assert.equal(accountName(bot, 'Blackout'), 'Blackoutburst');
+  assert.equal(accountName(bot, 'Cirno'), 'Cirno');
+  assert.equal(accountName(bot, 'Stranger'), 'Stranger');
+  // A nick that copies a real account name never hides that account.
+  bot.players.Cirno.displayName = nick('Blackoutburst');
+  assert.equal(accountName(bot, 'Blackoutburst'), 'Blackoutburst');
+  const events = [], fake = fakeBot(); fake.username = 'Yakusuna';
+  const body = new BotBody({ bot: fake, onEvent: event => events.push(event) }); body.attach();
+  fake.players = bot.players;
+  fake.emit('chat', 'C-chan', 'my own nicked line'); fake.emit('chat', 'Blackout', 'hi'); fake.emit('whisper', 'Blackout', 'psst');
+  assert.deepEqual(events.filter(e => ['echo', 'chat'].includes(e.type)).map(e => [e.type, e.from ?? null]),
+    [['echo', null], ['chat', 'Blackoutburst'], ['chat', 'Blackoutburst']]);
+  body.quit();
 });
 
 test('the body notices chat, joins, damage, death, nightfall and finds, and isolates handler errors', async () => {
