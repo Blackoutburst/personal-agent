@@ -36,7 +36,7 @@ References studied for ideas only (no code copied): Mineflayer, Mindcraft, Voyag
    instructions and memory files (SOUL.md, USER.md, MEMORY.md, the last diary days). The prompt says why it is up, the
    last action's or plan's result, **what is running now** (the action, or the plan with its current step, what is
    still to come and how long ago it started), the reply rules, and a bounded game state: position, dimension, biome,
-   time of day, health, food, oxygen (when under water) and level, who is online (person or companion), nearby players,
+   time of day, health, food, oxygen (her own, when under water) and level, who is online (person or companion), nearby players,
    mobs (hostile marked) and dropped items with their distance, notable blocks nearby (the nearest bed, chest, barrel,
    crafting table, furnace, ores, logs… one per kind, with coordinates), the inventory (names and counts), armor, the
    held and off-hand items, whether she rides or sleeps, the recent chat and the recent events (her own commands'
@@ -229,6 +229,66 @@ added, two of seven 2x2 crafts in one run had been reported as "made none" while
 | pick_up 3 raw_iron + 2 cobblestone | right | right, counted after the pickup arrived |
 | eat (food 2, after a hunger effect) | "ate bread" (not checked; her view still showed 3 bread); server 3 -> 2 | "ate bread (food 2 -> 11)", counted; server 3 -> 2 |
 | collect 2 oak_log (a 2-high trunk) | "picked up 2 oak_log"; server 2 | "picked up 2 oak_log"; server 2. One run got 1 (the other drop stayed on the ground) and said "picked up 1 oak_log"; since then pickups are counted until nothing changed for 300 ms, as stacks arrive one at a time |
+
+### Chat on 26.1: unsigned chat and the "last seen" window (t70)
+
+**Symptom** (live, Yakusuna, online mode): two kicks in 2 minutes while she chatted a lot and ran commands; the
+server log said `Yakusuna lost connection: Chat message validation failure`, the worker said "kicked: no reason".
+
+**Root causes**, read from the Paper 26.1.2 jar (javap of `LastSeenMessagesValidator`, `LastSeenMessages`,
+`ServerGamePacketListenerImpl`) and checked by driving minecraft-protocol 1.68.0's own chat code with fake signed
+messages against a port of that validator (test/minecraft-connection.test.mjs):
+
+1. Every `chat_message` (and signed command) carries a "last seen" update: how many new signed messages arrived
+   (offset), one bit per message in the 20-message window (oldest first; once acknowledged, a message must stay
+   acknowledged) and a checksum (0 means "not checked"). Any mismatch kicks with
+   `multiplayer.disconnect.chat_validation_failed`, after the server logs
+   `Failed to validate message acknowledgements from <name>: <why>` at ERROR.
+2. minecraft-protocol computes the checksum over its ring buffer in storage order, not oldest first. Once more than 20
+   signed messages reached her since login (her own signed lines come back to her and count too), the checksum is
+   wrong: in the port, a chat line after each incoming signed message failed at the 21st ("Checksum mismatch").
+3. An unsigned `/command` (`chat_command`, no acknowledgements in the packet) still resets minecraft-protocol's pending
+   count, so the next chat line's offset is short and its bits point at the wrong messages ("acknowledged unknown or
+   previously ignored message at index 17" after 2 messages, a command, 1 message, a line). With signing simply turned
+   off every command goes out this way, so `disableChatSigning` alone would have made the kicks more frequent.
+
+**Fix**: the worker passes `disableChatSigning: true` (no chat certificates are fetched; her lines and commands go out
+unsigned, the server marks them "[Not Secure]"), and `patchChatAcks` (src/minecraft-body.mjs) keeps her own tracker,
+like the vanilla client's `LastSeenMessagesTracker`: it counts signed `player_chat` messages (a repeat of the last one
+once, like the server), writes offset, bits and checksum 0 into every `chat_message`, sends its own
+`message_acknowledgement` after 64 and drops minecraft-protocol's. Kick reasons are NBT components on 26.1
+(`{type:'compound', value:{translate:{type:'string', value:'multiplayer.disconnect.chat_validation_failed'}}}`,
+measured), which the old reader turned into "no reason"; `disconnectReason` unwraps NBT or JSON and names the keys
+("kicked: Chat message validation failure", "kicked: Kicked for spamming", unknown keys by name).
+
+**Server requirement**: `enforce-secure-profile=false`. A server that enforces it lets an unsigned player in but
+refuses each chat line (`chat.disabled.missingProfileKey`, a red system line) and each command with a message argument
+(/msg, /me), so she would be mute. The login packet's `enforcesSecureChat` flag (and minecraft-protocol's own throw,
+and those kick keys) end the connection with `server enforces secure chat (set enforce-secure-profile=false)`, which
+waits 30 minutes before the next try. The server only enforces it in online mode (`DedicatedServer.enforceSecureProfile`
+also needs online mode and the services key), so this case is unit-tested with fakes; offline with
+`enforce-secure-profile=true` the login flag was measured false.
+
+Measured on a private local Paper 26.1.2 server (offline, 127.0.0.1:25599) through the real worker: 30 chat lines
+(1.1 s apart; faster than about one a second a non-op is kicked for spam, `disconnect.spam`) and `/me`, `/msg`,
+`/list`, `/say` went out unsigned without a kick; a deliberately wrong acknowledgement (bit 0, nothing tracked) was
+kicked as `chat_validation_failed`; an operator kick ended as "kicked: Kicked by an operator". Offline there are no
+signed messages, so the window itself is checked against the ported validator only.
+
+### Oxygen on 26.1 (t70)
+
+**Symptom** (live): her perception showed oxygen dropping 17 -> 10 while she stood on dry land at about (0, 80, -18)
+with full health; the server's saved data at the next disconnect said Air=300, OnGround=1.
+
+**Root cause**: Mineflayer 4.39.0 (entities.js) sets `bot.oxygenLevel` from the `air_supply` metadata of *every*
+entity, not only hers. The index itself is right on 26.1 (air_supply is key 1 in minecraft-data's player
+metadataKeys, and her own packets count down 299, 298, … under water). Measured on the local server: a cod summoned
+on dry land two blocks from her sent its falling air (299 -> 60) and `bot.oxygenLevel` went 20 -> 4 while she stood on
+the ground; any mob losing air nearby (fish out of water, a squid, a mob under water) does the same.
+**Fix**: `patchOxygen` reads air_supply from her own entity's metadata only (the index from the registry), writes it
+back over Mineflayer's value and resets to 20 on (re)spawn; perception reports `oxygen` from it. Measured after: a cod,
+a salmon and a squid beached beside her for 12 s: no `oxygen` in her perception; submerged herself: 16, 12, 8 at
+3 s steps; back on land: no `oxygen`.
 
 ### Commands (#70)
 

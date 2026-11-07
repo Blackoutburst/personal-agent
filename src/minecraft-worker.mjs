@@ -3,15 +3,10 @@
 // reconnects with backoff. A worker lives for one connection; a new connection is a new worker.
 import { parentPort, workerData } from 'node:worker_threads';
 import { loadPackage } from './deps.mjs';
-import { BotBody } from './minecraft-body.mjs';
+import { BotBody, disconnectReason, watchSecureChat, isSecureChatError, SECURE_CHAT_REASON } from './minecraft-body.mjs';
 import { createAuthCache, signInView, signInFailure, safeReason } from './minecraft-auth.mjs';
 
 const LOGIN_MS = 60_000;
-const text = value => {
-  if (typeof value === 'string') { try { return text(JSON.parse(value)); } catch { return value; } }
-  if (value && typeof value === 'object') return [value.text, value.translate, ...(Array.isArray(value.extra) ? value.extra.map(text) : []), ...(Array.isArray(value.with) ? value.with.map(text) : [])].filter(Boolean).join(' ');
-  return String(value ?? '');
-};
 
 let ended = false, body = null, bot = null;
 const post = message => { try { parentPort.postMessage(message); } catch { /* the supervisor is gone */ } };
@@ -22,8 +17,10 @@ function end(reason) {
   try { body?.detach(); } catch { /* closing */ }
   setTimeout(() => process.exit(0), 200);
 }
-process.on('uncaughtException', error => end('crashed: ' + (error?.message ?? 'error')));
-process.on('unhandledRejection', error => end('crashed: ' + (error?.message ?? 'error')));
+// minecraft-protocol throws from its packet handler when a server enforces secure chat and signing is off.
+const crashed = error => end(isSecureChatError(error) ? SECURE_CHAT_REASON : 'crashed: ' + (error?.message ?? 'error'));
+process.on('uncaughtException', crashed);
+process.on('unhandledRejection', crashed);
 
 try {
   const { host, port, username, version, companions, auth = 'offline', profilesFolder = null, cacheKey = null, refreshTokens = false } = workerData;
@@ -47,8 +44,12 @@ try {
       signInTimer = setTimeout(() => end('sign-in code expired'), Math.max(0, view.expiresAt - Date.now()) + 30_000);
     } } : { username, auth: 'offline' };
   startLogin();
-  bot = mineflayer.createBot({ host, port, ...authOptions, version: version || false, hideErrors: true,
+  // t70: chat goes out unsigned (no chat certificates are fetched): minecraft-protocol's signed chat broke on 26.1 and
+  // got her kicked for "Chat message validation failure" (docs/MINECRAFT.md, "Chat on 26.1"). The server must not
+  // enforce secure profiles (enforce-secure-profile=false); one that does ends the connection with a clear reason.
+  bot = mineflayer.createBot({ host, port, ...authOptions, version: version || false, hideErrors: true, disableChatSigning: true,
     viewDistance: 'short', respawn: true, checkTimeoutInterval: 60_000, logErrors: false });
+  watchSecureChat(bot._client, reason => { kicked = reason; clearTimeout(login); try { bot.quit(); } catch { end(reason); } });
   // The session exists (cached or fresh sign-in): report the account's in-game name (never the session itself).
   bot._client?.on?.('session', () => {
     session = true; clearTimeout(signInTimer); signingIn = false;
@@ -58,10 +59,15 @@ try {
   body = new BotBody({ bot, pathfinder, companions, onEvent: event => post({ op: 'event', event }) });
   body.attach();
   bot.once('spawn', () => { clearTimeout(login); post({ op: 'state', state: 'online', username: bot.username }); });
-  bot.on('kicked', reason => { kicked = 'kicked: ' + (text(reason) || 'no reason'); });
+  // 26.1 sends the reason as an NBT text component (often only a translation key): name what happened.
+  bot.on('kicked', reason => {
+    const why = disconnectReason(reason);
+    if (kicked !== SECURE_CHAT_REASON) kicked = why === SECURE_CHAT_REASON ? why : 'kicked: ' + (why || 'no reason');
+  });
   bot.on('error', error => {
     // Before a session exists there is no socket (no 'end' follows): a sign-in error ends this connection.
     if (!session) { clearTimeout(login); end(signInFailure(error)); return; }
+    if (isSecureChatError(error)) kicked = SECURE_CHAT_REASON;
     kicked ??= error?.code === 'ECONNREFUSED' ? 'server not reachable' : safeReason(error?.message ?? 'connection error');
   });
   // encryptionLoginError: Mojang's session server refused our join (the token is stale or revoked).

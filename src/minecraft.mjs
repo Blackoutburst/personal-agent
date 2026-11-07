@@ -74,11 +74,11 @@ export function offlineUuid(name) {
 // ---------- Reconnect policy ----------
 
 // Exponential backoff with jitter: 5 s, 10 s, 20 s … up to 5 minutes. Reasons that retrying soon cannot fix (not on the
-// whitelist, banned, the name already logged in, the online-mode name check failing, the package missing) wait 30
-// minutes. Microsoft sign-in problems (a code nobody entered, a refused sign-in) back off from 1 minute to 30 minutes,
-// so a new code is never requested in a tight loop.
+// whitelist, banned, the name already logged in, the online-mode name check failing, a server enforcing secure chat,
+// the package missing) wait 30 minutes. Microsoft sign-in problems (a code nobody entered, a refused sign-in) back off
+// from 1 minute to 30 minutes, so a new code is never requested in a tight loop.
 export function reconnectDelay(attempt, reason = '', random = Math.random) {
-  if (/DEPENDENCY_MISSING|whitelist|white-listed|banned|logged in from another location|failed to verify username|duplicate|name.*(taken|in use)/i.test(String(reason))) return 30 * 60_000;
+  if (/DEPENDENCY_MISSING|whitelist|white-listed|banned|logged in from another location|failed to verify username|secure chat|duplicate|name.*(taken|in use)/i.test(String(reason))) return 30 * 60_000;
   const n = Math.max(0, Math.min(attempt, 10));
   if (/^sign-in/i.test(String(reason))) { const base = Math.min(30 * 60_000, 60_000 * 2 ** n); return Math.round(base + random() * Math.min(15_000, base / 4)); }
   const base = Math.min(5 * 60_000, 5000 * 2 ** n);

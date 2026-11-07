@@ -104,6 +104,155 @@ export function patchWindowState(bot) {
   return true;
 }
 
+// t70 (chat): the 26.1 server checks every chat_message's "last seen" update against the signed messages it sent her
+// (LastSeenMessagesValidator, read from the Paper 26.1.2 jar): the window offset, one bit per tracked message (oldest
+// first, a once-acknowledged message must stay acknowledged) and a checksum (0 = not checked). Any mismatch kicks her
+// with "Chat message validation failure". minecraft-protocol 1.68.0 gets two things wrong: its checksum walks its ring
+// buffer in storage order instead of oldest first, so it is wrong once more than 20 signed messages arrived since login
+// (her own signed lines count too), and an unsigned /command (which carries no acknowledgements) still resets its
+// pending count, so the next chat line's offset is short and its bits point at the wrong messages. This keeps her own
+// tracker, like the vanilla client's LastSeenMessagesTracker, and writes its update into every chat_message (and signed
+// command); minecraft-protocol's own message_acknowledgement packets are dropped, this tracker sends its own after 64.
+// It assumes unsigned chat (the worker passes disableChatSigning): a signed line's signature would cover
+// minecraft-protocol's acknowledgements, not these.
+// Measured against a port of the server's validator (docs/MINECRAFT.md, "Chat on 26.1"). Idempotent.
+export const LAST_SEEN = 20;
+const CHAT_PATCHED = Symbol('t70 last seen tracker');
+export function patchChatAcks(client) {
+  if (!client || typeof client.write !== 'function' || typeof client.on !== 'function') return false;
+  if (client[CHAT_PATCHED]) return true;
+  const ring = new Array(LAST_SEEN).fill(null), write = client.write;
+  let tail = 0, offset = 0, last = null;
+  const send = (name, params) => write.call(client, name, params);
+  const update = () => {
+    const acknowledged = Buffer.alloc(Math.ceil(LAST_SEEN / 8));
+    for (let j = 0; j < LAST_SEEN; j++) {
+      const k = (tail + j) % LAST_SEEN;
+      if (ring[k]) { acknowledged[j >> 3] |= 1 << (j & 7); ring[k].pending = false; }
+    }
+    const count = offset;
+    offset = 0;
+    return { count, acknowledged };
+  };
+  const onChat = packet => {
+    const signature = packet?.signature;
+    if (!Buffer.isBuffer(signature) || !signature.length || (last && last.equals(signature))) return;
+    last = signature; ring[tail] = { signature, pending: true }; tail = (tail + 1) % LAST_SEEN; offset++;
+    if (offset > 64) send('message_acknowledgement', { count: update().count });
+  };
+  if (typeof client.prependListener === 'function') client.prependListener('player_chat', onChat); else client.on('player_chat', onChat);
+  client.write = function (name, params, ...rest) {
+    if (name === 'message_acknowledgement') return undefined;
+    if (name === 'chat_message' && object(params)) { const { count, acknowledged } = update(); params = { ...params, offset: count, acknowledged, checksum: 0 }; }
+    else if (name === 'chat_command_signed' && object(params)) { const { count, acknowledged } = update(); params = { ...params, messageCount: count, acknowledged, checksum: 0 }; }
+    return write.call(this, name, params, ...rest);
+  };
+  client[CHAT_PATCHED] = true;
+  return true;
+}
+
+// t70 (oxygen): Mineflayer 4.39.0 sets bot.oxygenLevel from the air_supply metadata of EVERY entity, not only her own:
+// a fish on land or a mob under water nearby made her "drown" on dry land (measured on a local 26.1.2 server: a cod
+// beside her drove bot.oxygenLevel to 4 while she stood on the ground with full air). This keeps the value from her
+// own entity's metadata only (air_supply's index from the registry, 1 on 26.1; 300 ticks = 20) and writes it back
+// after Mineflayer's handler. ownOxygen(bot) reads it: 20 until her own metadata says otherwise (a bot without a client
+// to patch keeps Mineflayer's value).
+const OXYGEN = Symbol('t70 own oxygen');
+export function patchOxygen(bot) {
+  const client = bot?._client;
+  if (!client || typeof client.on !== 'function') return false;
+  if (bot[OXYGEN]) return true;
+  bot[OXYGEN] = { level: 20 };
+  const airKey = () => { const keys = bot.registry?.entitiesByName?.player?.metadataKeys; const i = Array.isArray(keys) ? keys.indexOf('air_supply') : -1; return i >= 0 ? i : 1; };
+  client.on('entity_metadata', packet => {
+    const own = bot[OXYGEN];
+    if (bot.entity && packet?.entityId === bot.entity.id && Array.isArray(packet.metadata)) {
+      const key = airKey(), air = packet.metadata.find(entry => entry?.key === key);
+      if (air && finite(air.value)) own.level = Math.max(0, Math.min(20, Math.round(air.value / 15)));
+    }
+    bot.oxygenLevel = own.level;
+  });
+  bot.on?.('spawn', () => { bot[OXYGEN].level = 20; bot.oxygenLevel = 20; });
+  return true;
+}
+export const ownOxygen = bot => bot?.[OXYGEN]?.level ?? (finite(bot?.oxygenLevel) ? bot.oxygenLevel : 20);
+
+// t70 (kicks): on 26.1 the disconnect reason is an NBT text component ({ type: 'compound', value: { translate: … } }),
+// which the old reader turned into "no reason". This unwraps NBT or JSON components into plain text and names the
+// server's translation keys.
+export const SECURE_CHAT_REASON = 'server enforces secure chat (set enforce-secure-profile=false)';
+const DISCONNECT_KEYS = {
+  'multiplayer.disconnect.chat_validation_failed': 'Chat message validation failure',
+  'multiplayer.disconnect.out_of_order_chat': 'Out-of-order chat packet received',
+  'multiplayer.disconnect.too_many_pending_chats': 'Too many unacknowledged chat messages',
+  'multiplayer.disconnect.unsigned_chat': SECURE_CHAT_REASON,
+  'multiplayer.disconnect.missing_public_key': SECURE_CHAT_REASON,
+  'multiplayer.disconnect.expired_public_key': SECURE_CHAT_REASON,
+  'multiplayer.disconnect.invalid_public_key_signature': SECURE_CHAT_REASON,
+  'chat.disabled.missingProfileKey': SECURE_CHAT_REASON,
+  'multiplayer.disconnect.kicked': 'Kicked by an operator',
+  'multiplayer.disconnect.banned': 'You are banned from this server',
+  'multiplayer.disconnect.not_whitelisted': 'You are not white-listed on this server',
+  'multiplayer.disconnect.duplicate_login': 'You logged in from another location',
+  'multiplayer.disconnect.name_taken': 'That name is already taken',
+  'multiplayer.disconnect.unverified_username': 'Failed to verify username',
+  'multiplayer.disconnect.server_shutdown': 'Server closed',
+  'multiplayer.disconnect.server_full': 'Server is full',
+  'multiplayer.disconnect.idling': 'You have been idle for too long',
+  'multiplayer.disconnect.flying': 'Flying is not enabled on this server',
+  'multiplayer.disconnect.invalid_player_movement': 'Invalid move player packet received',
+  'multiplayer.disconnect.invalid_vehicle_movement': 'Invalid move vehicle packet received',
+  'multiplayer.disconnect.invalid_entity_attacked': 'Attempting to attack an invalid entity',
+  'multiplayer.disconnect.illegal_characters': 'Illegal characters in chat',
+  'multiplayer.disconnect.generic': 'Disconnected',
+  'disconnect.spam': 'Kicked for spamming',
+  'disconnect.timeout': 'Timed out',
+  'disconnect.closed': 'Connection closed'
+};
+const NBT_TYPES = new Set(['compound', 'list', 'string', 'byte', 'short', 'int', 'long', 'float', 'double', 'byteArray', 'intArray', 'longArray', 'bool']);
+function plainComponent(value, depth = 0) {
+  if (depth > 16) return null;
+  if (object(value) && NBT_TYPES.has(value.type) && 'value' in value) {
+    if (value.type === 'compound') return object(value.value) ? Object.fromEntries(Object.entries(value.value).map(([k, v]) => [k, plainComponent(v, depth + 1)])) : null;
+    if (value.type === 'list') return Array.isArray(value.value?.value) ? value.value.value.map(v => plainComponent(value.value.type ? { type: value.value.type, value: v } : v, depth + 1)) : [];
+    return value.value;
+  }
+  if (Array.isArray(value)) return value.map(v => plainComponent(v, depth + 1));
+  if (object(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, plainComponent(v, depth + 1)]));
+  return value;
+}
+function componentText(value, depth = 0) {
+  if (depth > 16 || value === null || value === undefined) return '';
+  if (typeof value === 'string') {
+    if (/^\s*[{["]/.test(value)) { try { return componentText(JSON.parse(value), depth + 1); } catch { /* plain text */ } }
+    return value;
+  }
+  if (typeof value !== 'object') return String(value);
+  if (Array.isArray(value)) return value.map(v => componentText(v, depth + 1)).filter(Boolean).join('');
+  const own = typeof value.translate === 'string'
+    ? (DISCONNECT_KEYS[value.translate] ?? [value.translate, ...(Array.isArray(value.with) ? value.with.map(v => componentText(v, depth + 1)) : [])].filter(Boolean).join(' '))
+    : componentText(value.text ?? (typeof value[''] === 'string' ? value[''] : ''), depth + 1);
+  return [own, ...(Array.isArray(value.extra) ? value.extra.map(v => componentText(v, depth + 1)) : [])].filter(Boolean).join('');
+}
+export function disconnectReason(reason) {
+  return clean(componentText(plainComponent(reason)), 300);
+}
+
+// t70 (secure chat): she sends chat unsigned (disableChatSigning). A server that enforces secure profiles still lets her
+// in but refuses every chat line ("chat.disabled.missingProfileKey") and every command with a message argument, so she
+// would be mute: the login packet's enforcesSecureChat flag (and the older server_data one) ends the connection with
+// one clear reason instead. minecraft-protocol's own check throws from inside its packet handler.
+export function isSecureChatError(error) {
+  return /disableChatSigning.*enforcing secure chat|enforces secure chat/i.test(String(error?.message ?? error ?? ''));
+}
+export function watchSecureChat(client, onEnforced) {
+  if (!client || typeof client.on !== 'function') return false;
+  let fired = false;
+  const check = packet => { if (!fired && packet?.enforcesSecureChat === true) { fired = true; onEnforced(SECURE_CHAT_REASON); } };
+  client.on('login', check); client.on('server_data', check);
+  return true;
+}
+
 const round = value => Math.round(value * 10) / 10;
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 const centre = p => ({ x: p.x + 0.5, y: p.y + 0.5, z: p.z + 0.5 });
@@ -409,7 +558,8 @@ export class BotBody {
     const bot = this.#bot;
     if (this.#pathfinder && typeof bot.loadPlugin === 'function' && !bot.pathfinder) bot.loadPlugin(this.#pathfinder.pathfinder);
     // Mineflayer injects its physics plugin after attach() (once the version is known): patch it at login and spawn.
-    this.#on('login', () => { patchPhysics(bot); patchWindowState(bot); });
+    patchChatAcks(bot._client);
+    this.#on('login', () => { patchPhysics(bot); patchWindowState(bot); patchOxygen(bot); });
     this.#on('spawn', () => {
       patchPhysics(bot); patchWindowState(bot);
       if (this.#spawnedAt) return;
@@ -533,7 +683,7 @@ export class BotBody {
       position: { x: Math.floor(here.x), y: Math.floor(here.y), z: Math.floor(here.z) },
       dimension: clean(String(bot.game?.dimension ?? 'overworld').replace(/^minecraft:/, ''), 32), biome: biome ? clean(biome, 40) : null,
       time: { phase: timeOfDay(bot.time?.timeOfDay ?? 0), ticks: Math.floor(bot.time?.timeOfDay ?? 0) },
-      health: round(bot.health ?? 0), food: Math.round(bot.food ?? 0), ...(finite(bot.oxygenLevel) && bot.oxygenLevel < 20 ? { oxygen: bot.oxygenLevel } : {}),
+      health: round(bot.health ?? 0), food: Math.round(bot.food ?? 0), ...(ownOxygen(bot) < 20 ? { oxygen: ownOxygen(bot) } : {}),
       ...(self.isInWater ? { inWater: true } : {}),
       ...(finite(bot.experience?.level) ? { level: bot.experience.level } : {}),
       online: online.slice(0, 16).map(name => ({ name, kind: kind(name) })), players, mobs, items, blocks,
