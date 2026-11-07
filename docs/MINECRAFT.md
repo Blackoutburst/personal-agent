@@ -680,6 +680,6 @@ The bot reads player chat from the packet, using the sender UUID and the plain m
 
 An unsigned `/msg` arrives profileless, with only the shown name. `accountName` maps that name back to the account through the tab list, so her own lines still count as her own and the owner is still recognised. The text-pattern chat events are only a fallback when there are no packets.
 
-The display name used in chat ends with an invisible white character, so a legacy `%s: %s` format doesn't let the nick's colour run into the message.
+The display name used in chat ends with a legacy `§r` reset code (an earlier zero-width space showed as a box in the Minecraft font), so a legacy `%s: %s` format doesn't let the nick's colour run into the message.
 
 Build it with `LIB=<api jars> ops/minecraft-plugins/nick/build.sh`, then copy the jar into `/srv/companion-survival/plugins/` and restart the server.

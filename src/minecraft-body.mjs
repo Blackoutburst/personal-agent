@@ -633,7 +633,7 @@ export function chatTypeName(bot, type) {
 // back to the account name through the tab list, so her own nicked lines stay echoes and the owner stays the owner.
 export function accountName(bot, shown) {
   if (typeof shown !== 'string' || !shown) return shown;
-  shown = shown.replace(/\u200b/g, '').trim();
+  shown = shown.replace(/\u00a7./g, '').replace(/\u200b/g, '').trim();
   const players = bot?.players && typeof bot.players === 'object' ? Object.values(bot.players) : [];
   if (shown === bot?.username || players.some(player => player?.username === shown)) return shown;
   for (const player of players) {

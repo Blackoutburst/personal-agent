@@ -50,8 +50,9 @@ public final class NickPlugin extends JavaPlugin implements Listener {
         String raw = nicks.getString(player.getUniqueId().toString());
         Component name = raw == null ? null : AMP.deserialize(raw);
         // Chat formats built from the legacy display name ("%s: %s") let its last colour run into the message: end the
-        // chat name with an invisible white character. The tab list keeps the plain nick.
-        player.displayName(name == null ? null : Component.text().append(name).append(Component.text("\u200b", NamedTextColor.WHITE)).build());
+        // chat name with a legacy reset code (a format code, never drawn; a zero-width space showed as a box). The tab
+        // list keeps the plain nick.
+        player.displayName(name == null ? null : Component.text().append(name).append(Component.text("\u00a7r")).build());
         player.playerListName(name);
     }
 
