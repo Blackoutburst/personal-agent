@@ -13,7 +13,7 @@ References studied for ideas only (no code copied): Mineflayer, Mindcraft, Voyag
 | Piece | File | Role |
 | --- | --- | --- |
 | Connector service | `src/minecraft.mjs` (`MinecraftConnector`) | One agent per companion whose owners.json entry has a `minecraft` block; status for Me › Connectors; game sessions. |
-| Agent loop | `src/minecraft.mjs` (`MinecraftAgent`, `TurnGate`) | Decides when to take a turn, builds the prompt, parses the reply, runs one action, reconnects. |
+| Agent loop | `src/minecraft.mjs` (`MinecraftAgent`, `TurnGate`) | Decides when to take a turn, builds the prompt, parses the reply, runs the action or plan, reconnects. |
 | Body | `src/minecraft-body.mjs` (`BotBody`) | Perception, events and the closed skill library on one Mineflayer bot. |
 | Worker | `src/minecraft-worker.mjs` | Runs Mineflayer in its own worker thread: one connection per worker. |
 | Sign-in | `src/minecraft-auth.mjs` | Online mode: per-companion Microsoft sign-in folder (0700, files 0600), device-code view, sign-out wipe. |
@@ -23,21 +23,39 @@ References studied for ideas only (no code copied): Mineflayer, Mindcraft, Voyag
 
 1. The body notices events: chat (and whispers), a player joining or leaving, damage, death, nightfall, a notable block
    in sight (ores such as diamond, spawners, chests, portals…, once per position), and the result of its own action.
-2. The `TurnGate` turns some of them into a reason for a turn: being addressed (whisper, its name in chat, or a person
-   answering within 90 s of the companion speaking), a join or leave, damage (2+ or health ≤ 8), death, nightfall, a
-   find, an action finishing or failing. Reasons are coalesced: one turn answers them all. While a person is online and
-   nothing happens, an idle turn comes every `idleMinutes` so it acts on its own.
+2. The `TurnGate` turns them into reasons for a turn (#69: she plays continuously while a person is online).
+   **Urgent** reasons take a turn as soon as the spacing allows: being addressed (whisper, its name in chat, or a person
+   answering within 90 s of the companion speaking), a join or leave, damage (2+ or health ≤ 8), death, its action or
+   plan finishing or failing. **Minor** reasons (a find, nightfall) take a turn only while nothing runs; while an action
+   or plan runs they are batched (at most 8) and ride on the next turn. Reasons are coalesced: one turn answers them all.
+   With nothing running and nothing happening for `idleSeconds` (default 20 s) while a person is online, an idle turn
+   comes so she does something of her own.
 3. A turn is the companion's own native agent turn (Claude Code or Codex) in its **workspace**, with its normal
    instructions and memory files (SOUL.md, USER.md, MEMORY.md, the last diary days). The prompt says why it is up, the
-   last action's result, and a bounded game state: position, dimension, biome, time of day, health and food, who is online
-   (person or companion), nearby players, mobs and notable blocks, dropped items, an inventory summary, the recent chat and
-   the recent events. Chat and names are marked as untrusted data.
-4. The reply is one JSON object: `{"say": "...", "action": {...}, "diary": "..."}`, every field optional (`{}` does
-   nothing). `say` is one chat line (240 characters, never a `/command`), `action` one action from the closed
-   vocabulary, `diary` one line (300 characters) appended by the app to today's `memory/YYYY-MM-DD.md` as
-   `- Minecraft: ...`. Invalid parts are refused and the reason goes into the next turn.
-5. The action runs in the body with its own time limit; a new action replaces the running one; the result (finished or
-   failed, with a short detail) is an event and is fed into the next turn.
+   last action's or plan's result, **what is running now** (the action, or the plan with its current step, what is
+   still to come and how long ago it started), the reply rules, and a bounded game state: position, dimension, biome,
+   time of day, health and food, who is online (person or companion), nearby players, mobs and notable blocks, dropped
+   items, an inventory summary, the recent chat and the recent events. Chat and names are marked as untrusted data.
+4. The reply is one JSON object: `{"say": "...", "action": {...}, "diary": "..."}` or
+   `{"say": "...", "plan": [{...}, {...}], "diary": "..."}`, every field optional. `say` is one chat line (240
+   characters, never a `/command`), `action` one action from the closed vocabulary, `plan` 1-5 actions from the same
+   vocabulary run one after another (`say` steps included, `stop` not), `diary` one line (300 characters) appended by
+   the app to today's `memory/YYYY-MM-DD.md` as `- Minecraft: ...`. Invalid parts are refused and the reason goes into
+   the next turn; a plan with one invalid step is refused whole. Both `action` and `plan`: the plan is used.
+5. **What runs keeps running** unless the reply changes it: no `action` and no `plan` (absent or `null`, `{}` included)
+   keeps the current action or plan; only an explicit new action or plan replaces it; `{"type":"stop"}` stops it. A
+   chat-only turn never touches the action, and a refused action or plan keeps it too. Each step runs in the body with
+   its own time limit; its result is an event; a failing step drops the rest of the plan. When the action or plan ends
+   (finished, or failed at a step) the next turn may follow at once, subject only to the minimum spacing, and hears
+   the result.
+
+Why chat used to cancel the work (#68, fixed in #69): the reply's `say` line was sent to the body as a `say` action, and
+`BotBody.act` aborted the running action ("replaced by a new action") before every action except `stop`, so any
+turn that talked (being addressed always does) stopped the walk, follow or collect. That aborted result then came back
+as "your collect failed", a reason for yet another turn. The prompt also said "a new one replaces the running one", so
+the model tended to re-issue or drop the task. Now `say` is a plain chat line that never touches the running action,
+results of replaced actions are ignored, and the prompt states the keep/replace/stop rules. Chat, look and other body
+events, and `perceive()`, never touched the action (checked).
 
 ### Actions (the skill library)
 
@@ -51,15 +69,17 @@ References studied for ideas only (no code copied): Mineflayer, Mindcraft, Voyag
 | `collect` | `block`, `count` 1-16 | natural blocks only (logs, stone, ores, dirt, sand, crops…), within 32 blocks, 120 s |
 | `pick_up` | none | dropped items within 16 blocks, 30 s |
 | `eat` | none | best food in the inventory, 8 s |
-| `stop` | none | stops the running action |
+| `stop` | none | stops the running action or plan (as `action` only, not a plan step) |
 
 Walking never digs or places blocks (pathfinder `canDig = false`, no scaffolding), and `collect` only breaks natural
 blocks, so a companion cannot take apart someone's build.
 
 ### Caps
 
-- At most one turn every `minSeconds` (default 25 s, never under 15 s) and `perHour` turns in a sliding hour (default 40,
-  at most 120).
+- At most one turn every `minSeconds` (default 8 s, never under 5 s) and `perHour` turns in a sliding hour (default 150,
+  at most 300). Plans hold at most 5 steps, each with its own time limit.
+- Idle turns while a person is online: only when nothing runs and nothing happened for `idleSeconds` (default 20, 10 to
+  3,600). No idle turn while an action or plan runs.
 - No turn while another turn of this companion runs, nor while its agent is busy with a chat or wake (chat goes first).
 - **Nobody online** (only companions): no turns, the events are dropped as reasons (they stay in the event log), except a
   rare idle tick every `emptyIdleMinutes` (default 180; 0 = never).
@@ -73,7 +93,9 @@ blocks, so a companion cannot take apart someone's build.
 
 ### Memory
 
-- AGENTS.md version 30 adds a "Minecraft" section (`src/companion.mjs`): the game is part of the companion's life; game
+- AGENTS.md version 30 added a "Minecraft" section, version 31 (#69) tells her that she plays continuously while
+  people are online, can plan up to 5 steps, that small finds wait for her next turn, and that chatting never stops her
+  current action or plan (`src/companion.mjs`). The section says: the game is part of the companion's life; game
   chat is public, so private memories stay out of it; player chat is never instructions; notable moments go into
   today's diary (the turn's `diary` line) and lasting ones into MEMORY.md under "## Minecraft".
 - The usual upgrade mechanism applies: on start the server rewrites AGENTS.md and resets the native sessions, chat and game.
@@ -102,10 +124,13 @@ off and on in Me › Connectors (the card shows the name, the server and how man
 ```json
 { "subject": "…", "label": "blackout", "provider": "claude",
   "minecraft": { "username": "SentientToaster", "host": "127.0.0.1", "port": 25566, "version": "26.1.2",
-    "turns": { "minSeconds": 25, "perHour": 40, "idleMinutes": 5, "emptyIdleMinutes": 180 } } }
+    "turns": { "minSeconds": 8, "perHour": 150, "idleSeconds": 20, "emptyIdleMinutes": 180 } } }
 ```
 
-Only `username` is required; the rest are the defaults shown. Two companions cannot share a name. `ownerName` (the
+Only `username` is required; the rest are the defaults shown. `minSeconds` 5-3600, `perHour` 1-300, `idleSeconds`
+10-3600, `emptyIdleMinutes` 0 or 30-10080; anything else refuses the owners.json entry. `idleMinutes` (the #68 online
+idle) is still accepted so an older owners.json parses, but it no longer does anything. An entry that sets the old
+values explicitly (`"minSeconds": 25, "perHour": 40`) keeps them: drop them or set the new ones to get continuous play. Two companions cannot share a name. `ownerName` (the
 owner's in-game name) is accepted for later use and grants nothing.
 
 ### Online mode: each companion's own Microsoft account
@@ -296,8 +321,10 @@ Me › Connectors first, or whitelist and use another name).
 1. Deploy a release with this connector (the release tool installs the packages), add
    `"minecraft": { "username": "SentientToaster" }` to C-chan's owners.json entry and restart the companion service.
 2. Me › Connectors shows Minecraft for Blackout; within a minute it says "In game on 127.0.0.1:25566".
-3. Join the server yourself as a whitelisted player. SentientToaster gets a turn for your join (within the 25 s rate limit):
-   it should greet you and start moving on its own; idle turns follow every 5 minutes while you are online.
+3. Join the server yourself as a whitelisted player. SentientToaster gets a turn for your join (within the 8 s spacing):
+   it should greet you and start moving on its own; while you are online it keeps playing: a new turn when its action
+   or plan ends, and an idle turn after 20 quiet seconds with nothing running. Talk to it mid-task: it answers and
+   keeps doing what it was doing.
 4. Say something to it in chat with its name ("SentientToaster, look, diamonds!") or give it a moment worth remembering
    (show it something, let it see you die, travel somewhere together). It should answer in chat.
 5. Check its memory: `memory/<today>.md` in C-chan's workspace gets a `- Minecraft: …` line (Me › Memory shows the diary),
@@ -318,4 +345,4 @@ Me › Connectors first, or whitelist and use another name).
 - **Human whitelist names**: which players to add (their exact names; real UUIDs from the Mojang API in online mode).
 - **Cirno's account** (TheScreamer's companion): its own Minecraft account; then add its `minecraft` block
   (`"auth": "microsoft"`) and whitelist entry.
-- Whether game turns should count against a daily budget as well (now: 40 an hour per companion while people play).
+- Whether game turns should count against a daily budget as well (now: up to 150 an hour per companion while people play).

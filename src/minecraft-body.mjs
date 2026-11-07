@@ -218,12 +218,14 @@ export class BotBody {
     try { if (this.#bot.targetDigBlock) this.#bot.stopDigging(); } catch { /* not digging */ }
   }
 
-  // Runs one validated action with its time limit. A new action replaces the running one. Never throws: the result
-  // ({ type, ok, detail }) is what the companion's next turn hears.
+  // Runs one validated action with its time limit. A new movement or work action replaces the running one; say
+  // (a chat line) and refused actions never touch it (#69: talking mid-task must not drop the task). Never throws: the
+  // result ({ type, ok, detail }) is what the companion's next turn hears.
   async act(input, { timeoutMs } = {}) {
     const checked = validateAction(input);
     if (checked.error) return { type: String(input?.type ?? 'unknown').slice(0, 20), ok: false, detail: checked.error };
     const action = checked.action;
+    if (action.type === 'say') return this.say(action.text) ? { type: 'say', ok: true, detail: 'said it' } : { type: 'say', ok: false, detail: 'nothing to say' };
     if (action.type === 'stop') {
       const was = this.#current?.action.type ?? null;
       this.#abort('stopped');
@@ -270,9 +272,6 @@ export class BotBody {
   async #skill(action, signal) {
     const bot = this.#bot, here = bot.entity.position;
     switch (action.type) {
-      case 'say':
-        if (!this.say(action.text)) throw new Error('nothing to say');
-        return 'said it';
       case 'goto': {
         const goals = this.#goals();
         if (action.player) {

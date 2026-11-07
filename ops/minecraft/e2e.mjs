@@ -46,7 +46,7 @@ if (auth === 'microsoft' && !profilesFolder) { console.error('MC_E2E_AUTH=micros
 if (profilesFolder) createAuthCache(profilesFolder); // creates it 0700
 const config = { auth, username, ownerName: null, host, port, version: process.env.MC_E2E_VERSION ?? DEFAULTS.version,
   ...(auth === 'microsoft' ? { profilesFolder, cacheKey: username } : {}),
-  turns: { minSeconds: 4, perHour: 30, idleMinutes: 0.1, emptyIdleMinutes: 0.1 } };
+  turns: { minSeconds: 4, perHour: 30, idleSeconds: 6, emptyIdleMinutes: 0.1 } };
 const agent = new MinecraftAgent({ config, ownerName: 'the tester', tickMs: 1000, turn, log: line => log.push(line),
   connect: (cfg, handlers) => workerConnect(cfg, {
     onState: (state, detail) => {

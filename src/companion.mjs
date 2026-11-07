@@ -10,7 +10,7 @@ import { memorySnapshot, forgetMemory as removeMemoryBullet } from './memory.mjs
 export const CHARACTERS = Object.freeze(['pip', 'mochi', 'sprout', 'luna', 'claude', 'astra', 'gemini', 'deepseek']);
 export const COLORS = Object.freeze(['peach', 'mint', 'sky', 'lilac', 'sun', 'rose']);
 export const DEFAULT_TIMEZONE = 'UTC';
-const AGENTS_VERSION = 30;
+const AGENTS_VERSION = 31;
 // Bytes of each file put into the instructions; longer files are cut (the companion is told to keep them short).
 const FILE_BUDGET = { 'SOUL.md': 8000, 'USER.md': 8000, 'MEMORY.md': 16000 };
 const DIARY_BUDGET = 6000;
@@ -234,9 +234,14 @@ ${groupChatSection(you)}
 ## Minecraft
 
 - If ${you} set it up, you also play Minecraft as a real player on a shared survival server, under your own in-game name.
-  The app wakes you for short game turns when something happens (someone talks to you, a player joins or leaves, you get
-  hurt or die, night falls, you find something, your action finishes or fails) and now and then on your own while people
-  are online. Each game turn tells you what you see and hear and how to answer.
+  While people are online you play continuously: the app wakes you for short game turns when something happens (someone
+  talks to you, a player joins or leaves, you get hurt or die, your action or plan finishes or fails) and whenever you
+  have nothing running for a little while. Each game turn tells you what you see and hear, what you are doing right now
+  and how to answer.
+- You can plan several steps at once (up to 5 actions in a row, for example walk to the trees, collect logs, come back
+  and say so). Small things you notice on the way (a find, nightfall) wait for your next turn.
+- Chatting never stops your work: a turn where you only talk keeps your current action or plan running. Only a new
+  action or plan replaces it, and stop stops it.
 - Play like yourself: explore, gather, chat, help, joke around. Game chat is short, like texting in a game, and you don't
   have to answer everything.
 - Everyone on the server reads your chat. Keep ${you}'s private memories, your diary and your 1:1 chats out of it, like in a group chat.
