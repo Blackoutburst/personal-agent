@@ -872,3 +872,74 @@ test('t70: no X-ray: a buried ore and an ore behind a wall are neither listed no
   assert.equal((await body.act({ type: 'collect', block: 'iron_ore' })).detail, "you haven't seen any iron_ore nearby; explore or mine to find some");
   assert.equal((await body.act({ type: 'collect', block: 'diamond_ore' })).ok, true, 'the exposed one is collected');
 });
+
+// ---------- t70 tunneling ----------
+
+// Walking forward moves her into the looked-at cell, and she falls onto the floor below like a player.
+const walker = bot => {
+  const set = bot.setControlState;
+  bot.setControlState = (control, state) => {
+    set(control, state);
+    if (control === 'forward' && state && bot.looked) {
+      const x = Math.floor(bot.looked.x), z = Math.floor(bot.looked.z);
+      let y = Math.floor(bot.entity.position.y) + (bot.controls.jump ? 1 : 0);
+      while (y > 0 && bot.blockAt(new Vec(x, y - 1, z)).boundingBox === 'empty') y--;
+      bot.entity.position = new Vec(x + 0.5, y, z + 0.5);
+    }
+  };
+  bot.setControlState = Object.assign(bot.setControlState, {});
+};
+
+test('t70 tunneling: tunnel validates direction, length and slope', () => {
+  assert.deepEqual(validateAction({ type: 'tunnel', direction: 'east' }).action, { type: 'tunnel', direction: 'east', length: 8, slope: 'level' });
+  assert.deepEqual(validateAction({ type: 'tunnel', direction: 'north', length: 32, slope: 'down' }).action, { type: 'tunnel', direction: 'north', length: 32, slope: 'down' });
+  for (const bad of [{ type: 'tunnel' }, { type: 'tunnel', direction: 'up' }, { type: 'tunnel', direction: 'east', length: 33 }, { type: 'tunnel', direction: 'east', slope: 'sideways' },
+    { type: 'tunnel', direction: 'east', x: 1 }]) assert.ok(validateAction(bad).error, JSON.stringify(bad));
+  assert.equal(actionTimeout({ type: 'tunnel', direction: 'east', length: 10, slope: 'level' }), 140_000);
+});
+
+test('t70 tunneling: a level tunnel digs two blocks a step and walks it in one action', async () => {
+  const { bot, body } = spawned(); walker(bot);
+  for (let x = 1; x <= 6; x++) for (const y of [64, 65]) bot.world.set(`${x},${y},0`, { name: 'stone' });
+  const result = await body.act({ type: 'tunnel', direction: 'east', length: 5 });
+  assert.equal(result.ok, true, result.detail);
+  assert.match(result.detail, /^tunneled 5 of 5 blocks east; now at 5 64 0; dug 10 stone/);
+  assert.equal(bot.world.has('6,64,0'), true);
+});
+
+test('t70 tunneling: stairs down go one block lower each step', async () => {
+  const { bot, body } = spawned(); walker(bot);
+  for (let x = -6; x <= 12; x++) for (let z = -6; z <= 6; z++) for (let y = 55; y <= 65; y++) bot.world.set(`${x},${y},${z}`, { name: 'stone' });
+  bot.world.delete('0,64,0'); bot.world.delete('0,65,0');
+  const result = await body.act({ type: 'tunnel', direction: 'south', length: 4, slope: 'down' });
+  assert.equal(result.ok, true, result.detail);
+  assert.match(result.detail, /^tunneled 4 of 4 blocks south \(stairs down, -4 blocks\); now at 0 60 4/);
+});
+
+test('t70 tunneling: it stops before opening into lava or water, and never breaks a build', async () => {
+  const { bot, body } = spawned(); walker(bot);
+  for (let x = 1; x <= 6; x++) for (const y of [64, 65]) bot.world.set(`${x},${y},0`, { name: 'stone' });
+  bot.world.set('3,66,0', { name: 'lava' });
+  let result = await body.act({ type: 'tunnel', direction: 'east', length: 6 });
+  assert.equal(result.ok, true, result.detail);
+  assert.match(result.detail, /^tunneled 2 of 6 blocks east; now at 2 64 0; .*stopped: lava right behind the stone at 3 65 0/);
+  bot.world.delete('3,66,0'); bot.world.set('3,65,0', { name: 'oak_planks' });
+  result = await body.act({ type: 'tunnel', direction: 'east', length: 2 });
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /a built block \(oak_planks\) at 3 65 0/);
+});
+
+test('t70 tunneling: falling gravel is dug again, and a gap gets a floor from her dirt', async () => {
+  const { bot, body } = spawned(); walker(bot);
+  for (let x = 1; x <= 3; x++) for (const y of [64, 65]) bot.world.set(`${x},${y},0`, { name: 'stone' });
+  // Two blocks of gravel above the first head cell fall in, one after the other.
+  let falls = 2;
+  const dig = bot.dig;
+  bot.dig = async block => { await dig(block); if (block.position.x === 1 && block.position.y === 65 && falls-- > 0) bot.world.set('1,65,0', { name: 'stone' }); };
+  bot.world.delete('2,63,0'); bot.world.delete('2,62,0');
+  bot.add('dirt', 4);
+  const result = await body.act({ type: 'tunnel', direction: 'east', length: 3 });
+  assert.equal(result.ok, true, result.detail);
+  assert.match(result.detail, /^tunneled 3 of 3 blocks east; now at 3 64 0; dug 8 stone/);
+  assert.ok(bot.log.some(entry => entry[0] === 'place' || entry[0] === 'placeBlock'), 'placed a floor');
+});

@@ -9,7 +9,7 @@
 
 export const ACTION_TYPES = Object.freeze([
   'say', 'goto', 'follow', 'wander', 'look_at', 'jump', 'sprint', 'sneak', 'swim', 'escape',
-  'dig', 'collect', 'pick_up', 'place', 'build',
+  'dig', 'collect', 'tunnel', 'pick_up', 'place', 'build',
   'craft', 'smelt',
   'equip', 'unequip', 'toss', 'drop', 'give', 'use_item', 'eat',
   'attack', 'shield', 'defend',
@@ -25,7 +25,9 @@ export const LIMITS = Object.freeze({ gotoDistance: 256, wanderMin: 8, wanderMax
   collectMax: 64, collectRange: 32, pickupRange: 16, sayChars: 240, players: 8, mobs: 8, items: 8, blocks: 12, inventory: 36, scanRange: 16,
   mobRange: 24, findRange: 64, blockRange: 64, buildBlocks: 64, buildOffset: 16, craftMax: 64, smeltMax: 64, tossMax: 2304, attackRange: 32,
   defendMaxSeconds: 300, defendRange: 12, swimMaxSeconds: 30, shieldMaxSeconds: 30, useMaxSeconds: 5, fishMaxSeconds: 120, farmRange: 16,
-  farmMax: 64, entityRange: 16, resultChars: 400, commandLines: 4, pillarMax: 8, stairMax: 10 });
+  farmMax: 64, entityRange: 16, resultChars: 400, commandLines: 4, pillarMax: 8, stairMax: 10, tunnelMax: 32, digPassThinkMs: 20_000 });
+// tunnel: the four compass directions as x/z steps.
+export const DIRECTIONS = Object.freeze({ north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] });
 // Blocks worth noticing as a "found" event (once per position): rare things.
 const NOTABLE = /^(?:deepslate_)?(?:diamond|emerald|gold|lapis|redstone)_ore$|^(?:ancient_debris|spawner|chest|trial_spawner|vault|nether_portal|end_portal_frame|budding_amethyst|bee_nest|suspicious_sand|suspicious_gravel)$/;
 // Blocks shown in the perception: places to use and resources.
@@ -438,6 +440,14 @@ export function validateAction(input) {
       if (!pos && isId(input.block)) return { action: { type, block: id(input.block) } };
       return err(`${type} needs a block name or x, y, z`);
     }
+    case 'tunnel': {
+      if ((bad = extra('direction', 'length', 'slope'))) return err(bad);
+      const length = input.length ?? 8, slope = input.slope ?? 'level';
+      if (!Object.hasOwn(DIRECTIONS, input.direction)) return err('tunnel needs direction: north, south, east or west');
+      if (!intIn(length, 1, LIMITS.tunnelMax)) return err(`tunnel length must be 1-${LIMITS.tunnelMax}`);
+      if (!['level', 'down', 'up'].includes(slope)) return err('tunnel slope must be level, down or up');
+      return { action: { type, direction: input.direction, length, slope } };
+    }
     case 'collect': {
       const n = count(LIMITS.collectMax);
       if ((bad = extra('block', 'count'))) return err(bad);
@@ -580,6 +590,7 @@ export function actionTimeout(action) {
     case 'fish': return action.seconds * 1000 + 15_000;
     case 'use_item': return (action.seconds ?? 0) * 1000 + 8000;
     case 'collect': return 30_000 + n * 15_000;
+    case 'tunnel': return 20_000 + action.length * 12_000;
     case 'harvest': return 20_000 + n * 8000;
     case 'till': case 'plant': return 20_000 + n * 6000;
     case 'build': return 20_000 + action.blocks.length * 6000;
@@ -1062,11 +1073,27 @@ export class BotBody {
     const pathfinder = this.#bot.pathfinder, doors = this.#doorKeeper();
     try {
       this.#setMoves(false);
-      try { await pathfinder.goto(goal); return; } catch (error) { if (signal.aborted || !/^(?:NoPath|Timeout)$/.test(error?.name ?? '')) throw error; }
+      // mineflayer-pathfinder 2.4.5 resolves goto() (no error) when it finds no path at all (an empty path), e.g. walled
+      // in underground: watch its path updates so that counts as "no way" too and the dig pass runs (t70 tunneling).
+      let none = false;
+      const onPath = results => { if (['noPath', 'timeout'].includes(results?.status) && !(results.path?.length)) none = true; };
+      this.#bot.on?.('path_update', onPath);
+      try { await pathfinder.goto(goal); if (!none || this.#atGoal(goal)) return; }
+      catch (error) { if (signal.aborted || !/^(?:NoPath|Timeout)$/.test(error?.name ?? '')) throw error; }
+      finally { this.#bot.removeListener?.('path_update', onPath); }
       if (signal.aborted) throw new Error('stopped');
       this.#setMoves(true);
-      await pathfinder.goto(goal);
+      // Underground every way needs digging and the search is much wider: give the dig pass time to finish planning
+      // (the 5 s default gave "no way" after a few blocks).
+      const think = pathfinder.thinkTimeout;
+      pathfinder.thinkTimeout = Math.max(think ?? 0, LIMITS.digPassThinkMs);
+      try { await pathfinder.goto(goal); } finally { pathfinder.thinkTimeout = think; }
     } finally { this.#setMoves(false); await doors.stop(); }
+  }
+  #atGoal(goal) {
+    const p = this.#bot.entity?.position;
+    if (!p || typeof goal?.isEnd !== 'function') return false;
+    try { return Boolean(goal.isEnd(this.#vec(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)))); } catch { return false; }
   }
   // Walk until the position is within reach (4.5 blocks of its centre) unless it already is.
   async #reach(position, signal, { look = false } = {}) {
@@ -1518,6 +1545,86 @@ export class BotBody {
     return out() ? `dug ${plural(steps, 'stair step')} out (${round(this.#bot.entity.position.y - start.y)} blocks up)` : null;
   }
 
+  // ---------- Tunnel (t70 tunneling) ----------
+  // A 1x2 tunnel (or a staircase down or up) in one direction, one step at a time like a player: clear the cells
+  // ahead (waiting out falling gravel and sand), make sure there is a floor (a scaffold block over a small gap), step
+  // in. It stops, with what it got done, at lava or water next to the way, a built block, a drop, or after the length.
+  async #tunnel(action, signal) {
+    const [dx, dz] = DIRECTIONS[action.direction], dy = action.slope === 'down' ? -1 : action.slope === 'up' ? 1 : 0;
+    const before = await this.#fresh(), start = this.#here(), dug = new Map();
+    let steps = 0, stop = null;
+    const filler = () => this.#items().find(item => SCAFFOLD.test(item.name))?.name ?? null;
+    const fluidAt = (x, y, z) => { const b = this.#block({ x, y, z }); return b && /^(?:lava|water|bubble_column)$/.test(b.name) ? b.name : null; };
+    const clear = async (x, y, z, ahead) => {
+      for (let tries = 0; tries < 12; tries++) {
+        const block = this.#block({ x, y, z });
+        if (!block) return `the way ahead is not loaded at ${at({ x, y, z })}`;
+        const fluid = fluidAt(x, y, z);
+        if (fluid) return `${fluid} at ${at({ x, y, z })}`;
+        // Air, grass, a flower: passable already.
+        if (NOTHING.has(block.name) || block.boundingBox === 'empty') return null;
+        if (BUILT.test(block.name)) return `a built block (${block.name}) at ${at({ x, y, z })}: tunnel never breaks builds`;
+        if (block.diggable === false || block.hardness === null || block.hardness < 0) return `${block.name} at ${at({ x, y, z })} cannot be broken`;
+        // Opening this cell exposes its neighbours: never open into lava (or a flood).
+        for (const [ox, oy, oz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+          const n = fluidAt(x + ox, y + oy, z + oz);
+          if (n) return `${n} right behind the ${block.name} at ${at({ x, y, z })}`;
+        }
+        const fresh = this.#bot.blockAt(this.#vec(x, y, z)) ?? block;
+        await this.#equipBestTool(fresh);
+        await this.#bot.dig(fresh, true);
+        this.#sight.clear();
+        dug.set(fresh.name, (dug.get(fresh.name) ?? 0) + 1);
+        // Gravel or sand above falls into the cell a moment later: look again.
+        await this.#wait(this.#pace.poll, signal);
+      }
+      return `${ahead} keeps filling up (falling gravel or sand)`;
+    };
+    while (steps < action.length && !signal.aborted && !stop) {
+      const f = this.#feet(), nx = f.x + dx, nz = f.z + dz, ny = f.y + dy;
+      // Top first: a falling block then lands in a cell still to be dug.
+      const cells = dy < 0 ? [[nx, f.y + 1, nz], [nx, f.y, nz], [nx, f.y - 1, nz]]
+        : dy > 0 ? [[f.x, f.y + 2, f.z], [nx, f.y + 2, nz], [nx, f.y + 1, nz]] : [[nx, f.y + 1, nz], [nx, f.y, nz]];
+      for (const [x, y, z] of cells) { if ((stop = await clear(x, y, z, `the tunnel at ${at({ x, y, z })}`))) break; }
+      if (stop) break;
+      // A floor to step onto.
+      const floor = { x: nx, y: ny - 1, z: nz };
+      if (!this.#solid(floor.x, floor.y, floor.z)) {
+        const fluid = fluidAt(floor.x, floor.y, floor.z), name = filler();
+        if (fluid === 'lava') { stop = `lava under the next step at ${at(floor)}`; break; }
+        const deeper = !this.#solid(floor.x, floor.y - 1, floor.z);
+        if (!name) { stop = `no floor at ${at(floor)}${deeper ? ' (a drop)' : ''} and no dirt or cobblestone to fill it`; break; }
+        try { await this.#placeAt(floor, name, signal); } catch (error) { if (signal.aborted) throw error; stop = `no floor at ${at(floor)} (${clean(error?.message, 60)})`; break; }
+      }
+      if (!await this.#stepInto(signal, { x: nx, y: ny, z: nz }, dy > 0)) { stop = `could not step into ${at({ x: nx, y: ny, z: nz })}; still at ${this.#where()}`; break; }
+      steps++;
+      this.#progress(`tunneled ${plural(steps, 'block')} ${action.direction}`);
+    }
+    if (signal.aborted) throw new Error(String(signal.reason ?? 'stopped'));
+    const minedText = summarise([...dug].map(([name, count]) => ({ name, count })), 8);
+    if (!steps) fail(`did not tunnel: ${stop ?? 'no step'}${dug.size ? ` (dug ${minedText})` : ''}`);
+    await this.#pickUp(signal).catch(() => {});
+    const { gained } = changes(before, await this.#settleAll(before, signal));
+    const shape = action.slope === 'level' ? '' : ` (stairs ${action.slope}, ${round(this.#bot.entity.position.y - start.y)} blocks)`;
+    return `tunneled ${steps} of ${action.length} blocks ${action.direction}${shape}; now at ${this.#where()}`
+      + `${dug.size ? `; dug ${minedText}` : ''}${gained.length ? `; picked up ${summarise(gained, 8)}` : ''}${stop ? `; stopped: ${stop}` : ''}`;
+  }
+
+  // One step into a cleared cell (up: a jump onto the step); true when her feet are in it.
+  async #stepInto(signal, cell, up) {
+    const bot = this.#bot;
+    await bot.lookAt?.(this.#vec(cell.x + 0.5, cell.y + 1.6, cell.z + 0.5), true);
+    bot.setControlState('forward', true);
+    if (up) bot.setControlState('jump', true);
+    try {
+      const inside = () => { const now = this.#feet(), p = bot.entity.position; return now.x === cell.x && now.z === cell.z
+        && Math.abs(p.x - (cell.x + 0.5)) < 0.35 && Math.abs(p.z - (cell.z + 0.5)) < 0.35; };
+      if (!await this.#until(inside, this.#pace.step * 2, signal)) return false;
+    } finally { this.#release('forward', 'jump'); }
+    await this.#until(() => this.#feet().y === cell.y, this.#pace.settle * 2, signal);
+    return this.#feet().x === cell.x && this.#feet().z === cell.z && this.#feet().y === cell.y;
+  }
+
   // Out of water, a hole or a pit: swim up (sprint-swim), else pillar up with a scaffold block, else dig stairs.
   // Each way is tried only while she is not out yet; what failed is said, on success too.
   async #escape(signal) {
@@ -1635,6 +1742,7 @@ export class BotBody {
         const { gained } = changes(before, await this.#settleAll(before, signal));
         return `mined ${got} ${action.block}${got < action.count ? ` (only ${got} of ${action.count} found)` : ''}; ${gained.length ? `picked up ${summarise(gained, 8)}` : 'nothing reached your inventory yet (the drops may still be on the ground)'}`;
       }
+      case 'tunnel': return await this.#tunnel(action, signal);
       case 'pick_up': {
         const before = await this.#fresh(), count = await this.#pickUp(signal);
         if (!count) throw new Error('no dropped items nearby');

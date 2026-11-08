@@ -153,6 +153,26 @@ test('t70: goto plans on foot first and digs only when that finds no way; the mo
   assert.equal(hard.calls(), 2); assert.deepEqual(hard.moves.slice(-3), [false, true, false], 'walk, then dig, then back to walking');
 });
 
+test('t70 tunneling: an empty "noPath" (walled in underground) resolves goto in mineflayer-pathfinder, and still brings the dig pass', async () => {
+  const walled = fakeWalker();
+  let calls = 0, ended = false;
+  walled.bot.pathfinder.goto = async () => {
+    calls++;
+    if (calls === 1) { walled.bot.emit('path_update', { status: 'noPath', path: [] }); return; } // resolves: no error
+    ended = true;
+  };
+  // Not at the goal after the walk pass: isEnd is false until the dig pass got her there.
+  const NearFalse = class { constructor(...args) { this.args = args; } isEnd() { return ended; } };
+  const result = await (async () => {
+    const pf = { pathfinder: () => {}, Movements: class { constructor() { this.blocksCantBreak = new Set(); this.exclusionAreasBreak = []; } },
+      goals: { GoalNear: NearFalse, GoalNearXZ: NearFalse, GoalFollow: NearFalse, GoalInvert: NearFalse } };
+    const body = new BotBody({ bot: walled.bot, pathfinder: pf, scanMs: 60_000 }); body.attach();
+    return body.act({ type: 'goto', x: 3, y: 64, z: 3 });
+  })();
+  assert.equal(calls, 2, 'the dig pass ran'); assert.equal(result.ok, true, result.detail);
+  assert.deepEqual(walled.moves.slice(-3), [false, true, false]);
+});
+
 test('t70: the door keeper opens a closed door on her path and closes it behind her', async () => {
   const { bot, body, door, doors, activated } = fakeWalker();
   door(0, 64, 2);

@@ -83,6 +83,7 @@ found)", "placed 10 of 12 blocks; 2 failed: …"), and a failed or timed-out act
 | | `escape` | none | out of water, a hole or a pit: swim up (sprint-swim) and over the rim, else pillar up with dirt, cobblestone or planks, else dig a staircase out; says what failed | 120 s |
 | Blocks | `dig` | `x, y, z` or `block` (nearest within 32) | break any breakable block with the best tool from the inventory | 60 s |
 | | `collect` | `block`, `count` 1-64 | mine that many of the nearest, then pick up the drops (reports what really reached the inventory, waiting up to 2 s for it) | 30 s + 15 s per block |
+| | `tunnel` | `direction` north/south/east/west, `length` 1-32 (8), `slope` level/down/up | dig a 2-high tunnel (or stairs down/up) and walk it, one step at a time: waits out falling gravel, fills a small gap with dirt/cobblestone, stops at lava or water next to the way, a built block or a drop | 20 s + 12 s a block |
 | | `pick_up` | none | walk over dropped items within 16 blocks; reports what really reached the inventory (up to 2 s later), fails when nothing did | 30 s |
 | | `place` | `item` and `x, y, z` or `at`: `front`, `below`, `above` | place a block from the inventory against a solid neighbour; `below` over a gap bridges, on the ground it jumps and pillars up | 30 s |
 | | `build` | `blocks`: up to 64 `[dx, dy, dz, "item"]` (offsets -16..16), optional `x, y, z` origin (default: her feet) | ordered placements; each one walks near, places or reports why not, and the rest go on | 20 s + 6 s per block |
@@ -683,3 +684,19 @@ An unsigned `/msg` arrives profileless, with only the shown name. `accountName` 
 The display name used in chat ends with a legacy `§r` reset code (an earlier zero-width space showed as a box in the Minecraft font), so a legacy `%s: %s` format doesn't let the nick's colour run into the message.
 
 Build it with `LIB=<api jars> ops/minecraft-plugins/nick/build.sh`, then copy the jar into `/srv/companion-survival/plugins/` and restart the server.
+
+## Tunneling (t70)
+
+**`goto` under ground.** mineflayer-pathfinder 2.4.5 resolves `goto()` without an error when it finds no path at all, i.e. an empty "noPath". When she was walled in by stone, the first pass (on foot) therefore "succeeded" and the dig pass never ran, so she got "no way" at once. `#walk` now watches the path updates: an empty noPath or timeout while she isn't at the goal counts as no way, and the dig pass runs. The dig pass also gets 20 s to plan (`LIMITS.digPassThinkMs`; the default is 5 s).
+
+**`tunnel`** digs a 2-high tunnel, or stairs down or up, in one action instead of one dig per turn.
+
+Live check on a private Paper 26.1.2 server:
+
+| Run | Result |
+| --- | --- |
+| Level tunnel through stone | 10 blocks in 28 s |
+| Stairs up | 5 blocks in 12 s |
+| Stairs down | 4 blocks in 14 s |
+| Stairs down onto bedrock | stopped at bedrock |
+| `goto` through 14 blocks of solid stone | arrived in 44 s; before the fix it failed at once |
