@@ -713,7 +713,7 @@ export class GroupChat {
     const run = async (input, sessionResume) => {
       let streamed = '';
       const reply = await this.#runner.turn(companionId, { prompt: input, resume: sessionResume, systemPrompt, allowedTools: this.#allowedTools,
-        toolFilter, images, signal: controller.signal, group: groupId,
+        toolFilter, images, signal: controller.signal, group: groupId, boardConversationKey: 'group-' + groupId,
         onEvent: event => {
           if (event.type === 'session' && typeof event.id === 'string') sessionId = event.id;
           else if (event.type === 'delta' && typeof event.text === 'string') streamed += event.text;

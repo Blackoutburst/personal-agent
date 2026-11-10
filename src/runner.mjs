@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { bindBoardSession } from './board-session-bridge.mjs';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import * as claude from './providers/claude.mjs';
@@ -96,8 +97,8 @@ export class CompanionRunner {
   // group (#53, docs/GROUP-CHAT.md): a group chat turn runs in its own empty folder (runtimeDir/<label>/groups/<id>),
   // never in the private workspace, so the provider loads no workspace files and keeps a separate session per group.
   // Codex runs it read-only there.
-  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal, group = null } = {}) {
-    return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, images, appServers, onEvent, signal, group });
+  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal, group = null, boardConversationKey } = {}) {
+    return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, images, appServers, onEvent, signal, group, boardConversationKey });
   }
 
   // Whether this owner's agent is running or has a queued turn (the Minecraft connector, #68, lets chat go first).
@@ -124,7 +125,7 @@ export class CompanionRunner {
     return this.#enqueue(this.owners.find(owner => owner.label === label) ?? null, options);
   }
 
-  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal, group = null } = {}, releaseCheck = false) {
+  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal, group = null, boardConversationKey } = {}, releaseCheck = false) {
     if (!owner) return Promise.reject(new RunnerError('NO_RUNTIME'));
     let toolPolicy, cwd = null;
     try {
@@ -137,6 +138,7 @@ export class CompanionRunner {
           || images.some(path => typeof path !== 'string' || !path || path.length > 4096 || /[\x00-\x1f]/.test(path))) throw new TypeError('Invalid turn input');
       toolPolicy = releaseCheck ? narrowToolPolicy({ tools: WEB_TOOLS, board: null })
         : narrowToolPolicy({ tools: owner.tools, board: owner.board }, allowedTools, [...configured, ...appServers], toolFilter);
+      toolPolicy = bindBoardSession(toolPolicy, owner.label, boardConversationKey);
       if (owner.provider === 'codex' && toolPolicy.tools.length
           && (toolPolicy.tools.length !== WEB_TOOLS.length || !WEB_TOOLS.every(tool => toolPolicy.tools.includes(tool)))) {
         throw new TypeError('Codex web tools must be selected together');

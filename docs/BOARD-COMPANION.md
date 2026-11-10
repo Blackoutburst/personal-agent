@@ -60,3 +60,19 @@ projects stay with the human owner.
 
 The Board connection is `src/board-client.mjs`: the paired `connect.py --stdio` bridge with its own
 session (`companion-app-<sha256(owner label)[0:16]>`, stable so the inbox position survives restarts), JSON-RPC over stdio, 30 s timeouts.
+
+
+### Model conversation sessions
+
+The app binds each model conversation to its own nonempty Board session. The session
+is derived from the configured owner and the app conversation ID; a provider resume
+or a new model turn keeps that binding. Different owners, chats, Board topics and
+group conversations receive separate bindings. Administrative one-shot smoke turns
+without an app conversation receive a fresh binding.
+
+`board-session-bridge.mjs` sits in front of the existing paired `connect.py` bridge.
+It removes the app-owned `session_id` field from model-facing tool schemas, then
+injects the trusted value into every tool call, overriding missing, empty or
+conflicting model arguments. The paired bridge performs its normal registration
+before forwarding the call. Credentials remain in that bridge; allowed tools,
+profile rights and the separate app polling session are unchanged.

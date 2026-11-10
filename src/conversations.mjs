@@ -856,7 +856,7 @@ export class Conversations {
         prompt: 'This is a private background ' + wake.kind + ' wake, not a user message. Decide whether to contact the owner. '
           + 'For this background turn only, return exactly one JSON object, without markdown or other text: {"action":"message","text":"your message"} '
           + 'or {"action":"silent"}' + (groups ? ' (or the group choice below)' : '') + '. Your native feeling tag may precede the JSON. Message text must be nonempty and at most 4000 characters. Respond naturally again on normal user turns.\n\n' + wake.prompt + groups,
-        resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }),
+        resume, boardConversationKey: thread.id, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }),
         allowedTools: this.#allowedTools, toolFilter: this.#filter(companionId, wakeToolFilter(wake.kind)), signal: controller.signal,
         ...(wakeTools?.servers.length ? { appServers: wakeTools.servers } : {}),
         onEvent: event => {
@@ -1107,7 +1107,7 @@ export class Conversations {
       const turnInput = {
         prompt: user.text + filePrompt + burst.map(item => this.#turnNote?.(companionId, item.request_id) ?? '').join('') + (this.#boardInbox?.turnNote(threadId) ?? '') + (linked?.prompt ?? '') + notes + (requestId.startsWith('discord-') ? DISCORD_NOTE : '') + (webSpent ? WEB_SPENT_NOTE : ''),
         ...((filter => filter ? { toolFilter: filter } : {})(this.#filter(companionId, webSpent ? withoutWeb : null))), images: [...incoming.filter(file => file.mime.startsWith('image/')).map(file => file.path), ...(linked?.images ?? [])].slice(0, 8), appServers: fileTools.servers,
-        resume, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }), allowedTools: this.#allowedTools, signal: controller.signal,
+        resume, boardConversationKey: threadId, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }), allowedTools: this.#allowedTools, signal: controller.signal,
         onEvent: event => {
           if (event.type === 'session' && live() && currentSession()) this.#db.prepare('UPDATE conv_threads SET provider_session=? WHERE id=?').run(event.id, threadId);
           else if (event.type === 'delta') { text += event.text; schedule(); }

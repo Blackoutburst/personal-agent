@@ -87,6 +87,19 @@ function configOverrides(args) {
 
 // Decode only the app-supplied command arguments. These fake CLIs do not test
 // either provider's MCP implementation or reset inherited Codex configuration.
+function originalBoardTransport(servers) {
+  if (servers.board) {
+    const { command, args } = servers.board;
+    assert.equal(command, process.execPath);
+    assert.match(args[0], /\/board-session-bridge\.mjs$/);
+    assert.equal(args[1], '--session-id');
+    assert.match(args[2], /^companion-model-[a-f0-9]{40}$/);
+    assert.equal(args[3], '--');
+    servers.board = { ...servers.board, command: args[4], args: args.slice(5) };
+  }
+  return servers;
+}
+
 function configuredServers(provider, invocation) {
   if (provider === 'claude') {
     assert.ok(invocation.args.includes('--strict-mcp-config'));
@@ -94,11 +107,11 @@ function configuredServers(provider, invocation) {
     assert.notEqual(index, -1);
     const config = JSON.parse(invocation.args[index + 1]);
     assert.deepEqual(Object.keys(config), ['mcpServers']);
-    return Object.fromEntries(Object.entries(config.mcpServers).map(([name, server]) => [name,
+    return originalBoardTransport(Object.fromEntries(Object.entries(config.mcpServers).map(([name, server]) => [name,
       { command: server.command, args: server.args, env: server.env ?? {},
         allowedTools: flagValues(invocation.args, '--allowedTools')
           .filter(tool => tool.startsWith(`mcp__${name}__`)).map(tool => tool.slice(`mcp__${name}__`.length)) }
-    ]));
+    ])));
   }
   const servers = {};
   for (const [key, value] of configOverrides(invocation.args)) {
@@ -110,7 +123,7 @@ function configuredServers(provider, invocation) {
     else if (field === 'enabled_tools') server.allowedTools = value;
     else if (['command', 'args'].includes(field)) server[field] = value;
   }
-  return servers;
+  return originalBoardTransport(servers);
 }
 
 function expectedServers(env, label, { boardTools = ['get_work', 'list_projects'], appTools = ['read', 'search'] } = {}) {
