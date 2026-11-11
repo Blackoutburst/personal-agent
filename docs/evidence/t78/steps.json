@@ -1,0 +1,16 @@
+[
+  { "do": "goto", "feature": "chat" },
+  { "do": "expect", "selector": "#view-chat #input" },
+  { "do": "screenshot", "name": "chat-empty" },
+  { "do": "fill", "selector": "#input", "value": "Hello from the verification demo" },
+  { "do": "expect", "selector": "#send:not([disabled])" },
+  { "do": "click", "selector": "#send" },
+  { "do": "expect", "selector": "#messages", "text": "Hello from the verification demo" },
+  { "do": "screenshot", "name": "chat-after-send" },
+  { "do": "goto", "feature": "calendar" },
+  { "do": "expect", "selector": "#view-calendar h1", "text": "Calendar" },
+  { "do": "screenshot", "name": "calendar" },
+  { "do": "goto", "feature": "me-settings" },
+  { "do": "state" },
+  { "do": "screenshot", "name": "me-settings" }
+]

@@ -89,7 +89,7 @@ export async function runSteps(steps, { out, viewport = { width: 420, height: 86
   const { chromium } = playwright();
   const { app, close } = await startApp();
   const browser = await chromium.launch({ headless: true });
-  const record = { tool: 'ops/verify/verify.mjs', startedAt: new Date().toISOString(), commit: git('rev-parse', 'HEAD'), dirty: git('status', '--porcelain') !== '',
+  const record = { tool: 'ops/verify/verify.mjs', startedAt: new Date().toISOString(), commit: git('rev-parse', 'HEAD'), dirty: git('status', '--porcelain', '--', '.', ...(out.startsWith(ROOT + '/') ? [`:(exclude)${out.slice(ROOT.length + 1)}`] : [])) !== '',
     branch: git('rev-parse', '--abbrev-ref', 'HEAD'), viewport, steps: [], screenshots: [], consoleErrors: [], pageErrors: [], failedRequests: [], ok: true };
   try {
     const context = await browser.newContext({ viewport });
