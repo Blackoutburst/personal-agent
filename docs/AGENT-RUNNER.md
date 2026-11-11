@@ -118,6 +118,11 @@ the run fails with `POLICY`, whatever the agent reported.
   configured identity (default `Blackoutburst <github@blackoutburst.dev>`), and git uses the keys already set up for the
   owner on this server; the origin is the remote of the sandbox's bare clone. The suite runs with a scrubbed
   environment (own `HOME`, no ssh agent).
+- three separate repositories: the owner's clone (merge, `0700`, never touched by reviewed code); a throw-away copy of
+  the merge result (`git clone --no-hardlinks`, its own `cchan-merge-test-*` directory) where the prepare step and the
+  suite run; and a fresh bare repository that receives only the merged commit from the owner's clone and pushes it to
+  the origin URL directly (no remote name). Whatever the tested code writes into its copy (`.git/config` pushurl or
+  `insteadOf`, hooks, refs, extra commits) cannot redirect or change the push.
 - success: the ticket is claimed, set to **done** with the merge commit as evidence, a message is posted, and the
   ticket's per-task agents are archived.
 - conflict (`MERGE_CONFLICT`) or failing suite (`TESTS_FAILED`): no merge, no push. The ticket goes back to **todo**
@@ -130,7 +135,7 @@ the run fails with `POLICY`, whatever the agent reported.
 `prepareCommand` (runs before the tests; the example config uses `["node","ops/sandbox/install-deps.mjs"]` to link
 `node_modules`; its failure is `MERGE_ERROR`, not a test failure. Without it, a test run that cannot start because
 packages are missing is also `MERGE_ERROR`). Git runs as the owner; the prepare step and the test run go through
-`sudo cchan-sandbox-run` like agent units, in a clone under `/var/lib/cchan-agents/merge` and `origin` (override of the remote). Releasing the server (restart, rollout) is not part of it
+`sudo cchan-sandbox-run` like agent units, in the test copy under `/var/lib/cchan-agents/merge`; `origin` overrides the remote. Releasing the server (restart, rollout) is not part of it
 and stays with the owner.
 
 **On the Board.** Each roster agent is mirrored as a managed agent profile named `C-chan · <name>`, with role, model,

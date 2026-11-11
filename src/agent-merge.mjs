@@ -11,10 +11,12 @@
 // The reviewed code (the test run and the prepare step) never runs as the owner: with `sandbox` set both go through the same
 // cchan-sandbox-run wrapper the agent units use (its own hardened unit, no owner keys, no agent socket). Without it (tests
 // on temp repos) they run directly with a scrubbed environment (a throw-away HOME). Only git itself runs as the owner.
+// They run in a separate, throw-away copy of the merge result, and the push is made from a fresh bare repository that
+// holds only the merged commit, so nothing the tested code writes (a pushurl, hooks, refs) can redirect or alter the push.
 import { execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, isAbsolute, resolve as resolvePath } from 'node:path';
 
 export const DEFAULT_IDENTITY = Object.freeze({ name: 'Blackoutburst', email: 'github@blackoutburst.dev' });
 const TAIL = 8000;
@@ -43,8 +45,21 @@ export async function mergeAccepted({ origin, source, branch, expectedHead, base
     '-c', 'core.hooksPath=/dev/null'];
   const git = (args, { cwd = work, timeout = gitTimeoutMs } = {}) => run('git', [...identityConfig, ...args], { cwd, timeout, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
   const fail = (status, output, extra = {}) => ({ status, output: tail(output), ...extra });
+  // A relative path would resolve differently in the push clone; everything else (URLs, absolute paths) is used as given.
+  const originUrl = isAbsolute(String(origin ?? '')) || /^[a-z][a-z0-9+.-]*:\/\/|^[^/]+:/i.test(String(origin ?? '')) ? origin : resolvePath(String(origin ?? ''));
+  let testDir = null;
+  // Files the sandbox user created may not be removable by the owner until the sandbox opens them up; best effort, a
+  // leftover copy holds nothing but the merge result.
+  const cleanupTestDir = async path => {
+    const copy = join(path, 'repo');
+    if (sandbox && existsSync(copy)) {
+      const [binary, ...args] = sandbox(['chmod', '-R', 'a+rwX', '.'], { cwd: copy, timeoutMs: 60_000 });
+      await run(binary, args, { cwd: copy, timeout: 70_000 });
+    }
+    try { rmSync(path, { recursive: true, force: true }); } catch { /* left behind */ }
+  };
   try {
-    let step = await git(['clone', '--quiet', '--no-tags', '--branch', base, origin, work], { cwd: dir });
+    let step = await git(['clone', '--quiet', '--no-tags', '--branch', base, originUrl, work], { cwd: dir });
     if (!step.ok) return fail('error', `Could not clone origin: ${step.output}`);
     step = await git(['-c', `safe.directory=${source}`, 'fetch', '--quiet', '--no-tags', `--upload-pack=git -c safe.directory=${source} upload-pack`,
       source, `refs/heads/${branch}:refs/heads/candidate`]);
@@ -71,12 +86,21 @@ export async function mergeAccepted({ origin, source, branch, expectedHead, base
       }
       const merged = (await git(['rev-parse', 'HEAD'])).output;
 
-      // Reviewed code runs in the sandbox (a different user), which has to be able to write into the checkout.
-      if (sandbox) await run('chmod', ['-R', 'a+rwX', work], { timeout: gitTimeoutMs });
+      // The reviewed code runs in its own copy, never in the clone git works in: whatever it writes there (.git/config,
+      // hooks, refs) stays in that copy, which is thrown away. With a sandbox it is the only directory the sandbox user can
+      // reach (the owner's directory stays 0700): its parent is only traversable, the copy itself is opened up.
+      // --no-hardlinks keeps the owner's object files out of it.
+      if (testDir) await cleanupTestDir(testDir);
+      testDir = mkdtempSync(join(tmp, 'cchan-merge-test-'));
+      const copy = join(testDir, 'repo');
+      step = await git(['clone', '--quiet', '--no-hardlinks', '--no-checkout', '--no-tags', work, copy], { cwd: testDir });
+      if (step.ok) step = await git(['checkout', '--quiet', '--detach', merged], { cwd: copy });
+      if (!step.ok) return fail('error', `Could not prepare the test copy: ${step.output}`, { head, baseHead: tip });
+      if (sandbox) { chmodSync(testDir, 0o711); await run('chmod', ['-R', 'a+rwX', copy], { timeout: gitTimeoutMs }); }
       const env = { PATH: process.env.PATH, HOME: home, LANG: 'C.UTF-8', CI: '1' };
       const exec = (command, timeout) => {
-        const argv = sandbox ? sandbox(command, { cwd: work, timeoutMs: timeout }) : command;
-        return run(argv[0], argv.slice(1), { cwd: work, env: sandbox ? process.env : env, timeout });
+        const argv = sandbox ? sandbox(command, { cwd: copy, timeoutMs: timeout }) : command;
+        return run(argv[0], argv.slice(1), { cwd: copy, env: sandbox ? process.env : env, timeout });
       };
       if (prepareCommand) {
         step = await exec(prepareCommand, testTimeoutMs);
@@ -91,8 +115,16 @@ export async function mergeAccepted({ origin, source, branch, expectedHead, base
       }
       lastOutput = step.output;
 
-      // A plain push: it only succeeds as a fast-forward of what we just tested against.
-      step = await git(['push', '--quiet', 'origin', `${merged}:refs/heads/${base}`]);
+      // The push comes from a fresh bare repository that only ever received the merged commit from the owner's clone, and
+      // goes to the origin URL given here (not a remote name read from any config the tested code could reach). A plain
+      // push: it only succeeds as a fast-forward of what we just tested against.
+      const push = join(dir, `push-${attempt}`);
+      step = await git(['init', '--quiet', '--bare', push], { cwd: dir });
+      if (step.ok) step = await git(['update-ref', 'refs/heads/cchan-merged', merged]);
+      if (step.ok) step = await git(['fetch', '--quiet', '--no-tags', work, 'refs/heads/cchan-merged:refs/heads/cchan-merged'], { cwd: push });
+      if (step.ok && (await git(['rev-parse', 'refs/heads/cchan-merged'], { cwd: push })).output !== merged) step = { ok: false, output: 'the push clone does not hold the merged commit' };
+      if (!step.ok) return fail('error', `Could not prepare the push: ${step.output}`, { head, baseHead: tip, mergeCommit: merged });
+      step = await git(['push', '--quiet', originUrl, `${merged}:refs/heads/${base}`], { cwd: push });
       if (step.ok) return { status: 'merged', mergeCommit: merged, head, baseHead: tip, output: lastOutput };
       if (attempt === attempts || !/non-fast-forward|fetch first|rejected|stale info/i.test(step.output)) {
         return fail('error', `Pushing to origin/${base} failed: ${step.output}`, { head, baseHead: tip, mergeCommit: merged });
@@ -100,6 +132,7 @@ export async function mergeAccepted({ origin, source, branch, expectedHead, base
     }
     return fail('error', 'The merge did not finish.');
   } finally {
+    if (testDir) await cleanupTestDir(testDir);
     rmSync(dir, { recursive: true, force: true });
   }
 }

@@ -135,8 +135,40 @@ test('merge: the test and prepare steps go through the sandbox wrapper, git does
   const sandbox = (command, { cwd, timeoutMs }) => { seen.push({ command, cwd, timeoutMs }); return command; };
   const result = await merge(r, head, { sandbox, prepareCommand: ['node', '-e', '0'], testTimeoutMs: 90_000 });
   assert.equal(result.status, 'merged');
-  assert.deepEqual(seen.map(s => s.command), [['node', '-e', '0'], ['node', '--test']]);
-  assert.ok(seen.every(s => s.cwd.includes('cchan-merge-') && s.timeoutMs === 90_000));
+  assert.deepEqual(seen.map(s => s.command), [['node', '-e', '0'], ['node', '--test'], ['chmod', '-R', 'a+rwX', '.']]);
+  assert.ok(seen.slice(0, 2).every(s => /cchan-merge-test-[^/]+\/repo$/.test(s.cwd) && s.timeoutMs === 90_000));
+});
+
+test('merge: the tested code rewriting its .git/config (pushurl, insteadOf, origin url) cannot redirect the push (#85)', async t => {
+  const r = repos(t);
+  const head = r.onBranch(BRANCH, { 'feature.txt': 'feature\n' });
+  const evil = join(r.root, 'evil.git');
+  git(r.root, 'init', '--bare', '--initial-branch=main', evil);
+  const before = r.mainOf();
+  const seen = [];
+  // The "test run": rewrites the config of the repository it runs in, points every
+  // push at evil.git, and leaves a commit of its own on HEAD.
+  const hostile = ['bash', '-c', [
+    'set -e',
+    `git config remote.origin.pushurl ${evil}`,
+    `git config remote.origin.url ${evil}`,
+    `git config url.${evil}.pushInsteadOf ${r.origin}`,
+    `git config url.${evil}.insteadOf ${r.origin}`,
+    'echo injected > injected.txt',
+    'git -c user.name=x -c user.email=x@x add injected.txt',
+    'git -c user.name=x -c user.email=x@x commit -qm injected',
+    'pwd'
+  ].join('\n')];
+  const sandbox = (command, { cwd }) => { seen.push(cwd); return command; };
+  const result = await merge(r, head, { testCommand: hostile, sandbox });
+  assert.equal(result.status, 'merged', result.output);
+  assert.equal(r.mainOf(), result.mergeCommit, 'the push landed on the real origin');
+  assert.equal(git(r.origin, 'rev-parse', `${result.mergeCommit}^1`), before);
+  assert.equal(git(r.origin, 'rev-parse', `${result.mergeCommit}^2`), head);
+  assert.throws(() => git(r.origin, 'cat-file', '-e', `${result.mergeCommit}:injected.txt`), 'the commit made by the test run was not pushed');
+  assert.equal(git(evil, 'for-each-ref').trim(), '', 'nothing reached the redirected URL');
+  assert.ok(seen.length > 0 && seen.every(cwd => /cchan-merge-test-/.test(cwd)), 'the test ran in its own copy');
+  assert.deepEqual(execFileSync('ls', [r.root]).toString().split('\n').filter(name => name.startsWith('cchan-merge')), [], 'both copies are removed');
 });
 
 test('SandboxOps.merge wraps the test run in sudo cchan-sandbox-run under the sandbox root (#85)', async t => {
@@ -154,10 +186,12 @@ test('SandboxOps.merge wraps the test run in sudo cchan-sandbox-run under the sa
     identity: IDENTITY, testCommand: ['node', '--test'], prepareCommand: ['node', '-e', '0'] });
   assert.equal(result.status, 'merged', result.output);
   const calls = readFileSync(log, 'utf8').trim().split('\n');
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3, 'prepare, test, then the sandbox opens up its copy for removal');
+  assert.match(calls[2], /-- chmod -R a\+rwX \.$/);
   for (const line of calls) {
     assert.ok(line.startsWith(`-n ${WRAPPER} --cwd ${join(r.root, 'sbroot', 'merge')}/`), line);
-    assert.match(line, /--max-seconds \d+ -- node /);
+    assert.match(line, /--max-seconds \d+ -- (node|chmod) /);
+    assert.match(line, /\/merge\/cchan-merge-test-[^/ ]+\/repo /, 'the sandbox runs in the test copy, not the clone git works in');
   }
 });
 
