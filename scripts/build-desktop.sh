@@ -33,8 +33,18 @@ if [ -n "${NPM_CLI:-}" ]; then
   export PATH="$shim:$PATH"
 fi
 npm -v >&2
+# The two network steps (npm registry, Electron/electron-builder binary downloads) are the only flaky parts of a
+# build; retry each up to 3 times so a transient download failure does not need a manual re-run.
+retry() {
+  n=1
+  until "$@"; do
+    if [ "$n" -ge 3 ]; then echo "failed after $n attempts: $*" >&2; return 1; fi
+    echo "attempt $n failed: $*; retrying in $((n * 5))s" >&2
+    sleep $((n * 5)); n=$((n + 1))
+  done
+}
 rm -rf dist
-npm install --no-audit --no-fund
-npm run dist
+retry npm install --no-audit --no-fund
+retry npm run dist
 ls -l dist/*.exe
 sha256sum dist/*.exe

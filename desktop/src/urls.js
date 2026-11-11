@@ -2,6 +2,7 @@
 // Which URLs may load inside the app window. Everything else goes to the system browser.
 const SITE = 'https://blackoutburst.com';
 const COMPANION_URL = SITE + '/personal-agent-preview/';
+const SESSION_URL = SITE + '/api/account/session';
 // The platform login and account pages live on the same origin as the companion.
 const INTERNAL_PATHS = ['/personal-agent-preview/', '/account/', '/api/account/'];
 
@@ -25,9 +26,10 @@ function isExternalOpenable(raw) {
 // - the companion itself: stay
 // - the sign-in page without a return target: same page with next=<companion>
 // - account pages (sign-in in progress): stay
-// - any other blackoutburst.com page (platform home, Board): back to the companion
+// - any other blackoutburst.com page (platform home, Board): back to the companion, ONLY when signedIn is true
+//   (the window session is signed in per /api/account/session); signed out = null, so SSO hops are not cut
 // - everything else (other sites): stay; will-navigate sends those to the system browser
-function afterLogin(raw, site = SITE) {
+function afterLogin(raw, signedIn = false, site = SITE) {
   const u = parse(raw);
   const base = new URL(site);
   if (!u || u.protocol !== 'https:' || u.username || u.password) return null;
@@ -42,7 +44,13 @@ function afterLogin(raw, site = SITE) {
     }
     if (u.pathname.startsWith('/account/') || u.pathname.startsWith('/api/account/')) return null;
   }
-  return companion.href;
+  // Signed out (or not known yet): do not bounce; an SSO hop must be able to finish.
+  return signedIn === true ? companion.href : null;
 }
 
-module.exports = { SITE, COMPANION_URL, INTERNAL_PATHS, isInternal, isExternalOpenable, afterLogin };
+// /api/account/session answers {"user": null, ...} signed out and a non-null user object when signed in.
+function isSignedIn(body) {
+  return !!body && typeof body === 'object' && !!body.user && typeof body.user === 'object';
+}
+
+module.exports = { SESSION_URL, isSignedIn, SITE, COMPANION_URL, INTERNAL_PATHS, isInternal, isExternalOpenable, afterLogin };

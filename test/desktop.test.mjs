@@ -168,11 +168,16 @@ test('afterLogin: where the window goes after sign-in (#87)', () => {
   const C = urls.COMPANION_URL;
   // landing pages that are not the companion go back to it
   for (const u of ['https://blackoutburst.com/', 'https://blackoutburst.com/board', 'https://blackoutburst.com/dashboard?x=1',
-    'https://board.blackoutburst.com/', 'https://board.blackoutburst.com/?ticket=5']) assert.equal(urls.afterLogin(u), C, u);
+    'https://board.blackoutburst.com/', 'https://board.blackoutburst.com/?ticket=5']) assert.equal(urls.afterLogin(u, true), C, u);
+  // signed out (or unknown): Board / platform pages are left alone so an SSO hop can finish
+  for (const u of ['https://blackoutburst.com/', 'https://blackoutburst.com/board', 'https://board.blackoutburst.com/?ticket=5']) {
+    assert.equal(urls.afterLogin(u), null, u); assert.equal(urls.afterLogin(u, false), null, u);
+    assert.equal(urls.afterLogin(u, 'yes'), null, u);
+  }
   // the companion and sign-in in progress stay
   for (const u of [C, C + '?a=1#chat', 'https://blackoutburst.com/personal-agent-preview',
     'https://blackoutburst.com/account/?next=x', 'https://blackoutburst.com/account/settings', 'https://blackoutburst.com/api/account/session'])
-    assert.equal(urls.afterLogin(u), null, u);
+    assert.equal(urls.afterLogin(u, true), null, u);
   // the bare sign-in page gets the companion as return target
   const login = new URL(urls.afterLogin('https://blackoutburst.com/account/'));
   assert.equal(login.pathname, '/account/'); assert.equal(login.searchParams.get('next'), C);
@@ -183,4 +188,11 @@ test('afterLogin: where the window goes after sign-in (#87)', () => {
   // Board links from the chat are not internal, so they still open in the system browser
   assert.equal(urls.isInternal('https://board.blackoutburst.com/?ticket=5'), false);
   assert.ok(urls.isExternalOpenable('https://board.blackoutburst.com/?ticket=5'));
+});
+
+test('isSignedIn reads /api/account/session', () => {
+  assert.equal(urls.SESSION_URL, 'https://blackoutburst.com/api/account/session');
+  assert.equal(urls.isSignedIn({ user: null, deletionPending: false, services: [] }), false);
+  assert.equal(urls.isSignedIn({ user: { id: 'u1' } }), true);
+  for (const b of [null, undefined, 'x', 5, [], {}, { user: 'x' }, { user: false }]) assert.equal(urls.isSignedIn(b), false, String(b));
 });
