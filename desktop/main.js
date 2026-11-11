@@ -9,6 +9,7 @@ const update = require('./src/update');
 const settingsStore = require('./src/settings');
 const { parseArrival, createUnread, toastFor, tooltip } = require('./src/unread');
 const { badgeBitmap } = require('./src/badge');
+const { withDot } = require('./src/dot');
 
 app.setName('Companion');
 // Persistent default session: cookies from the platform login survive restarts.
@@ -33,9 +34,22 @@ function openChat(hash) {
   if (win && /^#(chat|group\/[0-9a-f-]{36})$/.test(hash)) win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`).catch(() => {});
 }
 function looking() { return !!win && win.isVisible() && !win.isMinimized() && win.isFocused(); }
+// The companion icon, plain or with the web favicon's unread dot (src/dot.js); built once per size.
+const iconCache = new Map();
+function appIcon(unreadLook, size) {
+  const key = `${unreadLook}:${size}`;
+  if (!iconCache.has(key)) {
+    let img = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
+    img = img.resize({ width: size, height: size, quality: 'best' });
+    if (unreadLook) img = nativeImage.createFromBitmap(withDot(img.toBitmap(), size), { width: size, height: size });
+    iconCache.set(key, img);
+  }
+  return iconCache.get(key);
+}
 function renderUnread(n) {
-  if (tray) tray.setToolTip(tooltip(n));
+  if (tray) { tray.setToolTip(tooltip(n)); tray.setImage(appIcon(n > 0, 32)); }
   if (win && !win.isDestroyed()) {
+    win.setIcon(appIcon(n > 0, 256));
     if (n > 0) { const b = badgeBitmap(n); win.setOverlayIcon(nativeImage.createFromBitmap(b.buffer, { width: b.width, height: b.height }), `${n} unread`); }
     else win.setOverlayIcon(null, '');
   }
@@ -60,7 +74,7 @@ function buildTrayMenu() {
   ]));
 }
 function createTray() {
-  tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png')).resize({ width: 16, height: 16 }));
+  tray = new Tray(appIcon(unread.count > 0, 32));
   tray.setToolTip(tooltip(unread.count));
   tray.on('click', toggleWindow);
   buildTrayMenu();

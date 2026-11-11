@@ -108,8 +108,12 @@ back does not depend on it).
 - **Never run on real Windows** (nor under wine). Only the build and the JS logic tests
   (`test/desktop.test.mjs`) ran. Login, cookie persistence, single instance and window state are
   implemented but untested in a live window; live-site cookie attributes were not inspected.
-- The `.exe` file icon (Explorer/taskbar-of-exe) is Electron's default: editing the exe resources
-  needs wine, so `signAndEditExecutable` is off. The window/taskbar icon at runtime is the companion's.
+- #88: the exe carries the companion icon without wine: `build/icon.ico` (16-256 px) is set on the app exe by
+  `scripts/after-pack.js` (resedit, pure JS) and on the portable wrapper via `win.icon`; read back from the built
+  exes it matches the .ico image hashes (`src/exe-icon.js`). On a new message the window and tray icon switch
+  to the favicon's unread look (red dot, white ring, `src/dot.js`, same geometry as `public/unread-mark.mjs`) and
+  back when read; the #83 overlay count badge stays (same red). **Not seen on real Windows**: that the taskbar
+  actually repaints with the dotted icon.
 - #83 features (tray, toast, overlay badge, autostart, shortcut) are **built, not run on Windows**. Unverified:
   toast activation after a click on a closed-to-tray app, overlay rendering, that the page's `dataset` event
   reaches the preload in a real window, autostart from the portable exe's path. The live site must be deployed with

@@ -1,7 +1,7 @@
 {
   "name": "companion-desktop",
   "productName": "Companion",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Windows desktop shell for the Blackoutburst companion",
   "private": true,
   "main": "main.js",
@@ -12,7 +12,8 @@
   },
   "devDependencies": {
     "electron": "^45.3.0",
-    "electron-builder": "^26.18.0"
+    "electron-builder": "^26.18.0",
+    "resedit": "^3.1.0"
   },
   "build": {
     "appId": "com.blackoutburst.companion",
@@ -36,11 +37,12 @@
           ]
         }
       ],
-      "icon": "build/icon.png",
+      "icon": "build/icon.ico",
       "signAndEditExecutable": false
     },
     "portable": {
       "artifactName": "Companion-Portable-${version}-x64.exe"
-    }
+    },
+    "afterPack": "scripts/after-pack.js"
   }
 }
