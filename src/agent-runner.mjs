@@ -12,7 +12,7 @@ import { dirname } from 'node:path';
 import { resolveModel } from './agent-providers.mjs';
 import { hardLimit, AGENT_HARD_LIMITS } from './escalation.mjs';
 import { RosterError } from './agent-roster.mjs';
-import { ManagerError } from './agent-manager.mjs';
+import { ManagerError, checkReview } from './agent-manager.mjs';
 
 export const DEFAULT_LIMITS = Object.freeze({ maxConcurrent: 2, maxTurns: 80, maxSeconds: 3600, maxQueued: 20,
   heartbeatSeconds: 60 });
@@ -137,14 +137,15 @@ export function reviewPrompt(run, ticket) {
 }
 
 export class AgentRunner extends EventEmitter {
-  #file; #ops; #reporter; #roster; #manager; #limits; #log; #now; #state; #children = new Map(); #timers = new Map(); #pumping = false;
+  #file; #ops; #reporter; #roster; #manager; #merge; #limits; #log; #now; #state; #children = new Map(); #timers = new Map(); #pumping = false;
 
   // file: JSON state file. ops: sandbox operations (see SandboxOps). reporter: Board hooks (see BoardReporter).
   // roster: C-chan's agent roster (#73); with it, every launch must name an active roster agent and follows its policy.
+  // merge (#85): { identity?, testCommand?, prepareCommand? } turns the merge step on (see src/agent-merge.mjs).
   // manager: manager mode (#76); it reads the weekly usage from the runs' rate events and refuses Opus/Fable above budget.
-  constructor({ file, ops, reporter, roster = null, manager = null, limits = {}, log = () => {}, now = Date.now }) {
+  constructor({ file, ops, reporter, roster = null, manager = null, merge = null, limits = {}, log = () => {}, now = Date.now }) {
     super();
-    this.#file = file; this.#ops = ops; this.#reporter = reporter; this.#roster = roster; this.#manager = manager; this.#limits = normalizeLimits(limits);
+    this.#file = file; this.#ops = ops; this.#reporter = reporter; this.#roster = roster; this.#manager = manager; this.#merge = merge; this.#limits = normalizeLimits(limits);
     this.#log = log; this.#now = now;
     this.#state = this.#load();
   }
@@ -229,11 +230,16 @@ export class AgentRunner extends EventEmitter {
     if (typeof base !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(base) || base.includes('..')) throw new AgentRunnerError('INVALID', 'base: a branch name');
     if (typeof instructions !== 'string' || instructions.length > 8000) throw new AgentRunnerError('INVALID', 'instructions: at most 8000 characters');
     if (requestId !== null && (typeof requestId !== 'string' || !ID.test(requestId))) throw new AgentRunnerError('INVALID', 'requestId');
-    if (!['work', 'review'].includes(mode)) throw new AgentRunnerError('INVALID', 'mode: work or review');
+    if (!['work', 'review', 'merge'].includes(mode)) throw new AgentRunnerError('INVALID', 'mode: work, review or merge');
     if (requestId) {
       const existing = this.#state.runs.find(run => run.requestId === requestId);
       if (existing) return this.public(existing);
     }
+    // Merge (#85): only an accepted, independently approved branch at exactly the reviewed head. Checked before anything is queued.
+    let mergeHead = null, mergeBranch = null;
+    if (mode === 'merge') {
+      ({ head: mergeHead, branch: mergeBranch } = this.#mergeGate({ ticketId, branch: input.branch }));
+    } else if (input.branch !== undefined) throw new AgentRunnerError('INVALID', 'branch is for merge launches');
     // Hard limits (#74): deployments, spending, deleting, credentials and security always go to the owner. Refused, not queued,
     // and turned into a Needs-you on the ticket (best effort; a retry with the same requestId is refused again, files once).
     const limit = hardLimit(instructions);
@@ -248,7 +254,7 @@ export class AgentRunner extends EventEmitter {
       try { this.#manager?.checkLaunch({ model }); }
       catch (error) { if (error instanceof ManagerError) throw new AgentRunnerError(error.code, error.message); throw error; }
     };
-    if (alias) budget(alias);
+    if (alias && mode !== 'merge') budget(alias);
     let policy = null;
     if (this.#roster) {
       try {
@@ -263,7 +269,7 @@ export class AgentRunner extends EventEmitter {
       alias = policy.model;
     }
     // Budget (#76): no Opus or Fable above the weekly usage threshold (the roster agent's model decides).
-    budget(alias);
+    if (mode !== 'merge') budget(alias); // a merge uses no model
     let reviewBranch = null;
     if (mode === 'review') {
       reviewBranch = input.reviewBranch ?? this.#state.runs.filter(run => run.ticketId === ticketId && run.mode !== 'review'
@@ -294,13 +300,32 @@ export class AgentRunner extends EventEmitter {
       maxSeconds: seconds, instructions, state: 'queued', unit: `cchan-agent-${id}`, createdAt: this.#now(),
       updatedAt: this.#now(), startedAt: null, endedAt: null, heartbeatAt: null, turns: 0, result: null, error: null,
       head: null, commits: null, cleanup: { unitGone: null, worktreeRemoved: null }, board: {},
-      mode, reviewBranch, reviewHead: null, role: policy?.role ?? null, team: policy?.team ?? null,
+      mode, reviewBranch, reviewHead: null, mergeBranch, mergeHead, mergeResult: null, role: policy?.role ?? null, team: policy?.team ?? null,
       canCommit: policy ? policy.canCommit : mode === 'work', skills: policy?.skills ?? [], agentInstructions: policy?.instructions ?? '',
       rosterVersion: policy?.version ?? null };
     this.#state.runs.push(run);
     this.#event('run.queued', run);
     queueMicrotask(() => this.#pump());
     return this.public(run);
+  }
+
+  // The merge gate (#85). Needs manager mode, C-chan's latest decision on the ticket to be an accept that cites an
+  // independent reviewer's approval, that review to be on the latest work, and the branch to be the reviewed one.
+  // The head is checked again against the branch itself when the merge starts, and once more on the fetched copy.
+  #mergeGate({ ticketId, branch }) {
+    if (!this.#manager || !this.#merge) throw new AgentRunnerError('FORBIDDEN', 'Merging is not enabled on this runner (config.merge).');
+    if (typeof branch !== 'string' || !AGENT_BRANCH.test(branch)) throw new AgentRunnerError('INVALID', 'branch: the reviewed agent branch (agent/<agent>/t<number>)');
+    const decision = this.#manager.mergeApproval(ticketId);
+    if (!decision) throw new AgentRunnerError('NO_ACCEPT', 'Merging needs your accept: log agents_decide kind accept with the approving reviewRunId first (and no return after it).');
+    let review;
+    try { ({ review } = checkReview(this.#state.runs, { ticketId, reviewRunId: decision.reviewRunId, verdict: 'approve' })); }
+    catch (error) { if (error instanceof ManagerError) throw new AgentRunnerError(error.code, error.message); throw error; }
+    if (!review.reviewHead) throw new AgentRunnerError('STALE_REVIEW', `Review ${review.id} recorded no head commit; review the current work again.`);
+    if (review.reviewBranch !== branch) throw new AgentRunnerError('INVALID', `${branch} is not the reviewed branch (${review.reviewBranch}).`);
+    if (this.#state.runs.some(run => run.ticketId === ticketId && run.mode === 'merge' && run.state === 'succeeded' && run.mergeHead === review.reviewHead)) {
+      throw new AgentRunnerError('ALREADY_MERGED', 'This reviewed head was already merged.');
+    }
+    return { head: review.reviewHead, branch };
   }
 
   stop(id, reason = 'stop_requested') {
@@ -346,7 +371,36 @@ export class AgentRunner extends EventEmitter {
     } finally { this.#pumping = false; }
   }
 
+  // A merge run (#85): no model and no unit. Check the branch is still at the reviewed head, then update onto main, run the
+  // full suite and push (ops.merge); the reporter records done or returns the ticket, and a failure raises a Manager line.
+  async #startMerge(run) {
+    let outcome;
+    try {
+      await this.#reporter.beginMerge(run).then(ticket => this.#set(run, { ticketNumber: ticket.number, ticketTitle: text(ticket.title, 200) }));
+      const info = await this.#ops.branchInfo({ repo: run.repo, branch: run.mergeBranch, base: run.base });
+      this.#set(run, { branch: run.mergeBranch, head: info.head, commits: info.commits });
+      if (info.head !== run.mergeHead) {
+        throw Object.assign(new Error(`${run.mergeBranch} moved to ${String(info.head).slice(0, 10)} after the review of ${run.mergeHead.slice(0, 10)}. No merge; review the current work.`), { code: 'BRANCH_MOVED' });
+      }
+      if (run.stopReason) throw Object.assign(new Error('Stopped before it started.'), { code: 'CANCELLED' });
+      this.#set(run, { state: 'running', startedAt: this.#now(), heartbeatAt: this.#now() }, 'run.started');
+      const result = await this.#ops.merge({ repo: run.repo, branch: run.mergeBranch, base: run.base, expectedHead: run.mergeHead,
+        ticketNumber: run.ticketNumber, ...(this.#merge ?? {}) });
+      const kept = { status: result.status, mergeCommit: result.mergeCommit ?? null, output: text(result.output, 8000) };
+      if (['merged', 'already_merged'].includes(result.status)) outcome = { state: 'succeeded', mergeResult: kept };
+      else {
+        const code = { conflict: 'MERGE_CONFLICT', tests_failed: 'TESTS_FAILED', moved: 'BRANCH_MOVED' }[result.status] ?? 'MERGE_ERROR';
+        outcome = { state: 'failed', mergeResult: kept, errorCode: code, error: text(kept.output.split('\n')[0], 300) };
+      }
+    } catch (error) {
+      outcome = { state: run.stopReason ? 'cancelled' : 'failed', error: text(error.message, 300), errorCode: error.code ?? 'RUNNER_ERROR',
+        mergeResult: { status: 'error', mergeCommit: null, output: text(error.message, 8000) } };
+    }
+    return this.#finish(run, outcome);
+  }
+
   async #start(run) {
+    if (run.mode === 'merge') return this.#startMerge(run);
     let ticket;
     try {
       // Claim the ticket on the Board and read it; the reporter refuses tickets C-chan's agents may not take.
@@ -435,15 +489,16 @@ export class AgentRunner extends EventEmitter {
   // Cleanup is confirmed only when the unit is gone and the worktree removed; the Board is told which.
   async #finish(run, outcome) {
     let unitGone = false, worktreeRemoved = run.worktree === null;
-    try { unitGone = !(await this.#ops.unitActive(run.unit)); } catch { unitGone = false; }
+    if (run.mode === 'merge') unitGone = true; // no unit and no worktree: the merge works in a throw-away clone
+    else try { unitGone = !(await this.#ops.unitActive(run.unit)); } catch { unitGone = false; }
     if (!unitGone) {
       try { await this.#ops.stopUnit(run.unit); unitGone = !(await this.#ops.unitActive(run.unit)); } catch { unitGone = false; }
     }
-    if (run.branch && run.ticketNumber !== null) {
+    if (run.branch && run.ticketNumber !== null && run.mode !== 'merge') {
       try { Object.assign(run, await this.#ops.branchInfo({ repo: run.repo, branch: run.branch, base: run.base })); } catch { /* leave unknown */ }
     }
     // Enforced, not trusted (#73): an agent without the commit action must leave its branch as it found it.
-    if (run.canCommit === false && run.head && ['succeeded', 'blocked'].includes(outcome.state)) {
+    if (run.canCommit === false && run.mode !== 'merge' && run.head && ['succeeded', 'blocked'].includes(outcome.state)) {
       const changed = run.mode === 'review' ? run.reviewHead && run.head !== run.reviewHead : run.commits > 0;
       if (changed) outcome = { ...outcome, state: 'failed', error: `${run.agent} may not commit, but its branch changed.`, errorCode: 'POLICY' };
     }
@@ -456,10 +511,32 @@ export class AgentRunner extends EventEmitter {
     this.#set(run, { ...outcome, endedAt: this.#now(), cleanup: { unitGone, worktreeRemoved } }, 'run.ended',
       { cleanupConfirmed: unitGone && worktreeRemoved, errorCode: outcome.errorCode ?? null, retryAt: outcome.retryAt ?? null,
         mode: run.mode ?? 'work', verdict: outcome.result?.kind === 'review' ? outcome.result.verdict : null });
-    try { await this.#reporter.finish(run); }
+    let boardResult = null;
+    try { boardResult = await this.#reporter.finish(run); }
     catch (error) { this.#log(`board finish for ${run.id} failed: ${error.code ?? error.message}`); }
+    if (run.mode === 'merge') this.#mergeFollowUp(run, boardResult);
     this.#pump();
     return this.public(run);
+  }
+
+  // After a merge run (#85): archive the ticket's per-task agents once it is done; raise a Manager line for anything else.
+  // The line is fixed text with ids and a reason code; the conflict or test output is on the ticket's thread.
+  #mergeFollowUp(run, boardResult) {
+    const n = run.ticketNumber ? `#${run.ticketNumber}` : `ticket ${run.ticketId}`;
+    const line = (kind, suggestion) => this.note({ type: 'manager.attention', kind, key: `merge:${run.id}`, ticketId: run.ticketId,
+      ticketNumber: run.ticketNumber, agent: run.agent, suggestion });
+    if (run.state === 'succeeded') {
+      if (boardResult?.done) { try { this.#roster?.archiveTaskAgents(run.ticketId); } catch (error) { this.#log(`archive for ${run.ticketId} failed: ${error.message}`); } }
+      else line('merge_not_recorded', `${n}: ${run.mergeBranch} was merged into ${run.base} (${String(run.mergeResult?.mergeCommit).slice(0, 10)}), but the Board still does not show it as done. Set it done with that commit as evidence.`);
+      return;
+    }
+    const code = run.errorCode;
+    if (code === 'MERGE_CONFLICT' || code === 'TESTS_FAILED') {
+      line('merge_refused', `${n}: merge refused (${code === 'MERGE_CONFLICT' ? 'conflict with main' : 'the full test suite fails on the merge result'}); nothing was merged. `
+        + `The ticket went back to todo with the output on its thread: relaunch a coder on it, then review and merge again.`);
+    } else {
+      line('merge_failed', `${n}: the merge did not run through (${code ?? run.state}); nothing was merged and the ticket stays in review. Read run ${run.id}, fix the cause or review again if the branch moved.`);
+    }
   }
 
   close() { for (const timer of this.#timers.values()) clearInterval(timer); this.#timers.clear(); }

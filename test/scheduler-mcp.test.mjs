@@ -77,7 +77,7 @@ test('the tool catalogue keeps reminders and distinct release-watch tools in clo
   const result = await exchange([...handshake(), request('tools', 'tools/list', {})]);
   const tools = resultFor(result, 'tools').result.tools;
   assert.deepEqual(tools.map(tool => tool.name).sort(), ['cancel_schedule', 'create_event', 'create_release_watch', 'create_schedule', 'create_topic_watch',
-    'delete_event', 'github_create_repo', 'github_list_repos', 'github_pull', 'github_pulls', 'github_repo', 'list_calendar', 'list_schedules', 'mail_inbox', 'mail_mark_handled', 'mail_opt_out', 'mail_read', 'mail_send', 'mail_status', 'read_x_post', 'schedule_followup', 'studio_calendar_create', 'studio_calendar_delete', 'studio_calendar_list', 'studio_calendar_update', 'cancel_followup', 'update_event', 'update_release_watch', 'watch_x_video', 'agents_launch', 'agents_list', 'agents_status', 'agents_stop', 'agents_roster', 'agents_save_agent', 'agents_archive_agent', 'agents_save_team', 'agents_archive_team', 'agents_manager', 'agents_approve_project', 'agents_revoke_project', 'agents_decide'].sort());
+    'delete_event', 'github_create_repo', 'github_list_repos', 'github_pull', 'github_pulls', 'github_repo', 'list_calendar', 'list_schedules', 'mail_inbox', 'mail_mark_handled', 'mail_opt_out', 'mail_read', 'mail_send', 'mail_status', 'read_x_post', 'schedule_followup', 'studio_calendar_create', 'studio_calendar_delete', 'studio_calendar_list', 'studio_calendar_update', 'cancel_followup', 'update_event', 'update_release_watch', 'watch_x_video', 'agents_launch', 'agents_merge', 'agents_list', 'agents_status', 'agents_stop', 'agents_roster', 'agents_save_agent', 'agents_archive_agent', 'agents_save_team', 'agents_archive_team', 'agents_manager', 'agents_approve_project', 'agents_revoke_project', 'agents_decide'].sort());
   const expected = { create_schedule: ['requestId', 'text', 'dueAt'], list_schedules: [], cancel_schedule: ['id'],
     schedule_followup: ['requestId', 'at', 'note'], cancel_followup: ['id'],
     create_release_watch: ['requestId', 'condition'], create_topic_watch: ['requestId', 'topic', 'intervalHours'],
@@ -319,7 +319,7 @@ test('tool calls accept the _meta field real clients attach (Claude Code sends a
     request('listed', 'tools/list', { _meta: { progressToken: 1 } }),
     request('called', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: meta }),
     request('bad-meta', 'tools/call', { name: 'list_schedules', arguments: {}, _meta: 'nope' })]);
-  assert.equal(resultFor(result, 'listed').result.tools.length, 42);
+  assert.equal(resultFor(result, 'listed').result.tools.length, 43);
   assert.equal(resultFor(result, 'called').result.isError, false);
   assert.equal(resultFor(result, 'bad-meta').error.code, -32602);
   assert.equal(result.forwards.length, 1);

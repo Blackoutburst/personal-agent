@@ -143,6 +143,10 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { activeOnly: { type: 'boolean' } }, additionalProperties: false } },
   { name: 'agents_status', description: 'The agent runner: limits, running and queued counts, Board connection, and the projects agents may work in. With runId, one run in detail.',
     inputSchema: { type: 'object', properties: { runId: string(64, 'Optional run id') }, additionalProperties: false } },
+  { name: 'agents_merge', description: 'Merge an accepted branch into main (#85). Only after you logged agents_decide kind accept with the approving reviewRunId, and only for the exact head commit that reviewer checked: if the branch moved since, or a return came after the accept, it is refused. The runner (no model) merges the branch into the current main, runs the full node --test suite on the result, and only then pushes main to origin with the owner\'s configured git identity. A conflict or a failing suite means no merge: the ticket goes back to todo with the output and you get a Manager line, then relaunch a coder. On success the ticket is set to done with the merge commit as evidence and its per-task agents are archived. agent must be a roster agent with the merge action (role merger). Releasing the server stays with the owner. Reuse requestId for exact retries.',
+    inputSchema: { type: 'object', properties: { requestId: string(80, 'Stable logical request key'), agent: string(40, 'A roster agent with role merger'),
+      ticketId: string(64, 'Board ticket id'), repo: string(40, 'Sandbox repo name, e.g. personal-agent'), branch: string(80, 'The reviewed branch, agent/<agent>/t<number>') },
+      required: ['requestId', 'agent', 'ticketId', 'repo', 'branch'], additionalProperties: false } },
   { name: 'agents_stop', description: 'Stop one of your agent runs: its process and every child are killed, the worktree is cleaned up and the ticket released. Committed work stays on its branch.',
     inputSchema: schema({ runId: string(64, 'Run id') }) }
 ];
@@ -163,6 +167,9 @@ function toolInput(name, args) {
     const { maxMinutes, ...launch } = args;
     if (maxMinutes !== undefined && !(Number.isSafeInteger(maxMinutes) && maxMinutes > 0 && maxMinutes <= 240)) return null;
     return { action: 'agents', input: { op: 'launch', launch: { ...launch, ...(maxMinutes ? { maxSeconds: maxMinutes * 60 } : {}) } } };
+  }
+  if (name === 'agents_merge' && exact(args, ['requestId', 'agent', 'ticketId', 'repo', 'branch']) && stableKey(args.requestId)) {
+    return { action: 'agents', input: { op: 'merge', merge: { ...args } } };
   }
   if (name === 'agents_list' && object(args) && Object.keys(args).every(key => key === 'activeOnly')) {
     return { action: 'agents', input: { op: 'list', active: args.activeOnly === true } };

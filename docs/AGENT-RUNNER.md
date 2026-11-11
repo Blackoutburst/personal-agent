@@ -70,10 +70,10 @@ them. The runner stores the roster and enforces it.
 | Field | Meaning |
 | --- | --- |
 | `name` | `coder-1`, `rev-1`, ...; also the branch name `agent/<name>/t<number>` |
-| `role` | `coder` (actions `work` + `commit`) or `reviewer` (action `review`) |
+| `role` | `coder` (actions `work` + `commit`), `reviewer` (action `review`) or `merger` (action `merge`, #85) |
 | `kind` | `standing` (kept; can be in one team) or `task` (one `ticketId`; archived when that ticket is done) |
 | `model` | `haiku`, `sonnet`, `opus` or `fable`. A launch runs on this model. To escalate a stuck ticket, give its agent a bigger model. |
-| `actions` | `work` (claim, then move to review), `commit` (edit and commit), `review` (review another branch) |
+| `actions` | `work` (claim, then move to review), `commit` (edit and commit), `review` (review another branch), `merge` (land an accepted branch on main, #85) |
 | `repos` | the sandbox repos it may work in (`[]` = any) |
 | `skills`, `instructions` | short rules and standing instructions added to its prompt (hard limits from #74 are refused here too) |
 | `maxTurns`, `maxMinutes` | its own limits, never above the runner's |
@@ -82,7 +82,7 @@ them. The runner stores the roster and enforces it.
 Teams group standing agents, for example `web-team` with three Haiku coders and one Opus reviewer. Every agent and
 team has a `version`, and an update must give the version it read.
 
-**Enforced at launch.** The agent must exist and be active. The mode (`work` or `review`) must be one of its actions,
+**Enforced at launch.** The agent must exist and be active. The mode (`work`, `review` or `merge`) must be one of its actions,
 the repo one of its repos, and a task agent's ticket its own ticket. A `model` passed with the launch must match the
 agent's model. A plain launch with an unknown name and a model still works: it creates a per-task coder for that
 ticket (`createdBy: launch`).
@@ -101,6 +101,35 @@ the run fails with `POLICY`, whatever the agent reported.
   changes_requested`, `FINDINGS:` and `EVIDENCE:`. Without a verdict, the run fails with `NO_VERDICT`.
 - The report is posted on the ticket's thread, and the ticket is not changed. The `run.ended` event carries `mode` and
   `verdict`. C-chan accepts the work or returns it (#76), based on that independent report, never on the author's "done".
+
+**Merge runs (#85).** After an accepted review, C-chan lands the branch on `main` herself: `agents_merge` (or
+`POST /runs` with `mode: merge`, `agent`, `ticketId`, `repo`, `branch`) with an agent that has the `merge` action (role
+`merger`). A merge run uses no model, no unit and no worktree (so no model budget applies). The runner enforces:
+
+- the gate, at launch: `config.merge` is set; C-chan's latest decision on the ticket is an `accept` (no `return` after
+  it) citing a review run that is independent, approving and on the latest work (`NO_ACCEPT`, `NO_REVIEW`,
+  `NOT_INDEPENDENT`, `STALE_REVIEW`, `VERDICT_MISMATCH`); `branch` is exactly the reviewed branch; the reviewed head was
+  not merged already (`ALREADY_MERGED`);
+- the head, when the run starts and again on the fetched copy: if the branch is not at the reviewed head commit, nothing
+  is merged (`BRANCH_MOVED`);
+- the steps (`src/agent-merge.mjs`), in a throw-away clone of origin: merge the branch into the current `origin/main`
+  (`--no-ff`, one merge commit), run `node --test` on that result, and only then push the merge commit to `origin` as a
+  plain fast-forward (never forced; if `main` moved meanwhile it starts again, up to 3 times). The merge commit uses the
+  configured identity (default `Blackoutburst <github@blackoutburst.dev>`), and git uses the keys already set up for the
+  owner on this server; the origin is the remote of the sandbox's bare clone. The suite runs with a scrubbed
+  environment (own `HOME`, no ssh agent).
+- success: the ticket is claimed, set to **done** with the merge commit as evidence, a message is posted, and the
+  ticket's per-task agents are archived.
+- conflict (`MERGE_CONFLICT`) or failing suite (`TESTS_FAILED`): no merge, no push. The ticket goes back to **todo**
+  with the output on its thread, and C-chan gets a `manager.attention` line (`merge_refused`) to relaunch a coder.
+- anything else (moved branch, clone/fetch/push failure, interrupted): no merge, the ticket stays in review, the
+  thread says why, and the Manager line is `merge_failed`. Retrying after an interruption is safe: a head that is
+  already part of `main` is reported as merged.
+
+`config.merge` (see `ops/agent-runner/config.example.json`): `identity`, `testCommand` (default `["node","--test"]`),
+`prepareCommand` (optional, runs before the tests, for example to link `node_modules`; its failure is `MERGE_ERROR`,
+not a test failure) and `origin` (override of the remote). Releasing the server (restart, rollout) is not part of it
+and stays with the owner.
 
 **On the Board.** Each roster agent is mirrored as a managed agent profile named `C-chan · <name>`, with role, model,
 skills, the runner's projects and its status. Creating, updating and archiving the agent does the same to the profile.
@@ -229,8 +258,8 @@ Routing is in `src/agent-runner-api.mjs` (`createRunnerApi`), shared by the serv
 
 ## Known limits
 
-- The finished branch stays in the sandbox's bare clone. Integration (rebase, tests, push as Blackoutburst) happens
-  outside the sandbox, by the reviewer flow (#76) or the server agent.
+- The finished branch stays in the sandbox's bare clone until it is merged: with `config.merge` set, C-chan merges
+  accepted work herself (merge runs, #85). Without it, integration happens outside the runner, by the server agent.
 - The agent tools are listed to every companion's tool server, but only the owners in
   `COMPANION_AGENT_RUNNER_OWNERS` get them approved and reach the runner. Others are refused.
 - A runner restart interrupts running agents rather than reattaching to them.

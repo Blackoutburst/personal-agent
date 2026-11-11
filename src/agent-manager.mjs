@@ -213,6 +213,12 @@ export class Manager {
   // The latest accept decision on a ticket (for the done audit), or null.
   accepted(ticketId) { return this.#state.decisions.filter(item => item.ticketId === ticketId && item.kind === 'accept').at(-1) ?? null; }
 
+  // The accept decision that allows a merge (#85): the latest accept/return decision on the ticket, and only if it is an accept.
+  mergeApproval(ticketId) {
+    const last = this.#state.decisions.filter(item => item.ticketId === ticketId && (item.kind === 'accept' || item.kind === 'return')).at(-1);
+    return last?.kind === 'accept' ? { ...last } : null;
+  }
+
   // ---------- Attention ----------
 
   // Findings over the approved projects; see attention() below.
@@ -263,7 +269,7 @@ export function attention({ tickets, runs, decisions = [], usage = { premiumAllo
         if (decided.has(verdict.id)) continue;
         out.push({ ...base, key: `review_ready:${ticket.id}:${verdict.id}`, kind: 'review_ready', reviewRunId: verdict.id, verdict: verdict.result.verdict,
           agent: delivered.agent, suggestion: `${n}: reviewer ${verdict.agent} (run ${verdict.id}) says ${verdict.result.verdict}. `
-            + (verdict.result.verdict === 'approve' ? 'Log the accept with agents_decide (kind accept, reviewRunId), then accept it on the Board.'
+            + (verdict.result.verdict === 'approve' ? 'Log the accept with agents_decide (kind accept, reviewRunId), then merge it with agents_merge (ticket, branch, a merger agent): the runner merges to main and sets the ticket done.'
               : `Log the return with agents_decide (kind return, reviewRunId), return it on the Board with the findings, and relaunch ${delivered.agent}.`) });
         continue;
       }

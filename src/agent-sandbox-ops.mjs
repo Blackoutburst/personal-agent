@@ -2,6 +2,7 @@
 // service runs as the owner account (it needs sudo for cchan-sandbox-run, which the companion service cannot use).
 import { execFile, spawn as nodeSpawn } from 'node:child_process';
 import { join } from 'node:path';
+import { mergeAccepted, DEFAULT_IDENTITY } from './agent-merge.mjs';
 
 export const WRAPPER = '/usr/local/sbin/cchan-sandbox-run';
 export const SANDBOX_NODE = '/var/lib/cchan-agents/bin/node';
@@ -86,5 +87,17 @@ export class SandboxOps {
     const head = await git('rev-parse', '--verify', 'refs/heads/' + branch);
     const commits = Number(await git('rev-list', '--count', `refs/remotes/origin/${base}..refs/heads/${branch}`));
     return { head, commits: Number.isSafeInteger(commits) ? commits : null };
+  }
+
+  // The merge step (#85): the reviewed branch is fetched from the sandbox's bare clone, merged into origin/<base>, tested
+  // and pushed to origin (the remote of that clone) with the owner's configured identity and keys. See src/agent-merge.mjs.
+  async merge({ repo, branch, base, expectedHead, ticketNumber, origin = null, identity = DEFAULT_IDENTITY, testCommand, prepareCommand }) {
+    const dir = join(this.#root, 'repos', repo + '.git');
+    let url = origin;
+    if (!url) {
+      try { url = (await run(this.#exec, 'git', ['-c', `safe.directory=${dir}`, '--git-dir', dir, 'remote', 'get-url', 'origin'], { timeout: 15_000 })).trim(); }
+      catch { return { status: 'error', output: `The sandbox clone of ${repo} has no origin remote.` }; }
+    }
+    return mergeAccepted({ origin: url, source: dir, branch, expectedHead, base, ticketNumber, identity, testCommand, prepareCommand });
   }
 }
