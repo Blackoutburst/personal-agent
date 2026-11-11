@@ -48,7 +48,12 @@ function fakeBoard() {
         if (args.changes.outcome) ticket.outcome = args.changes.outcome;
         ticket.version = ++version; return { ticket: view(ticket) };
       }
-      if (tool === 'request_human_input') { requests.push({ ...args, who }); return { request: { id: `r${requests.length}` } }; }
+      // Like the real Board: only the claim holder may ask; the request blocks the ticket and releases the claim.
+      if (tool === 'request_human_input') {
+        if (ticket.claimedBy !== who) throw Object.assign(new Error('Requires your active task claim'), { code: 'FORBIDDEN' });
+        requests.push({ ...args, who }); ticket.status = 'blocked'; ticket.claimedBy = null; ticket.waiting_on_human = true; ticket.version = ++version;
+        return { request: { id: `r${requests.length}` } };
+      }
       throw new Error(`fake Board: no tool ${tool}`);
     }
   });
@@ -216,7 +221,8 @@ test('an idea from Blackout becomes tickets, gets built, reviewed and accepted w
   assert.deepEqual(board.requests.map(request => [request.ticket_id, request.owner_id, /deployment is a hard limit/.test(request.question)]),
     [[deploy.id, 'blackoutburst', true]]);
   assert.equal(cchan.refused.filter(error => error.code === 'HARD_LIMIT').length >= 1, true);
-  assert.equal(board.tickets.get(deploy.id).status, 'todo');
+  // The Needs-you holds the deploy ticket on the owner: blocked, nobody's claim.
+  assert.deepEqual([board.tickets.get(deploy.id).status, board.tickets.get(deploy.id).claimedBy], ['blocked', null]);
   // Every review decision is backed by an independent reviewer's report; "done" alone was refused.
   const accepts = cchan.decisions.filter(item => item.kind === 'accept'), returns = cchan.decisions.filter(item => item.kind === 'return');
   assert.equal(accepts.length, 2); assert.equal(returns.length, 1);
