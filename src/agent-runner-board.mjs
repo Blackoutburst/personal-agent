@@ -105,7 +105,7 @@ export class BoardReporter {
       const active = await this.#client.call('start_execution', { execution_id: execution, expected_revision: revision });
       run.board.execution = execution; run.board.revision = pick(active, 'execution.revision', 'revision') ?? revision;
     } catch (error) {
-      run.board.executionError = String(error.code ?? error.message).slice(0, 120);
+      run.board.executionError = String(error.code ? `${error.code}: ${error.message}` : error.message).slice(0, 300);
       this.#log(`Runtime execution not recorded for ${run.id}: ${run.board.executionError}`);
     }
     const who = `${run.agent}${run.role ? ` (${run.role}${run.team ? `, team ${run.team}` : ''})` : ''}`;
