@@ -17,6 +17,7 @@ import { createBoardUI } from './board-ui.mjs';
 import { createGroupUI } from './group-ui.mjs';
 import { idleDelay, createActivity, createMotion } from './idle.mjs';
 import { createUnreadMark } from './unread-mark.mjs';
+import { showDesktopCard } from './desktop-card.mjs';
 
 const $ = id => document.getElementById(id);
 // Idle performance (#60): when the owner last used the page; reads back off while nothing happens.
@@ -179,7 +180,8 @@ function show(next) {
   if (next === 'me' && (meSection === 'watches' || meSection === 'settings')) void remindersUI.show();
   if (next === 'calendar') void calendarUI.show();
   if (next === 'studio') void studioUI.show(studioApp); else studioUI.hide();
-  if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); void webPushUI.show(); }
+  if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); void webPushUI.show();
+    const epoch = ownerEpoch; void showDesktopCard({ card: $('desktop-pick'), button: $('desktop-download'), isCurrent: () => epoch === ownerEpoch && !sessionDenied }); }
   pushPresence.update(); activeClient.update(); unreadMark.check();
   renderAll();
 }
@@ -520,7 +522,7 @@ function resetShell(denied) {
   for (const id of ['look-preview', 'stage-character']) { $(id).replaceChildren(); $(id).dataset.markup = ''; }
   $('stage-name').textContent = ''; $('stage-mood').textContent = '';
   for (const id of ['pick-character', 'pick-color', 'pick-outfit']) $(id).replaceChildren();
-  for (const id of ['discord-pick', 'android-pick']) $(id).hidden = true;
+  for (const id of ['discord-pick', 'android-pick', 'desktop-pick']) $(id).hidden = true;
   connectors = null; connectorsBusy = false; githubForm = false; xForm = false; connectorsRequest++; connectorsError = ''; $('connector-list').replaceChildren(); $('connectors-note').textContent = '';
   kept.hidden = true; keptText.textContent = ''; reconnect.hidden = true;
   selectedBoard = null; boardReadMarked = null; boardUI.clear(); groupUI.clear(); unreadMark.clear();

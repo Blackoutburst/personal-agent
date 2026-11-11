@@ -1,0 +1,40 @@
+import { createReadStream, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+
+// The Windows desktop app download (docs/DESKTOP.md). <dataDir>/downloads/desktop.json names the current build:
+// {"version":"0.1.0","file":"Companion-Portable-0.1.0-x64.exe"}. Owner-only; 404 when no valid build is published.
+const FILE = /^[A-Za-z0-9._-]{1,80}\.exe$/;
+const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+const hashes = new Map(); // path:size:mtime -> sha256, so a big exe is hashed once
+
+export function desktopRelease(dataDir) {
+  try {
+    const dir = join(dataDir, 'downloads'), info = JSON.parse(readFileSync(join(dir, 'desktop.json'), 'utf8'));
+    if (typeof info?.version !== 'string' || !VERSION.test(info.version) || typeof info.file !== 'string' || !FILE.test(info.file)) return null;
+    const path = join(dir, info.file), stat = statSync(path);
+    if (!stat.isFile() || stat.size <= 0) return null;
+    const key = `${path}:${stat.size}:${stat.mtimeMs}`;
+    if (!hashes.has(key)) hashes.set(key, createHash('sha256').update(readFileSync(path)).digest('hex'));
+    return { version: info.version, path, size: stat.size, sha256: hashes.get(key) };
+  } catch { return null; }
+}
+
+export function createDesktopHttp({ access, dataDir }) {
+  return async function desktopHttp(req, res, headers) {
+    const json = (status, body) => { res.writeHead(status, { ...headers, 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)); };
+    const error = (status, code, message) => json(status, { error: { code, message } });
+    if (!['GET', 'HEAD'].includes(req.method)) return error(405, 'METHOD_NOT_ALLOWED', 'GET or HEAD is required.');
+    const admitted = await access.authorize(req);
+    if (admitted.failure) return json(admitted.failure.status, admitted.failure.body);
+    const release = desktopRelease(dataDir);
+    if (!release) return error(404, 'NOT_FOUND', 'The desktop app is not available yet.');
+    if (req.url === '/api/desktop') return json(200, { version: release.version, size: release.size, sha256: release.sha256 });
+    res.writeHead(200, { ...headers, 'content-type': 'application/vnd.microsoft.portable-executable', 'content-length': String(release.size),
+      'content-disposition': `attachment; filename="Companion-${release.version}.exe"`, 'x-content-sha256': release.sha256,
+      'cross-origin-resource-policy': 'same-origin' });
+    if (req.method === 'HEAD') return res.end();
+    const stream = createReadStream(release.path);
+    stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res);
+  };
+}

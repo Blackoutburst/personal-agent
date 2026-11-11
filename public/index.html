@@ -296,6 +296,11 @@
           <label class="checkin-option" hidden><input id="web-push-preview" type="checkbox" checked> Show the message in the notification</label>
           <small id="web-push-status" role="status"></small>
         </div>
+        <div id="desktop-pick" class="web-push" hidden>
+          <h2>Windows app</h2>
+          <div class="actions"><a id="desktop-download" class="button primary" href="api/desktop/download" download>Download for Windows</a></div>
+          <p class="hint">A portable app: run the downloaded file, no install. Windows SmartScreen may warn on first run because it is not signed.</p>
+        </div>
         <div id="theme-pick" class="theme-pick" hidden>
           <h2 id="theme-title">App theme</h2>
           <div class="segmented" role="radiogroup" aria-labelledby="theme-title">

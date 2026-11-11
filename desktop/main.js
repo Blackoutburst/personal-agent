@@ -5,11 +5,13 @@ const { COMPANION_URL, isInternal, isExternalOpenable } = require('./src/urls');
 const windowState = require('./src/window-state');
 const { persistentVersion } = require('./src/cookies');
 const { SITE } = require('./src/urls');
+const update = require('./src/update');
 
 app.setName('Companion');
 // Persistent default session: cookies from the platform login survive restarts.
 const stateFile = () => path.join(app.getPath('userData'), 'window-state.json');
 let win = null;
+let pendingUpdate = null; // set by the daily check; the banner is (re)added after each page load
 
 function openExternal(url) {
   if (isExternalOpenable(url)) shell.openExternal(url);
@@ -52,7 +54,16 @@ function createWindow() {
   win.webContents.on('did-fail-load', (_e, code, _d, url, isMain) => {
     if (isMain && code !== -3) setTimeout(() => win && !win.isDestroyed() && win.loadURL(COMPANION_URL), 5000);
   });
+  win.webContents.on('did-finish-load', () => {
+    if (pendingUpdate) win.webContents.executeJavaScript(update.bannerScript(pendingUpdate)).catch(() => {});
+  });
   win.loadURL(COMPANION_URL);
+}
+
+// At start and once a day: ask the server for the offered version (needs the login cookie; signed out = no banner).
+async function checkUpdate() {
+  pendingUpdate = await update.checkForUpdate((url, init) => session.defaultSession.fetch(url, init), app.getVersion());
+  if (pendingUpdate && win && !win.isDestroyed()) win.webContents.executeJavaScript(update.bannerScript(pendingUpdate)).catch(() => {});
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -71,6 +82,7 @@ if (!app.requestSingleInstanceLock()) {
       if (next) session.defaultSession.cookies.set(next).catch(() => {});
     });
     createWindow();
+    setTimeout(checkUpdate, 15000); setInterval(checkUpdate, update.DAY_MS);
   });
   app.on('window-all-closed', () => app.quit());
 }

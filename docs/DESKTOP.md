@@ -43,7 +43,33 @@ toolchain, change the target to `nsis` in `desktop/package.json` for a real inst
   launch restores and focuses the first window.
 - Name/icon: "Companion", icon from `public/icons/icon-512.png` (peach companion).
 
+## Release flow, download and update check (#84)
+
+1. Bump `version` in `desktop/package.json` (the app compares it with the server's version; `x.y.z` only).
+2. `scripts/build-desktop.sh` builds `desktop/dist/Companion-Portable-<version>-x64.exe`.
+3. `scripts/publish-desktop.sh` copies that exe into `<COMPANION_DATA_DIR>/downloads/` (default `~/personal-agent-data`)
+   and writes `desktop.json` there: `{"version":"0.1.0","file":"Companion-Portable-0.1.0-x64.exe"}`.
+   That folder lives outside the checkout, so the normal release (`ops/release.mjs`) leaves it alone and the running
+   service picks the new build up at once, no restart. The exe is never committed to git.
+
+Server, owner only (the signed-in pilot account; 404 when no valid `desktop.json` + exe exist, 401 when signed out):
+- `GET /api/desktop` returns `{version, size, sha256}` (the sha256 is computed once per file and cached).
+- `GET /api/desktop/download` serves the exe as `Companion-<version>.exe` with the hash also in `X-Content-Sha256`.
+  Unlike the Android APK (`/companion.apk`, public), these need the login cookie.
+
+Clients:
+- Web: Me › Settings shows a "Windows app" card with the version and a Download button, only in a desktop browser
+  (not phones, tablets or the app itself) and only when a build is published (`public/desktop-card.mjs`).
+- App: `src/update.js` asks `/api/desktop` with the app's login session 15 s after start and then every 24 h. If the
+  server version is newer than `app.getVersion()`, a small dismissible "Update available" bar with a Download link
+  appears in the window (re-added after each page load). The link downloads the exe; you run it yourself. Signed out
+  or offline means no banner.
+
 ## Not verified / limitations
+
+- #84 pieces were tested only by `node --test` (endpoint, card logic, update comparison/banner script). The banner
+  injection, the daily timer and `session.fetch` with the login cookie were not run in a live Electron window, and
+  `publish-desktop.sh` was not run against the real data folder.
 
 - **Never run on real Windows** (nor under wine). Only the build and the JS logic tests
   (`test/desktop.test.mjs`) ran. Login, cookie persistence, single instance and window state are
@@ -51,4 +77,4 @@ toolchain, change the target to `nsis` in `desktop/package.json` for a real inst
 - The `.exe` file icon (Explorer/taskbar-of-exe) is Electron's default: editing the exe resources
   needs wine, so `signAndEditExecutable` is off. The window/taskbar icon at runtime is the companion's.
 - Unsigned: Windows SmartScreen will warn on first run.
-- No tray, notifications or auto-update (later tickets).
+- No tray or notifications (later tickets). No silent self-install: the app only announces updates (below).

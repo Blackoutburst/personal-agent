@@ -35,6 +35,7 @@ import { DiscordLinks, DiscordBridge } from './src/discord.mjs';
 import { FileStore, FileError, FILE_LIMITS } from './src/files.mjs';
 import { Asr } from './src/asr.mjs';
 import { createFileHttp, fileFailure } from './src/file-http.mjs';
+import { createDesktopHttp } from './src/desktop-http.mjs';
 import { PersonalityStore } from './src/personality.mjs';
 import { Contacts, ContactError, contactWakePrompt } from './src/contacts.mjs';
 import { Weather } from './src/weather.mjs';
@@ -75,6 +76,7 @@ const STATIC = new Map([
   ['/web-push-ui.mjs', ['web-push-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/active-client.mjs', ['active-client.mjs', 'text/javascript; charset=utf-8']],
   ['/idle.mjs', ['idle.mjs', 'text/javascript; charset=utf-8']],
+  ['/desktop-card.mjs', ['desktop-card.mjs', 'text/javascript; charset=utf-8']],
   ['/unread-mark.mjs', ['unread-mark.mjs', 'text/javascript; charset=utf-8']],
   ['/bubbles.mjs', ['bubbles.mjs', 'text/javascript; charset=utf-8']],
   ['/voice-ui.mjs', ['voice-ui.mjs', 'text/javascript; charset=utf-8']],
@@ -136,7 +138,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let agentsConfigured = false;
   let companionHttp;
   let studioHttp;
-  let ownerProfileHttp;
+  let ownerProfileHttp, desktopHttp;
   let schedulerHttp, schedulerService, schedulerStore, calendar = null, studioCalendar = null, github = null, mail = null, x = null, discord = null;
   let groupChat = null, groupHttp = null;
   let asr = null, files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, agents = null, agentEvents = null, agentOwners = [], pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
@@ -218,6 +220,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           const result = fileFailure(error); return send(result.status, result.body);
         }
       }
+      if ((path === '/api/desktop' || path === '/api/desktop/download') && mode === 'account') return desktopHttp(req, res, headers);
       if ((path === '/api/files' || path.startsWith('/api/files/')) && mode === 'account') return fileHttp(req, res, headers);
       // Group chat (#53, docs/GROUP-CHAT.md): JSON actions, and the group's own attachments.
       if ((path === '/api/groups' || path.startsWith('/api/groups/')) && mode === 'account') return groupHttp(req, res, headers);
@@ -316,6 +319,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         return owner?.label ?? 'You';
       } });
       ownerProfileHttp = createOwnerProfileHttp({ access, profiles: ownerProfiles });
+      desktopHttp = createDesktopHttp({ access, dataDir });
       if (owners.length) {
         if (!runtimeDir) throw new Error('COMPANION_RUNTIME_DIR is required with COMPANION_RUNTIME_FILE');
         const appServersFor = runnerOptions.mcpServersFor ?? (() => []);
