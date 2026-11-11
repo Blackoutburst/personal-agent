@@ -220,7 +220,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           const result = fileFailure(error); return send(result.status, result.body);
         }
       }
-      if ((path === '/api/desktop' || path === '/api/desktop/download') && mode === 'account') return desktopHttp(req, res, headers);
+      if ((path === '/api/desktop' || path === '/api/desktop/download' || path.startsWith('/api/desktop/update/')) && mode === 'account') return desktopHttp(req, res, headers);
       if ((path === '/api/files' || path.startsWith('/api/files/')) && mode === 'account') return fileHttp(req, res, headers);
       // Group chat (#53, docs/GROUP-CHAT.md): JSON actions, and the group's own attachments.
       if ((path === '/api/groups' || path.startsWith('/api/groups/')) && mode === 'account') return groupHttp(req, res, headers);

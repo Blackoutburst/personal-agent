@@ -1,14 +1,14 @@
 {
   "name": "companion-desktop",
   "productName": "Companion",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Windows desktop shell for the Blackoutburst companion",
   "private": true,
   "main": "main.js",
   "author": "Blackoutburst",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win portable --x64 --publish never"
+    "dist": "node scripts/build-nsis.js"
   },
   "devDependencies": {
     "electron": "^45.3.0",
@@ -31,7 +31,7 @@
     "win": {
       "target": [
         {
-          "target": "portable",
+          "target": "nsis",
           "arch": [
             "x64"
           ]
@@ -40,9 +40,24 @@
       "icon": "build/icon.ico",
       "signAndEditExecutable": false
     },
-    "portable": {
-      "artifactName": "Companion-Portable-${version}-x64.exe"
+    "afterPack": "scripts/after-pack.js",
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": false,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "Companion-Setup-${version}-x64.exe",
+      "differentialPackage": true
     },
-    "afterPack": "scripts/after-pack.js"
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://blackoutburst.com/personal-agent-preview/api/desktop/update/"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.6.2"
   }
 }

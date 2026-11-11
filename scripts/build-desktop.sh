@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the Windows x64 portable exe into desktop/dist/. Needs network (npm + Electron downloads).
+# Builds the Windows x64 NSIS per-user installer (+ latest.yml + blockmap, for electron-updater) into desktop/dist/. Needs network (npm + Electron downloads).
 # npm selection:
 #   1. NPM_CLI=/path/to/npm-cli.js, if set;
 #   2. the system npm, if `npm -v` runs;
@@ -46,5 +46,5 @@ retry() {
 rm -rf dist
 retry npm install --no-audit --no-fund
 retry npm run dist
-ls -l dist/*.exe
-sha256sum dist/*.exe
+ls -l dist/*.exe dist/*.blockmap dist/latest.yml
+sha256sum dist/*.exe dist/*.blockmap dist/latest.yml

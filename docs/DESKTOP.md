@@ -14,10 +14,12 @@ Electron + electron-builder needs only npm and downloads prebuilt Windows binari
 chosen because it actually produces a Windows x64 `.exe` here.
 
 What was tried:
-- NSIS installer target: fails here (`spawn wine ENOENT`; electron-builder runs the installer
-  stub under wine to produce the uninstaller). Needs wine, or a Windows/CI host.
-- **Portable target: works.** Output `desktop/dist/Companion-Portable-<version>-x64.exe`
-  (single self-extracting exe, no install, no uninstaller).
+- NSIS installer target (#89): electron-builder's stock Linux path fails (`spawn wine ENOENT`): it builds the uninstaller by
+  running the installer stub under wine. electron-builder has a pure-JS alternative (it reads the uninstaller out of the
+  stub's bytes, used for macOS Catalina). `desktop/scripts/build-nsis.js` selects that branch by making
+  `isMacOsCatalina()` return true before running electron-builder (an internal of a lockfile-pinned version; a break fails
+  loudly). Result: a real NSIS per-user installer built on Linux with no wine. Not run on Windows (see below).
+- Portable target (#84-#88) worked too, and is retired by #89.
 - The system `npm` on the host is broken (missing `semver`). `scripts/build-desktop.sh` therefore
   checks `npm -v`; if it fails (and `NPM_CLI` is not set) it downloads the pinned `npm-10.9.2.tgz`
   from the registry into a temp dir, verifies its sha512 integrity against the value pinned in the
@@ -28,8 +30,8 @@ What was tried:
     scripts/build-desktop.sh                      # picks system npm, or fetches pinned npm 10.9.2 if it is broken
     NPM_CLI=/path/to/npm-cli.js scripts/build-desktop.sh   # force a specific npm
 
-Output: `desktop/dist/Companion-Portable-0.1.0-x64.exe` (git-ignored). On Windows with a working
-toolchain, change the target to `nsis` in `desktop/package.json` for a real installer.
+Output in `desktop/dist/` (git-ignored): `Companion-Setup-<version>-x64.exe` (NSIS, per-user, no admin),
+`Companion-Setup-<version>-x64.exe.blockmap` and `latest.yml` (electron-updater feed with the installer's sha512).
 
 ## Behaviour
 
@@ -45,27 +47,50 @@ toolchain, change the target to `nsis` in `desktop/package.json` for a real inst
   launch restores and focuses the first window.
 - Name/icon: "Companion", icon from `public/icons/icon-512.png` (peach companion).
 
-## Release flow, download and update check (#84)
+## Release flow, download and in-app update (#84, #89)
 
-1. Bump `version` in `desktop/package.json` (the app compares it with the server's version; `x.y.z` only).
-2. `scripts/build-desktop.sh` builds `desktop/dist/Companion-Portable-<version>-x64.exe`.
-3. `scripts/publish-desktop.sh` copies that exe into `<COMPANION_DATA_DIR>/downloads/` (default `~/personal-agent-data`)
-   and writes `desktop.json` there: `{"version":"0.1.0","file":"Companion-Portable-0.1.0-x64.exe"}`.
-   That folder lives outside the checkout, so the normal release (`ops/release.mjs`) leaves it alone and the running
-   service picks the new build up at once, no restart. The exe is never committed to git.
+Why the NSIS installer + electron-updater (chosen over keeping the portable exe and swapping it with a helper): the
+updater verifies the download against the sha512 in `latest.yml`, reports `download-progress`, and `quitAndInstall`
+replaces the app and relaunches it, all maintained code. A portable exe cannot replace itself while running, so it would
+need our own helper process, our own checksum and relaunch logic, all untestable here. Per-user NSIS needs no admin.
 
-Server, owner only (the signed-in pilot account; 404 when no valid `desktop.json` + exe exist, 401 when signed out):
-- `GET /api/desktop` returns `{version, size, sha256}` (the sha256 is computed once per file and cached).
-- `GET /api/desktop/download` serves the exe as `Companion-<version>.exe` with the hash also in `X-Content-Sha256`.
-  Unlike the Android APK (`/companion.apk`, public), these need the login cookie.
+1. Bump `version` in `desktop/package.json` (`x.y.z` only).
+2. `scripts/build-desktop.sh` builds the three files above.
+3. `scripts/publish-desktop.sh` (Blackout's step) copies the installer, blockmap and `latest.yml` into
+   `<COMPANION_DATA_DIR>/downloads/` (default `~/personal-agent-data`) and writes `desktop.json` last:
+   `{"version":"0.4.0","file":"Companion-Setup-0.4.0-x64.exe"}`. It refuses to publish if `latest.yml` is for another
+   version. That folder lives outside the checkout, so `ops/release.mjs` leaves it alone and the service serves the new
+   build at once. Nothing is committed to git.
+
+Server, owner only (404 when no valid `desktop.json` + installer exist, 401 when signed out):
+- `GET /api/desktop` returns `{version, size, sha256}`; `GET /api/desktop/download` serves the installer as
+  `Companion-<version>.exe` with the hash in `X-Content-Sha256`. Unchanged shape (the 0.3.0 banner and the Settings card use them).
+- `GET /api/desktop/update/latest.yml`, `/api/desktop/update/<installer>` and `.../<installer>.blockmap`: the electron-updater
+  generic feed. Same owner check, no other file names are served. Whole files only (no Range), so the app sets
+  `disableDifferentialDownload`; the blockmap is published for a later upgrade.
 
 Clients:
-- Web: Me › Settings shows a "Windows app" card with the version and a Download button, only in a desktop browser
-  (not phones, tablets or the app itself) and only when a build is published (`public/desktop-card.mjs`).
-- App: `src/update.js` asks `/api/desktop` with the app's login session 15 s after start and then every 24 h. If the
-  server version is newer than `app.getVersion()`, a small dismissible "Update available" bar with a Download link
-  appears in the window (re-added after each page load). The link downloads the exe; you run it yourself. Signed out
-  or offline means no banner.
+- Web: Me › Settings shows a "Windows app" card with the version and a Download button (now the installer), only in a desktop
+  browser (not phones, tablets or the app itself) and only when a build is published (`public/desktop-card.mjs`).
+- App (`desktop/src/updater.js`, wired in `main.js`): 15 s after start and every 24 h it checks the feed. The feed needs the
+  login, and electron-updater does not use the window's session, so the window session's cookies for the site are sent as
+  a `Cookie` header. A newer version downloads by itself; a bar at the bottom of the window shows
+  "Downloading update x.y.z: n%" with a progress bar, then "Update x.y.z is ready. **Restart to update**" which calls
+  `quitAndInstall` (installs silently, relaunches the app). Until you click it, nothing is replaced; the old version keeps running.
+  The bar's links are `companion-update://restart|retry`, intercepted in `will-navigate` (nothing is exposed to the page).
+- Errors: a failed download (offline, 401/403, 404, checksum mismatch) shows a plain message and "Try again" on the bar; the
+  installed version is untouched. A failed *background check* (offline at startup) is silent; the next check is in 24 h.
+- Only installed builds update themselves (`app.isPackaged`, not `PORTABLE_EXECUTABLE_FILE`).
+
+### Migration from 0.3.0 (portable)
+
+0.3.0 cannot update itself. Its existing banner ("Update available" → Download) and the Settings card both fetch
+`/api/desktop/download`, which now serves the 0.4.0 installer. So: run that installer **once** (per-user, no admin; it
+installs to `%LOCALAPPDATA%\Programs\Companion` and adds a Start menu entry). From 0.4.0 on, updates happen in the app.
+The user data folder (`%APPDATA%\Companion`: login session, window state, settings) is the same app name as the portable build (not verified on Windows), so
+you stay signed in. Afterwards delete the old portable exe. If "Start with Windows" was on, it still points at the old
+portable exe: toggle it off and on from the 0.4.0 tray menu (and delete the old exe).
+
 ## Login return (#87)
 
 Redirect chain, traced with `curl -sI` on 2026-11-11 (signed out) and from the Android code:
@@ -114,8 +139,8 @@ Not verified in a live Electron window on Windows (no signing-in possible here);
   icon (`setOverlayIcon`, 16x16 bitmap drawn in `src/badge.js`, "9+" above 9) and in the tray tooltip. Cleared when
   the window is shown and focused. The count lives in memory only. It is an arrival counter, not the server's unread totals.
 - **Start with Windows**: tray menu checkbox, off by default, stored in `settings.json` in the user data dir. Uses
-  `app.setLoginItemSettings` with the portable exe path (`PORTABLE_EXECUTABLE_FILE`) and `--hidden`, so it starts in
-  the tray. Only applies to the packaged app. If the portable exe is moved, toggle it off and on.
+  `app.setLoginItemSettings` with the installed exe path and `--hidden`, so it starts in
+  the tray. Only applies to the packaged app.
 - **Global shortcut**: **Ctrl+Alt+C** shows/hides the window (hides only if it is already focused). If another app
   owns it the registration fails silently (logged); the tray still works.
 
@@ -139,5 +164,10 @@ Not verified in a live Electron window on Windows (no signing-in possible here);
   reaches the preload in a real window, autostart from the portable exe's path. The live site must be deployed with
   the `dataArrived` hook before toasts fire; until then the app just shows no toasts.
 - Unsigned: Windows SmartScreen will warn on first run.
-- No tray or notifications (later tickets). No silent self-install: the app only announces updates (below).
-- No auto-update (later ticket).
+- #89 in-app update: **not run on real Windows, not run in a live Electron window, and not run against the real server.**
+  What ran: the state logic and the electron-updater wiring against a fake autoUpdater, the feed endpoints (`node --test`),
+  and the Linux build of the installer (no wine). Unverified: that the installer installs and runs on Windows, that
+  electron-updater really sends the Cookie header and reads the feed behind the login, the progress/restart bar in the window,
+  that `quitAndInstall` relaunches 0.5.0, and the wine-free uninstaller extraction (the installer was not executed, so its
+  uninstaller is untested). The first real test is: install 0.4.0, publish a higher version, wait for the check.
+  The 0.4.0 installer is unsigned: SmartScreen warns on first run.
