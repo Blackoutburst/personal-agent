@@ -75,7 +75,7 @@ Redirect chain, traced with `curl -sI` on 2026-11-11 (signed out) and from the A
 3. `GET /` (platform home) -> 200, no redirect. The page the user reported landing on.
 4. `GET board.blackoutburst.com/` -> **302 to `https://blackoutburst.com/account/`** when signed out. So the Board is an
    SSO hop: it bounces through the account page and only comes back signed in.
-5. `GET /api/account/session` -> 200 JSON `{"user":null,...}` signed out; `user` is an object when signed in.
+5. `GET /api/account/session` -> 200 JSON `{"user":null,...}` signed out (observed). The signed-in body is NOT verified: that endpoint is platform code outside this repo. `isSignedIn` accepts a `user` object with an `id`, the shape `src/account-validator.mjs:46-48` reads from the platform's `/internal/account/session` (200 `{user:{id}}` signed in, 401 signed out; loopback only, not reachable from the app).
    (`/api/account/me` and `/api/desktop` are 404/denied without a login.)
 
 Android does not use a return URL: it starts `/account/?app=companion&challenge=..&state=..` (PKCE) and the platform hands
@@ -87,7 +87,7 @@ back below does not depend on it.
 - bare `/account/` -> reloaded once with `?next=<companion url>` (needs no session);
 - companion and other account/api-account pages -> stay;
 - any other blackoutburst.com page (platform home, Board) -> back to the companion **only if** `signedIn === true`.
-  `main.js` computes that by fetching `/api/account/session` with the window's own session (`isSignedIn`, `user` non-null).
+  `main.js` computes that by fetching `/api/account/session` with the window's own session (`isSignedIn`, `user.id` present).
   Signed out, unknown, or a failed fetch = no redirect, so the Board -> account SSO hop and the login itself are never cut.
   The check is repeated against the current URL after the fetch so a stale answer cannot redirect a page the user left.
 - at most 3 redirects per 10 s as a loop guard. Board links clicked in the chat are not internal, so they still open in

@@ -48,9 +48,14 @@ function afterLogin(raw, signedIn = false, site = SITE) {
   return signedIn === true ? companion.href : null;
 }
 
-// /api/account/session answers {"user": null, ...} signed out and a non-null user object when signed in.
+// Signed in = a user object with an id, the shape the companion server itself relies on for the same platform session
+// (src/account-validator.mjs:46-48 reads body.user.id from the platform's /internal/account/session; 401 when signed out).
+// The public /api/account/session is the platform's own endpoint (not in this repo): signed out was observed as
+// {"user":null,...}; the signed-in body is assumed to carry the same user.id. Tolerant: any other fields are ignored.
 function isSignedIn(body) {
-  return !!body && typeof body === 'object' && !!body.user && typeof body.user === 'object';
+  const u = body && typeof body === 'object' ? body.user : null;
+  if (!u || typeof u !== 'object' || Array.isArray(u)) return false;
+  return (typeof u.id === 'string' && u.id.length > 0) || Number.isInteger(u.id);
 }
 
 module.exports = { SESSION_URL, isSignedIn, SITE, COMPANION_URL, INTERNAL_PATHS, isInternal, isExternalOpenable, afterLogin };

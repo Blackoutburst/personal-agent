@@ -192,7 +192,11 @@ test('afterLogin: where the window goes after sign-in (#87)', () => {
 
 test('isSignedIn reads /api/account/session', () => {
   assert.equal(urls.SESSION_URL, 'https://blackoutburst.com/api/account/session');
+  // signed out, as observed from the live endpoint
   assert.equal(urls.isSignedIn({ user: null, deletionPending: false, services: [] }), false);
+  // signed in: the shape the companion server reads from the platform (src/account-validator.mjs:46-48), extra fields ignored
   assert.equal(urls.isSignedIn({ user: { id: 'u1' } }), true);
-  for (const b of [null, undefined, 'x', 5, [], {}, { user: 'x' }, { user: false }]) assert.equal(urls.isSignedIn(b), false, String(b));
+  assert.equal(urls.isSignedIn({ user: { id: 'abc123', name: 'Blackout', email: 'x@y.z' }, deletionPending: false, services: [] }), true);
+  for (const b of [null, undefined, 'x', 5, [], {}, { user: 'x' }, { user: false }, { user: {} }, { user: [] }, { user: { id: '' } }, { user: { id: {} } }])
+    assert.equal(urls.isSignedIn(b), false, JSON.stringify(b));
 });
