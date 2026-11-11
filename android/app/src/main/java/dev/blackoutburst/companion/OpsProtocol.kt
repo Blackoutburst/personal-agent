@@ -22,7 +22,7 @@ private val opsJson = Json { ignoreUnknownKeys = true; explicitNulls = false; is
     val at: Long = 0, val agents: List<OpsAgent> = emptyList(), val pipeline: Map<String, List<OpsTicket>>? = null,
     val decisions: List<OpsDecision> = emptyList(), val usage: OpsUsage = OpsUsage(),
 )
-@Serializable data class OpsMessage(val id: String = "", val at: String? = null, val author: String = "", val text: String = "")
+@Serializable data class OpsMessage(val id: String = "", val at: Long? = null, val author: String = "", val text: String = "")
 @Serializable data class OpsHistory(val ticketNumber: Int? = null, val title: String = "", val messages: List<OpsMessage> = emptyList())
 
 /** The pipeline columns in display order. */

@@ -43,13 +43,16 @@ test('OpsBoard caches the ticket list and only reads threads of tickets in the a
   const client = { call: async (tool, args) => { calls.push(tool);
     if (tool === 'list_tickets') return { items: [{ id: 't1', number: 75, title: 'Ops', status: 'todo' }] };
     if (tool === 'get_ticket') return { ticket: { thread_id: 'th1' } };
-    return { thread: { messages: [{ id: 'm1', created_at: 'x', author: { label: 'C-chan' }, body: 'hello\u0000' }] } }; } };
+    // The real get_thread shape (Board MCP): messages next to the thread, author objects, created_at in seconds.
+    return { thread: { id: 'th' }, messages: [{ id: 'm1', created_at: 1794396819.5, author: { agent_name: 'C-chan', display_name: 'Blackoutburst', kind: 'agent' }, body: 'hello\u0000' },
+      { id: 'm2', created_at: 1794396900, author: { display_name: 'Blackoutburst', kind: 'human' }, body: 'ok' }] }; } };
   const board = new OpsBoard({ client, projects: ['p'], now: () => 1 });
   await board.tickets(); await board.tickets();
   assert.equal(calls.filter(tool => tool === 'list_tickets').length, 1);
   assert.equal(await board.messages('other'), null);
   const history = await board.messages('t1');
-  assert.deepEqual([history.ticketNumber, history.messages[0].author, history.messages[0].text], [75, 'C-chan', 'hello ']);
+  assert.deepEqual([history.ticketNumber, history.messages[0].author, history.messages[0].text, history.messages[0].at], [75, 'C-chan', 'hello ', 1794396819500]);
+  assert.deepEqual([history.messages[1].author, history.messages[1].at], ['Blackoutburst', 1794396900000]);
 });
 
 test('the Studio HTTP ops action is for members only, read-only and validates the ticket id', async () => {

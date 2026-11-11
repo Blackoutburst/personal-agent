@@ -24,7 +24,7 @@ class OpsProtocolTest {
     }
 
     @Test fun parsesATicketHistoryAndRefusesAWrongShape() {
-        val history = parseOpsHistory(Json.parseToJsonElement("""{"ticketNumber":75,"title":"Ops","messages":[{"id":"m","at":"x","author":"C-chan","text":"accepted"}]}"""))
+        val history = parseOpsHistory(Json.parseToJsonElement("""{"ticketNumber":75,"title":"Ops","messages":[{"id":"m","at":1794396819500,"author":"C-chan","text":"accepted"}]}"""))
         assertEquals("accepted", history.messages[0].text)
         try { parseOps(Json.parseToJsonElement("""{"agents":"nope"}""")); fail() } catch (error: ApiException) { assertEquals("INVALID_RESPONSE", error.code) }
     }

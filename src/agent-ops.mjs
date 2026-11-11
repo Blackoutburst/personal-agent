@@ -17,7 +17,8 @@ export function normalizeStatus(status) {
 export function agentRow(run, now) {
   const live = ACTIVE.has(run.state);
   const startedAt = run.startedAt ?? null;
-  return { runId: run.id, name: run.agent, role: String(run.agent).split('-')[0], model: run.modelAlias, provider: run.provider,
+  // The roster (#73) records each run's role; older runs fall back to the name's prefix (coder-1 -> coder).
+  return { runId: run.id, name: run.agent, role: run.role ?? String(run.agent).split('-')[0], model: run.modelAlias, provider: run.provider,
     ticketNumber: run.ticketNumber ?? null, ticketTitle: clip(run.ticketTitle ?? '', 200), state: run.state, live,
     turns: run.turns ?? 0, maxTurns: run.maxTurns ?? null, branch: run.branch ?? null, startedAt, endedAt: run.endedAt ?? null,
     heartbeatAt: run.heartbeatAt ?? null, heartbeatAgeSeconds: live && run.heartbeatAt ? Math.max(0, Math.round((now - run.heartbeatAt) / 1000)) : null,
@@ -117,10 +118,13 @@ export class OpsBoard {
     const ticket = (await this.#client.call('get_ticket', { ticket_id: ticketId, view: 'full' }))?.ticket;
     const threadId = ticket?.thread_id;
     if (typeof threadId !== 'string') return { ticketNumber: known.number, title: clip(known.title, 200), messages: [] };
-    const thread = (await this.#client.call('get_thread', { thread_id: threadId, limit, view: 'full' }))?.thread ?? {};
-    const raw = thread.messages ?? thread.items ?? [];
+    // get_thread answers { thread, messages }: the messages are next to the thread, not inside it.
+    const read = (await this.#client.call('get_thread', { thread_id: threadId, limit, view: 'full' })) ?? {};
+    const raw = read.messages ?? read.thread?.messages ?? [];
     const messages = (Array.isArray(raw) ? raw : []).slice(-limit).map(message => ({ id: String(message.id ?? ''),
-      at: message.created_at ?? message.at ?? null, author: clip(message.author?.label ?? message.author?.name ?? message.author_label ?? message.author ?? '', 80),
+      // Board times are Unix seconds; the app shows milliseconds like every other Ops time.
+      at: typeof message.created_at === 'number' ? Math.round(message.created_at * 1000) : null,
+      author: clip(message.author?.agent_name ?? message.author?.display_name ?? (typeof message.author === 'string' ? message.author : ''), 80),
       text: clip(typeof message.body === 'string' ? message.body : message.text ?? '', 1500) }));
     return { ticketNumber: known.number, title: clip(known.title, 200), messages };
   }
