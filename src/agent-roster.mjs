@@ -296,7 +296,8 @@ export class Roster {
       const { board } = synced;
       agent.board = { ...board, syncedKey: synced.key, triedAt: this.#now(), error: null };
     }, error => {
-      agent.board = { ...(agent.board ?? {}), triedAt: this.#now(), error: String(error?.code ?? error?.message ?? 'ERROR').slice(0, 160) };
+      const why = [error?.code, error?.message].filter(Boolean).filter((value, index, all) => all.indexOf(value) === index).join(': ');
+      agent.board = { ...(agent.board ?? {}), triedAt: this.#now(), error: (why || 'ERROR').slice(0, 300) };
       this.#log(`roster: Board mirror of ${agent.name} failed: ${agent.board.error}`);
     }).then(() => this.#save());
     this.#chains.set(agent.name, done.catch(() => {}));
