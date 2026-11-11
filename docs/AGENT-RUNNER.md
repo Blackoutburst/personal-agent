@@ -110,6 +110,11 @@ work with its own identity, and the roster in the runner stays the source of tru
 it on, each sync is refused. The roster records `board.error`, keeps working and retries every 10 minutes from the
 Board poll.
 
+`GET /status` carries a `roster` summary (`Roster.summary()`): `agents` (`active`, `paused`, `archived`, each with a
+`total` and a count per role, `coder` and `reviewer`), `teams` (number of active teams) and `board` (`mirrored`
+agents, `pending` ones not yet mirrored, and the latest mirror `error` or `null`). Archived agents count in neither
+`mirrored` nor `pending`.
+
 C-chan's tools: `agents_roster`, `agents_save_agent` (create, or update with `expectedVersion`),
 `agents_archive_agent`, `agents_save_team`, `agents_archive_team`. As with launch and stop, C-chan's own proactive
 wakes cannot use the write tools.
@@ -170,7 +175,7 @@ C-chan is never woken on a timer for this:
 
 | Request | What |
 | --- | --- |
-| `GET /status` | limits, running/queued counts, Board watch state, projects |
+| `GET /status` | limits, running/queued counts, Board watch state, projects, `roster` (see below) |
 | `GET /runs[?active=1]` | runs (instructions are not returned) |
 | `GET /runs/<id>` | one run |
 | `POST /runs` | launch (body as above, plus `mode` and `reviewBranch`; `maxSeconds` instead of `maxMinutes`) |

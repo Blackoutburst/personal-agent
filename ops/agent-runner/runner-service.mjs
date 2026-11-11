@@ -4,7 +4,7 @@
 // reaches it, the sandboxed agents cannot see it (ProtectHome).
 //
 // API (JSON over HTTP on the socket):
-//   GET  /status                     limits, run counts, Board connection
+//   GET  /status                     limits, run counts, Board connection, roster summary
 //   GET  /runs[?active=1]            runs, newest last
 //   GET  /runs/<id>                  one run
 //   GET  /ops                        agents, pipeline, decisions, usage (read-only, for the Studio Ops app)
@@ -87,7 +87,7 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/status') {
       const runs = runner.list();
       return send(200, { limits: runner.limits, running: runs.filter(run => ['preparing', 'running', 'stopping'].includes(run.state)).length,
-        queued: runs.filter(run => run.state === 'queued').length, board: boardState, projects: config.projects });
+        queued: runs.filter(run => run.state === 'queued').length, board: boardState, projects: config.projects, roster: roster.summary() });
     }
     if (request.method === 'GET' && parts[0] === 'runs' && parts.length === 1) return send(200, { runs: runner.list({ active: url.searchParams.get('active') === '1' }) });
     if (request.method === 'GET' && parts[0] === 'runs' && parts.length === 2) {

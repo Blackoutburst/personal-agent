@@ -293,3 +293,38 @@ test('companion tools reach the roster endpoints (#73)', async () => {
   assert.deepEqual(calls[2][2], { name: 'coder-1', model: 'opus', expectedVersion: 1 });
   assert.equal((await agentsOperation(agents, 'c', { op: 'archiveAgent', name: '../x', expectedVersion: 1 })).status, 400);
 });
+
+test('roster summary: counts by status and role, active teams, Board mirror state (#81)', async () => {
+  const empty = new Roster();
+  assert.deepEqual(empty.summary(), { agents: { active: { total: 0, coder: 0, reviewer: 0 }, paused: { total: 0, coder: 0, reviewer: 0 },
+    archived: { total: 0, coder: 0, reviewer: 0 } }, teams: 0, board: { mirrored: 0, pending: 0, error: null } });
+
+  let now = 1000, refuse = true;
+  const mirror = { sync: async view => { if (refuse && view.name === 'rev-1') throw Object.assign(new Error('no grant'), { code: 'FORBIDDEN' }); return { profileId: `p-${view.name}`, version: 1 }; } };
+  const roster = new Roster({ mirror, now: () => now });
+  roster.create({ name: 'coder-1', model: 'haiku' });
+  roster.create({ name: 'coder-2', model: 'haiku' });
+  roster.create({ name: 'rev-1', role: 'reviewer', model: 'opus' });
+  roster.create({ name: 'old', model: 'haiku' });
+  await roster.resync({ minIntervalMs: 0 });
+  roster.update('coder-2', { expectedVersion: 1, status: 'paused' });
+  roster.archive('old', { expectedVersion: 1 });
+  roster.saveTeam({ name: 'a', members: ['coder-1'] });
+  roster.saveTeam({ name: 'b', members: ['rev-1'] });
+  roster.archiveTeam('b', { expectedVersion: 1 });
+  await new Promise(r => setTimeout(r, 20));
+
+  const summary = roster.summary();
+  assert.deepEqual(summary.agents.active, { total: 2, coder: 1, reviewer: 1 });
+  assert.deepEqual(summary.agents.paused, { total: 1, coder: 1, reviewer: 0 });
+  assert.deepEqual(summary.agents.archived, { total: 1, coder: 1, reviewer: 0 });
+  assert.equal(summary.teams, 1);
+  assert.equal(summary.board.error, 'FORBIDDEN: no grant');
+  assert.equal(summary.board.mirrored + summary.board.pending, 3, 'archived agents count in neither');
+  assert.ok(summary.board.pending >= 1);
+
+  refuse = false; now += 60_000;
+  await roster.resync({ minIntervalMs: 0 });
+  await roster.resync({ minIntervalMs: 0 });
+  assert.deepEqual(roster.summary().board, { mirrored: 3, pending: 0, error: null });
+});
