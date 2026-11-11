@@ -47,6 +47,11 @@ test('the owner gets version, size, sha256 and the exe', async t => {
   assert.equal(file.headers.get('x-content-sha256'), sha256);
   assert.deepEqual(file.body, EXE);
   assert.equal((await get('/api/desktop/download', OWNER, 'HEAD')).status, 200);
+  const q = await get('/api/desktop/download?v=0.3.0&x=1');
+  assert.equal(q.status, 200, 'a query string is ignored');
+  assert.deepEqual(q.body, EXE);
+  assert.equal((await get('/api/desktop?cb=1')).status, 200);
+  assert.equal((await get('/api/desktop/download/extra?x=1')).status, 404);
 });
 
 test('the desktop download needs the owner, not just any signed-in account', async t => {

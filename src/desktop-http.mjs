@@ -30,7 +30,8 @@ export function createDesktopHttp({ access, dataDir }) {
     if (admitted.failure) return json(admitted.failure.status, admitted.failure.body);
     const release = desktopRelease(dataDir);
     if (!release) return error(404, 'NOT_FOUND', 'The desktop app is not available yet.');
-    const feed = /^\/api\/desktop\/update\/([A-Za-z0-9._-]{1,100})(?:\?.*)?$/.exec(req.url);
+    const urlPath = req.url.split('?')[0];   // the query string is ignored (cache busters, tracking)
+    const feed = /^\/api\/desktop\/update\/([A-Za-z0-9._-]{1,100})$/.exec(urlPath);
     if (feed) {
       const name = feed[1], base = basename(release.path);
       const file = name === 'latest.yml' ? join(dirname(release.path), 'latest.yml')
@@ -45,8 +46,8 @@ export function createDesktopHttp({ access, dataDir }) {
       stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res);
       return;
     }
-    if (req.url === '/api/desktop') return json(200, { version: release.version, size: release.size, sha256: release.sha256 });
-    if (req.url !== '/api/desktop/download') return error(404, 'NOT_FOUND', 'No such file.');
+    if (urlPath === '/api/desktop') return json(200, { version: release.version, size: release.size, sha256: release.sha256 });
+    if (urlPath !== '/api/desktop/download') return error(404, 'NOT_FOUND', 'No such file.');
     res.writeHead(200, { ...headers, 'content-type': 'application/vnd.microsoft.portable-executable', 'content-length': String(release.size),
       'content-disposition': `attachment; filename="Companion-${release.version}.exe"`, 'x-content-sha256': release.sha256,
       'cross-origin-resource-policy': 'same-origin' });

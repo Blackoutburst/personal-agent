@@ -6,30 +6,36 @@
 // A failed *background check* stays silent (idle): being offline at startup is not worth a message.
 const FEED_URL = 'https://blackoutburst.com/personal-agent-preview/api/desktop/update/';
 const ACTION_PREFIX = 'companion-update://';
-const ACTIONS = ['restart', 'retry'];
+const ACTIONS = ['restart', 'retry', 'dismiss'];
 
 const IDLE = Object.freeze({ phase: 'idle' });
+
+// A dismissal sticks to the version it was made for.
+const keep = (state, version) => (state.dismissed && state.dismissed === version ? { dismissed: version } : {});
 
 function reduce(state, event) {
   switch (event?.type) {
     case 'available':
       if (state.phase === 'downloading' || state.phase === 'ready') return state;
-      return { phase: 'available', version: event.version };
+      return { phase: 'available', version: event.version, ...keep(state, event.version) };
     case 'progress': {
       if (state.phase !== 'available' && state.phase !== 'downloading') return state;
       const n = Number(event.percent);
       const percent = Number.isFinite(n) ? Math.max(0, Math.min(100, Math.floor(n))) : 0;
-      return { phase: 'downloading', version: state.version, percent: Math.max(percent, state.percent ?? 0) };
+      return { phase: 'downloading', version: state.version, percent: Math.max(percent, state.percent ?? 0), ...keep(state, state.version) };
     }
     case 'downloaded':
-      return { phase: 'ready', version: event.version ?? state.version };
+      return { phase: 'ready', version: event.version ?? state.version, ...keep(state, event.version ?? state.version) };
     case 'error':
       if (state.phase === 'idle' || state.phase === 'ready') return state;   // silent check failure; never lose a finished download
       return { phase: 'error', version: state.version, message: String(event.message || 'The update failed.') };
     case 'retry':
       return state.phase === 'error' ? { phase: 'available', version: state.version } : state;
     case 'dismiss':
-      return state.phase === 'ready' ? state : IDLE;
+      // Hide the bar for this version only: a finished download stays ready (tray offers Restart); a newer version shows again.
+      if (state.phase === 'idle') return state;
+      if (state.phase === 'error') return IDLE;
+      return state.dismissed === state.version ? state : { ...state, dismissed: state.version };
     default:
       return state;
   }
@@ -58,6 +64,7 @@ function parseAction(url) {
 
 // What the bar shows for a state; null = nothing. `action` is the companion-update:// link, if any.
 function view(state) {
+  if (state.phase !== 'error' && state.dismissed && state.dismissed === state.version) return null;   // dismissed for this version; errors always show
   switch (state.phase) {
     case 'available': return { text: `Update ${state.version} found, starting download…`, percent: null, action: null, dismissible: true };
     case 'downloading': return { text: `Downloading update ${state.version}: ${state.percent}%`, percent: state.percent, action: null, dismissible: false };
@@ -87,7 +94,7 @@ function bannerScript(v) {
     }
     if (v.dismissible) {
       const x = document.createElement('button'); x.type = 'button'; x.textContent = '×'; x.setAttribute('aria-label', 'Dismiss');
-      x.style.cssText = 'background:none;border:0;font-size:18px;cursor:pointer;color:inherit'; x.onclick = () => bar.remove(); bar.append(x);
+      x.style.cssText = 'background:none;border:0;font-size:18px;cursor:pointer;color:inherit'; x.onclick = () => { location.href = ${JSON.stringify(ACTION_PREFIX + 'dismiss')}; }; bar.append(x);
     }
     document.body.append(bar);
   })()`;
@@ -122,6 +129,7 @@ function createUpdater({ autoUpdater, getHeaders, onState = () => {}, onRestart 
     handleAction(action) {
       if (action === 'restart' && state.phase === 'ready') { onRestart(); autoUpdater.quitAndInstall(false, true); return true; }
       if (action === 'retry' && state.phase === 'error') { apply({ type: 'retry' }); return check().then(() => true); }
+      if (action === 'dismiss') { apply({ type: 'dismiss' }); return true; }
       return false;
     },
     dismiss() { apply({ type: 'dismiss' }); },

@@ -17,8 +17,9 @@ What was tried:
 - NSIS installer target (#89): electron-builder's stock Linux path fails (`spawn wine ENOENT`): it builds the uninstaller by
   running the installer stub under wine. electron-builder has a pure-JS alternative (it reads the uninstaller out of the
   stub's bytes, used for macOS Catalina). `desktop/scripts/build-nsis.js` selects that branch by making
-  `isMacOsCatalina()` return true before running electron-builder (an internal of a lockfile-pinned version; a break fails
-  loudly). Result: a real NSIS per-user installer built on Linux with no wine. Not run on Windows (see below).
+  `isMacOsCatalina()` return true before running electron-builder, wine installed or not. electron-builder is pinned to an exact
+  version (26.18.0); the script refuses any other version, refuses if `NsisTarget.js` no longer has that branch, and fails the
+  build if the pure-JS uninstaller extraction was not actually used (it never falls back to wine). Result: a real NSIS per-user installer built on Linux with no wine. Not run on Windows (see below).
 - Portable target (#84-#88) worked too, and is retired by #89.
 - The system `npm` on the host is broken (missing `semver`). `scripts/build-desktop.sh` therefore
   checks `npm -v`; if it fails (and `NPM_CLI` is not set) it downloads the pinned `npm-10.9.2.tgz`
@@ -64,7 +65,7 @@ need our own helper process, our own checksum and relaunch logic, all untestable
 
 Server, owner only (404 when no valid `desktop.json` + installer exist, 401 when signed out):
 - `GET /api/desktop` returns `{version, size, sha256}`; `GET /api/desktop/download` serves the installer as
-  `Companion-<version>.exe` with the hash in `X-Content-Sha256`. Unchanged shape (the 0.3.0 banner and the Settings card use them).
+  `Companion-<version>.exe` with the hash in `X-Content-Sha256`. A query string on these paths (and the feed) is ignored. Unchanged shape (the 0.3.0 banner and the Settings card use them).
 - `GET /api/desktop/update/latest.yml`, `/api/desktop/update/<installer>` and `.../<installer>.blockmap`: the electron-updater
   generic feed. Same owner check, no other file names are served. Whole files only (no Range), so the app sets
   `disableDifferentialDownload`; the blockmap is published for a later upgrade.
@@ -76,20 +77,40 @@ Clients:
   login, and electron-updater does not use the window's session, so the window session's cookies for the site are sent as
   a `Cookie` header. A newer version downloads by itself; a bar at the bottom of the window shows
   "Downloading update x.y.z: n%" with a progress bar, then "Update x.y.z is ready. **Restart to update**" which calls
-  `quitAndInstall` (installs silently, relaunches the app). Until you click it, nothing is replaced; the old version keeps running.
-  The bar's links are `companion-update://restart|retry`, intercepted in `will-navigate` (nothing is exposed to the page).
+  `quitAndInstall(false, true)`: the app quits, the installer runs with its window visible (`isSilent=false`, a short progress window
+  of the per-user installer, no admin prompt) and starts the new version when it finishes. Until you click it, nothing is replaced; the old version keeps running.
+  The bar's × (`companion-update://dismiss`, the reducer's `dismiss` action) hides the bar for that version, also across the daily
+  re-checks and page reloads, until the app is restarted; a newer version or an error shows the bar again. A dismissed ready
+  update stays ready: the tray menu then offers "Restart to update (x.y.z)".
+  The bar's links are `companion-update://restart|retry|dismiss`, intercepted in `will-navigate` (nothing is exposed to the page).
 - Errors: a failed download (offline, 401/403, 404, checksum mismatch) shows a plain message and "Try again" on the bar; the
   installed version is untouched. A failed *background check* (offline at startup) is silent; the next check is in 24 h.
 - Only installed builds update themselves (`app.isPackaged`, not `PORTABLE_EXECUTABLE_FILE`).
 
 ### Migration from 0.3.0 (portable)
 
-0.3.0 cannot update itself. Its existing banner ("Update available" → Download) and the Settings card both fetch
-`/api/desktop/download`, which now serves the 0.4.0 installer. So: run that installer **once** (per-user, no admin; it
-installs to `%LOCALAPPDATA%\Programs\Companion` and adds a Start menu entry). From 0.4.0 on, updates happen in the app.
-The user data folder (`%APPDATA%\Companion`: login session, window state, settings) is the same app name as the portable build (not verified on Windows), so
-you stay signed in. Afterwards delete the old portable exe. If "Start with Windows" was on, it still points at the old
-portable exe: toggle it off and on from the 0.4.0 tray menu (and delete the old exe).
+0.3.0 cannot update itself. Its banner ("Update available" -> Download) and the Settings card both fetch
+`/api/desktop/download`, which now serves the 0.4.0 installer. Steps for a 0.3.0 user:
+
+1. **Quit 0.3.0 from its tray icon** (right click > Quit; closing the window only hides it). Both builds use the same app
+   name and share one single-instance lock, so a running 0.3.0 would swallow the launch of 0.4.0 and just show its own window.
+2. Download from the banner or Me > Settings > Windows app, and run the installer once. It is per-user (no admin prompt),
+   installs to `%LOCALAPPDATA%\Programs\Companion`, adds a Start menu entry and starts the app. SmartScreen warns (unsigned):
+   More info > Run anyway.
+3. Delete the old portable exe (e.g. `Companion 0.3.0.exe` wherever it was saved) and any desktop/taskbar shortcut you made to it:
+   the installer does not touch them, and a shortcut to the old exe would start 0.3.0 again. Pin the new Start menu entry instead.
+
+What carries over (from the config; **not verified on Windows**):
+- **Login and data: yes.** Both builds run the same `main.js` with `productName: "Companion"` and `app.setName('Companion')`, and
+  nothing sets `userData`, so both use `%APPDATA%\Companion` (session cookies, `window-state.json`, `settings.json`). The portable
+  wrapper only changes where the program is unpacked, not userData. You stay signed in.
+- **Start with Windows: rewritten automatically.** The setting lives in `settings.json` (shared) and `applyAutostart()` runs at
+  every start. On the first 0.4.0 start it calls `setLoginItemSettings` with the installed exe's path; Electron's registry value
+  name defaults to the app name (`Companion`, the same for both builds), so the old entry pointing at the portable exe is
+  overwritten, not duplicated. If the setting was off, the entry is removed. If you ever see two "Companion" entries in
+  Task Manager > Startup, disable the one whose path is the old exe.
+- **Old exe and shortcuts: left alone** (step 3). The old exe also leaves a temp extraction folder in `%TEMP%` that Windows can clean.
+- From 0.4.0 on, updates happen in the app.
 
 ## Login return (#87)
 

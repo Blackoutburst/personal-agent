@@ -54,6 +54,9 @@ function renderUnread(n) {
     else win.setOverlayIcon(null, '');
   }
 }
+// Runs on every start, so the Run entry is rewritten with the path of the exe that is running now. A 0.3.0 portable user who
+// had "Start with Windows" on (same app name -> same registry value name and same settings.json) gets the installed
+// exe's path on the first 0.4.0 start; if it was off, the entry is removed. (#89; not run on Windows)
 function applyAutostart() {
   if (!app.isPackaged) return;
   const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath; // the portable exe, not its temp extraction
@@ -68,6 +71,7 @@ function buildTrayMenu() {
   if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open', click: showWindow },
+    ...(appUpdater && appUpdater.state.phase === 'ready' ? [{ label: `Restart to update (${appUpdater.state.version})`, click: () => appUpdater.handleAction('restart') }] : []),
     { label: 'Start with Windows', type: 'checkbox', checked: settings.autostart, click: (i) => setAutostart(i.checked) },
     { type: 'separator' },
     { label: 'Quit', click: () => { quitting = true; app.quit(); } },
@@ -172,6 +176,7 @@ function createWindow() {
 
 // In-app update (#89): electron-updater against the server feed; the bar in the window shows progress and "Restart to update".
 function renderUpdate() {
+  buildTrayMenu();   // the tray offers Restart to update once a download is ready, even if the bar was dismissed
   if (!appUpdater || !win || win.isDestroyed()) return;
   win.webContents.executeJavaScript(updater.bannerScript(updater.view(appUpdater.state))).catch(() => {});
 }
