@@ -52,11 +52,31 @@ const SANDBOX_COPY = [
   'printf "%s\\n" "$d"'
 ].join('; ');
 
+// Early check (#92): the node that will run the steps (in the sandbox, as the sandbox user) must start and be at least the
+// repo's package.json engines.node minimum (">=X"). Returns a readable refusal, or null.
+async function checkNode(exec) {
+  // One call, plain CommonJS so even a very old node can run it: prints "<version> <engines.node>" from ./package.json.
+  const probe = "var r='';try{r=require('./package.json').engines.node||''}catch(e){};console.log(process.version+' '+r)";
+  const res = await exec(['node', '-e', probe], 60_000);
+  const out = String(res.output ?? '').trim();
+  const [found, ...rest] = out.split('\n').pop().split(' ');
+  if (!res.ok || !/^v\d+\.\d+\.\d+/.test(found ?? '')) return `The node for the merge steps could not be run (${tail(out, 300) || 'no output'}). Set config.merge.nodePath to a node binary the sandbox user can execute.`;
+  const range = rest.join(' ');
+  const min = /(?:^|\s)>=\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(range);
+  if (!min) return null;
+  const have = found.slice(1).split('.').map(Number), need = [min[1], min[2] ?? 0, min[3] ?? 0].map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (have[i] > need[i]) return null;
+    if (have[i] < need[i]) return `The node for the merge steps is too old: found ${found}, the repository needs ${range} (package.json engines). Point config.merge.nodePath at a newer node (default: the runner's own, ${process.execPath}).`;
+  }
+  return null;
+}
+
 // sandbox: (command, { cwd, timeoutMs }) => argv, wraps a command to run in the agent sandbox in cwd (see SandboxOps.merge).
 // origin: a Git URL or path. source: the sandbox clone holding the reviewed branch. Returns { status, ... }.
 // sandboxDir: where the sandbox user makes its test copies (required with sandbox; under the sandbox root).
 export async function mergeAccepted({ origin, source, branch, expectedHead, base = 'main', ticketNumber = null,
-  identity = DEFAULT_IDENTITY, testCommand = ['node', '--test'], prepareCommand = null, sandbox = null, sandboxDir = null, attempts = 3,
+  identity = DEFAULT_IDENTITY, testCommand = ['node', '--test'], prepareCommand = null, nodePath = null, sandbox = null, sandboxDir = null, attempts = 3,
   testTimeoutMs = 30 * 60_000, gitTimeoutMs = 120_000, tmp = tmpdir() } = {}) {
   if (sandbox && !(typeof sandboxDir === 'string' && isAbsolute(sandboxDir))) return { status: 'error', output: 'sandboxDir: an absolute path is needed with sandbox.' };
   mkdirSync(tmp, { recursive: true });
@@ -136,7 +156,18 @@ export async function mergeAccepted({ origin, source, branch, expectedHead, base
       }
       const copy = join(testDir, 'repo');
       const env = { PATH: process.env.PATH, HOME: home, LANG: 'C.UTF-8', CI: '1' };
-      const exec = (command, timeout) => sandbox ? inSandbox(command, { cwd: copy, timeout }) : run(command[0], command.slice(1), { cwd: copy, env, timeout });
+      // The runner's own node runs the steps (#92), not whatever `node` comes first on the sandbox PATH (an old system node
+      // there broke the prepare step). Only a leading bare `node` is replaced, by an explicit argv word: it needs no PATH in
+      // the sandbox, only to be executable by the sandbox user.
+      const withNode = command => nodePath && command[0] === 'node' ? [nodePath, ...command.slice(1)] : command;
+      const exec = (command, timeout) => {
+        command = withNode(command);
+        return sandbox ? inSandbox(command, { cwd: copy, timeout }) : run(command[0], command.slice(1), { cwd: copy, env, timeout });
+      };
+      if (prepareCommand?.[0] === 'node' || testCommand[0] === 'node') {
+        const refused = await checkNode(exec);
+        if (refused) return fail('error', refused, { head, baseHead: tip });
+      }
       if (prepareCommand) {
         step = await exec(prepareCommand, testTimeoutMs);
         if (!step.ok) return fail('error', `Preparing the test run failed (${prepareCommand.join(' ')}): ${step.output}`, { head, baseHead: tip });

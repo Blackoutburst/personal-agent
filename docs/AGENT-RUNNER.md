@@ -135,7 +135,7 @@ the run fails with `POLICY`, whatever the agent reported.
   thread says why, and the Manager line is `merge_failed`. Retrying after an interruption is safe: a head that is
   already part of `main` is reported as merged.
 
-`config.merge` (see `ops/agent-runner/config.example.json`): `identity`, `testCommand` (default `["node","--test"]`),
+`config.merge` (see `ops/agent-runner/config.example.json`): `identity`, `nodePath` (optional; the node binary that runs a leading `node` in `prepareCommand`/`testCommand`. Default: the runner's own `process.execPath`, passed as an explicit argv word through `cchan-sandbox-run`, so the sandbox PATH's `node` is never used (#92); the sandbox user must be able to execute it. Before any step the merge runs `node --version` in the test copy and refuses with a readable `MERGE_ERROR` naming the version found if it is older than `package.json` `engines.node`, or cannot be run), `testCommand` (default `["node","--test"]`),
 `prepareCommand` (runs before the tests; the example config uses `["node","ops/sandbox/install-deps.mjs"]` to link
 `node_modules`; its failure is `MERGE_ERROR`, not a test failure. Without it, a test run that cannot start because
 packages are missing is also `MERGE_ERROR`), and `origin` (required: the push target, in the example

@@ -139,10 +139,10 @@ test('merge: the test and prepare steps go through the sandbox wrapper, git does
   const result = await merge(r, head, { sandbox, sandboxDir, prepareCommand: ['node', '-e', '0'], testTimeoutMs: 90_000 });
   assert.equal(result.status, 'merged', result.output);
   // The sandbox makes its own copy (from a bundle on stdin), prepare and test run in it, and the sandbox removes it.
-  assert.deepEqual(seen.map(s => s.command[0] === 'sh' ? ['sh', s.command.at(-2), s.command.at(-1)] : s.command),
-    [['sh', sandboxDir, result.mergeCommit], ['node', '-e', '0'], ['node', '--test'], ['rm', '-rf', '--', seen[1].cwd.replace(/\/repo$/, '')]]);
+  assert.deepEqual(seen.map(s => s.command[0] === 'sh' ? ['sh', s.command.at(-2), s.command.at(-1)] : s.command[1] === '-e' && /process.version/.test(s.command[2]) ? 'node-check' : s.command),
+    [['sh', sandboxDir, result.mergeCommit], 'node-check', ['node', '-e', '0'], ['node', '--test'], ['rm', '-rf', '--', seen[2].cwd.replace(/\/repo$/, '')]]);
   assert.equal(seen[0].cwd, join(r.root, 'sbroot'));
-  assert.ok(seen.slice(1, 3).every(s => s.cwd.startsWith(`${sandboxDir}/cchan-merge-test-`) && s.cwd.endsWith('/repo') && s.timeoutMs === 90_000));
+  assert.ok(seen.slice(2, 4).every(s => s.cwd.startsWith(`${sandboxDir}/cchan-merge-test-`) && s.cwd.endsWith('/repo') && s.timeoutMs === 90_000));
   assert.deepEqual(execFileSync('ls', [sandboxDir]).toString().trim(), '', 'the sandbox removed its copy');
 });
 
@@ -225,11 +225,11 @@ test('SandboxOps.merge pushes to config.merge.origin and wraps the sandbox steps
   assert.equal(r.mainOf(), result.mergeCommit); assert.notEqual(result.mergeCommit, before);
   assert.equal(git(evil, 'for-each-ref'), '', 'nothing went to the clone\'s remote');
   const calls = readFileSync(log, 'utf8').trim().split('\n');
-  assert.equal(calls.length, 4, 'make the copy, prepare, test, remove the copy');
+  assert.equal(calls.length, 5, 'make the copy, check node, prepare, test, remove the copy');
   assert.ok(calls[0].startsWith(`-n ${WRAPPER} --cwd ${sbroot} --max-seconds `) && / -- sh -c /.test(calls[0]), calls[0]);
   assert.ok(calls[0].endsWith(` sh ${join(sbroot, 'merge')} ${result.mergeCommit}`), calls[0]);
-  for (const line of calls.slice(1, 3)) assert.match(line, new RegExp(`^-n ${WRAPPER} --cwd ${join(sbroot, 'merge')}/cchan-merge-test-[A-Za-z0-9]{8}/repo --max-seconds \\d+ -- node `));
-  assert.match(calls[3], new RegExp(`^-n ${WRAPPER} --cwd ${sbroot} --max-seconds \\d+ -- rm -rf -- ${join(sbroot, 'merge')}/cchan-merge-test-[A-Za-z0-9]{8}$`));
+  for (const line of calls.slice(1, 4)) assert.match(line, new RegExp(`^-n ${WRAPPER} --cwd ${join(sbroot, 'merge')}/cchan-merge-test-[A-Za-z0-9]{8}/repo --max-seconds \\d+ -- ${process.execPath} `));
+  assert.match(calls[4], new RegExp(`^-n ${WRAPPER} --cwd ${sbroot} --max-seconds \\d+ -- rm -rf -- ${join(sbroot, 'merge')}/cchan-merge-test-[A-Za-z0-9]{8}$`));
   assert.equal(execFileSync('ls', [join(sbroot, 'merge')]).toString().trim(), '', 'the copy is gone');
   assert.equal(execFileSync('ls', [owner]).toString().trim(), '', 'the owner\'s clones are gone, and were never under the sandbox root');
 });
@@ -444,4 +444,42 @@ test('Board reporter: a moved branch or push failure leaves the ticket in review
   await reporter.finish(run);
   assert.ok(!b.calls.some(call => call.tool === 'update_ticket'));
   assert.match(b.calls.filter(call => call.tool === 'post_message').at(-1).args.body, /stays in review/);
+});
+
+// A stand-in for the sandbox's node: `node` on this PATH is a fake old node, the real one is only reachable by path.
+function fakeOldNode(r, version) {
+  const bin = join(r.root, 'oldbin'); mkdirSync(bin);
+  writeFileSync(join(bin, 'node'), `#!/bin/sh\necho "${version} $('${process.execPath}' -p "require('./package.json').engines.node" 2>/dev/null)"\n`, { mode: 0o755 });
+  return bin;
+}
+const withPath = (bin, cwdWrap = inCwd) => (command, { cwd }) => ['env', `PATH=${bin}:${process.env.PATH}`, ...cwdWrap(command, cwd)];
+
+test('merge: an old node in the sandbox is refused with the version found, before any step runs (#92)', async t => {
+  const r = repos(t);
+  const head = r.onBranch(BRANCH, { 'package.json': JSON.stringify({ engines: { node: '>=24.22.1 <25' } }) });
+  const sandboxDir = join(r.root, 'sbroot', 'merge'); mkdirSync(join(r.root, 'sbroot'));
+  const bin = fakeOldNode(r, 'v12.22.9');
+  const before = r.mainOf();
+  const result = await merge(r, head, { sandbox: withPath(bin), sandboxDir, prepareCommand: ['node', '-e', 'process.exit(5)'] });
+  assert.equal(result.status, 'error');
+  assert.match(result.output, /too old: found v12\.22\.9, the repository needs >=24\.22\.1 <25/);
+  assert.doesNotMatch(result.output, /SyntaxError|Preparing the test run/);
+  assert.equal(r.mainOf(), before);
+});
+
+test('merge: with nodePath the prepare and test steps run on that node, not the first node on the sandbox PATH (#92)', async t => {
+  const r = repos(t);
+  const head = r.onBranch(BRANCH, { 'package.json': JSON.stringify({ engines: { node: '>=20' } }), 'ok.test.mjs': PASS });
+  const sandboxDir = join(r.root, 'sbroot', 'merge'); mkdirSync(join(r.root, 'sbroot'));
+  const bin = fakeOldNode(r, 'v12.22.9');
+  const sandbox = withPath(bin);
+  const old = await merge(r, head, { sandbox, sandboxDir });
+  assert.match(old.output, /too old: found v12/, 'without nodePath the fake old node is what runs');
+  const result = await merge(r, head, { sandbox, sandboxDir, nodePath: process.execPath, prepareCommand: ['node', '-e', '0'] });
+  assert.equal(result.status, 'merged', result.output);
+  // An unrunnable node path is a readable error too.
+  const r2 = repos(t);
+  const head2 = r2.onBranch(BRANCH, { 'x.txt': 'x\n' });
+  const bad = await merge(r2, head2, { sandbox: withPath(bin), sandboxDir: join(r.root, 'sbroot', 'merge'), nodePath: '/nonexistent/node' });
+  assert.equal(bad.status, 'error'); assert.match(bad.output, /could not be run.*config\.merge\.nodePath/s);
 });

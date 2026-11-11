@@ -95,10 +95,10 @@ export class SandboxOps {
   // user can rewrite) with the owner's configured identity and keys. See src/agent-merge.mjs. The owner's clones go to
   // its own (private) temp dir; the sandbox user makes the test copy under <root>/merge itself, so nothing has to be
   // created there for the owner.
-  async merge({ repo, branch, base, expectedHead, ticketNumber, origin = null, identity = DEFAULT_IDENTITY, testCommand, prepareCommand, tmp = tmpdir() }) {
+  async merge({ repo, branch, base, expectedHead, ticketNumber, origin = null, identity = DEFAULT_IDENTITY, testCommand, prepareCommand, nodePath = process.execPath, tmp = tmpdir() }) {
     if (typeof origin !== 'string' || !origin.trim()) return { status: 'error', output: 'No push target: set config.merge.origin (e.g. https://github.com/Blackoutburst/personal-agent.git).' };
     const dir = join(this.#root, 'repos', repo + '.git');
-    return mergeAccepted({ origin: origin.trim(), source: dir, branch, expectedHead, base, ticketNumber, identity, testCommand, prepareCommand,
+    return mergeAccepted({ origin: origin.trim(), source: dir, branch, expectedHead, base, ticketNumber, identity, testCommand, prepareCommand, nodePath,
       tmp, sandboxDir: join(this.#root, 'merge'), sandbox: (command, { cwd, timeoutMs }) => [this.#sudo, '-n', WRAPPER, '--cwd', cwd,
         '--max-seconds', String(Math.ceil((timeoutMs ?? 1_800_000) / 1000)), '--', ...command] });
   }
