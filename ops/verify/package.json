@@ -1,0 +1,7 @@
+{
+  "name": "personal-agent-verify-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser driver for the agent verification tool (#78). Kept out of the app's own package.json: the app has no browser dependency.",
+  "dependencies": { "playwright-core": "1.49.0" }
+}

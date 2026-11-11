@@ -75,6 +75,12 @@ uncommitted files but keeps the branch for review, unless `--delete-branch` is p
 `NoNewPrivileges` and cannot use sudo. The runner therefore runs as its own small service (#72) rather than inside
 the companion process.
 
+## Tests and the verification browser in a worktree (#78)
+
+A fresh worktree has no `node_modules`. Run `node ops/sandbox/install-deps.mjs` once: it installs the lock file's pinned
+packages into `/var/lib/cchan-agents/deps/<lock sha256>` and links `./node_modules`, so `node --test` passes. The
+browser used to operate the app is set up by `node ops/verify/verify.mjs setup`; see [VERIFICATION.md](VERIFICATION.md).
+
 ## Install, update and verify
 
 ```sh

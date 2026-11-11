@@ -1,0 +1,138 @@
+{
+  "app": "personal-agent companion web app",
+  "note": "Every feature is reached in the real app by its URL hash. `ready` is a selector that is visible only once the screen really shows. Keep this file in step with public/index.html and the router in public/companion-app.mjs (test/verify.test.mjs fails when they drift; `verify.mjs check-map` visits every entry in the running app).",
+  "setup": {
+    "id": "onboard",
+    "title": "First run: choose a companion",
+    "why": "A fresh data dir has no companion, so every hash shows the look picker until one is saved.",
+    "steps": [
+      {
+        "do": "goto",
+        "hash": ""
+      },
+      {
+        "do": "wait",
+        "selector": "#view-look:not([hidden])"
+      },
+      {
+        "do": "fill",
+        "selector": "#name",
+        "value": "Verify"
+      },
+      {
+        "do": "click",
+        "selector": "#save-look"
+      },
+      {
+        "do": "wait",
+        "selector": "#view-chat:not([hidden])"
+      }
+    ]
+  },
+  "features": [
+    {
+      "id": "chat",
+      "title": "Chat with the companion",
+      "hash": "chat",
+      "ready": "#view-chat:not([hidden]) #input",
+      "reach": "Default screen after onboarding; the Chat link in the top bar, or the companion avatar top left.",
+      "source": [
+        "public/companion-app.mjs",
+        "public/conversation-client.mjs"
+      ]
+    },
+    {
+      "id": "calendar",
+      "title": "Calendar",
+      "hash": "calendar",
+      "ready": "#view-calendar:not([hidden])",
+      "reach": "Calendar link in the top bar.",
+      "source": [
+        "public/calendar-ui.mjs"
+      ]
+    },
+    {
+      "id": "me-profile",
+      "title": "Me > Your profile",
+      "hash": "me/profile",
+      "ready": "#view-me:not([hidden]) #me-tabs a[data-section=profile][aria-current]",
+      "reach": "Me link in the top bar, then the Your profile tab.",
+      "source": [
+        "public/owner-profile-ui.mjs"
+      ]
+    },
+    {
+      "id": "me-memories",
+      "title": "Me > Memories",
+      "hash": "me",
+      "ready": "#view-me:not([hidden]) #view-memories:not([hidden])",
+      "reach": "Me link in the top bar (opens on Memories).",
+      "source": [
+        "public/memory-ui.mjs"
+      ]
+    },
+    {
+      "id": "me-companion",
+      "title": "Me > Companion (look, personality, weather)",
+      "hash": "me/companion",
+      "ready": "#view-look:not([hidden])",
+      "reach": "Me > Companion tab.",
+      "source": [
+        "public/personality-ui.mjs",
+        "public/companion-character.mjs"
+      ]
+    },
+    {
+      "id": "me-watches",
+      "title": "Me > Watches (release watches, reminders)",
+      "hash": "me/watches",
+      "ready": "#view-me:not([hidden]) #me-tabs a[data-section=watches][aria-current]",
+      "reach": "Me > Watches tab.",
+      "source": [
+        "public/reminders-ui.mjs"
+      ]
+    },
+    {
+      "id": "me-connectors",
+      "title": "Me > Connectors (GitHub, mail, X, Discord)",
+      "hash": "me/connectors",
+      "ready": "#view-me:not([hidden]) #me-tabs a[data-section=connectors][aria-current]",
+      "reach": "Me > Connectors tab.",
+      "source": [
+        "public/companion-app.mjs"
+      ]
+    },
+    {
+      "id": "me-settings",
+      "title": "Me > Settings (notifications, voice, devices)",
+      "hash": "me/settings",
+      "ready": "#view-me:not([hidden]) #me-tabs a[data-section=settings][aria-current]",
+      "reach": "Me > Settings tab.",
+      "source": [
+        "public/web-push-ui.mjs",
+        "public/voice-ui.mjs"
+      ]
+    },
+    {
+      "id": "group",
+      "title": "Group chats",
+      "hash": "group",
+      "ready": "#view-group:not([hidden])",
+      "reach": "#group URL (the Group link appears in the top bar when groups are available to the owner).",
+      "source": [
+        "public/group-ui.mjs"
+      ]
+    },
+    {
+      "id": "studio",
+      "title": "Studio (mail, calendar, Ops)",
+      "hash": "studio",
+      "ready": "#view-studio:not([hidden])",
+      "reach": "#studio URL (the Studio link appears only for owners granted Studio access; the verification harness grants none, so the view is reachable by URL but empty).",
+      "source": [
+        "public/studio-ui.mjs",
+        "public/ops-ui.mjs"
+      ]
+    }
+  ]
+}
