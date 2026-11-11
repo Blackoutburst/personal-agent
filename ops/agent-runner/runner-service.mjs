@@ -60,7 +60,7 @@ async function poll() {
     boardState = { ok: true, at: Date.now(), error: null };
     await roster.resync();
   } catch (error) {
-    if (boardState.ok !== false) log(`Board watch failed: ${error.code ?? error.message}`);
+    if (boardState.ok !== false) log(`Board watch failed: ${error.code ? `${error.code}: ${error.message}` : error.message}`);
     boardState = { ok: false, at: Date.now(), error: String(error.code ?? 'ERROR') };
   }
 }
@@ -97,7 +97,7 @@ const server = createServer(async (request, response) => {
     // Read-only data for the Studio Ops app (#75): agents, pipeline, decisions and usage.
     if (request.method === 'GET' && url.pathname === '/ops') {
       let tickets = null;
-      try { tickets = await opsBoard.tickets(); } catch (error) { log(`ops: Board read failed: ${error.code ?? error.message}`); }
+      try { tickets = await opsBoard.tickets(); } catch (error) { log(`ops: Board read failed: ${error.code ? `${error.code}: ${error.message}` : error.message}`); }
       return send(200, buildOps({ runs: runner.list(), events: runner.events(0), tickets }));
     }
     if (request.method === 'GET' && parts[0] === 'tickets' && parts[2] === 'messages' && parts.length === 3 && /^[A-Za-z0-9_-]{1,100}$/.test(parts[1])) {

@@ -91,7 +91,13 @@ export class BoardClient {
 
   async call(name, args = {}) {
     await this.#start();
-    return this.#tool(name, args);
+    try { return await this.#tool(name, args); } catch (error) {
+      // An owner edit to the Board profile bumps its version; the Board then refuses every call with
+      // "Agent profile changed; explicitly register again". Re-register once and retry instead of staying refused.
+      if (name === 'register_agent' || !(error instanceof BoardClientError) || !/register again/i.test(error.message)) throw error;
+      await this.#tool('register_agent', { label: this.label, skills: [] });
+      return this.#tool(name, args);
+    }
   }
 
   close() { this.#reset(new BoardClientError('BOARD_CLOSED', 'The Board connection was closed.')); }

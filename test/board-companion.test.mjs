@@ -278,6 +278,36 @@ test('the Board client unwraps FastMCP list results and passes objects through',
   } finally { client.close(); }
 });
 
+// #73 follow-up: an owner edit to the Board profile bumps its version; the client registers again and retries once.
+test('the Board client registers again after a profile version change and retries the call once', async () => {
+  const { BoardClient } = await import('../src/board-client.mjs');
+  const { EventEmitter } = await import('node:events');
+  const calls = []; let stale = 1;
+  const spawnImpl = () => {
+    const child = new EventEmitter(); child.stdout = new PassThrough(); child.stdin = new PassThrough(); child.kill = () => {};
+    child.stdin.on('data', chunk => { for (const line of chunk.toString().split('\n').filter(Boolean)) {
+      const message = JSON.parse(line); if (message.id === undefined) continue;
+      let result = {};
+      if (message.method === 'tools/call') {
+        const name = message.params.name; calls.push(name);
+        result = name === 'read_inbox' && stale-- > 0
+          ? { isError: true, content: [{ type: 'text', text: 'Agent profile changed; explicitly register again before continuing' }] }
+          : { structuredContent: { ok: name } };
+      }
+      child.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\n');
+    } });
+    return child;
+  };
+  const client = new BoardClient({ board, spawnImpl, sessionId: 'runner-x' });
+  try {
+    assert.deepEqual(await client.call('read_inbox', {}), { ok: 'read_inbox' });
+    assert.deepEqual(calls, ['register_agent', 'read_inbox', 'register_agent', 'read_inbox']);
+    stale = 5; // still refused after one retry: the error reaches the caller, no loop.
+    await assert.rejects(client.call('read_inbox', {}), /register again/);
+    assert.equal(calls.length, 7);
+  } finally { client.close(); }
+});
+
 // #51: every mention either queues a wake or leaves a reason in the log.
 test('baseline skips, replays and queued wakes are logged with counts only', async t => {
   const lines = []; let pending = [ping('old1')];
