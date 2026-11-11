@@ -222,7 +222,7 @@ test('Board reporter: claim, Runtime execution with cleanup proof, review with e
   const update = client.calls.find(call => call[0] === 'update_ticket')[1];
   assert.equal(update.expected_version, 4); assert.equal(update.changes.status, 'review'); assert.equal(update.changes.outcome, 'Did it.');
   assert.match(update.changes.evidence, /tests pass/); assert.match(update.changes.evidence, /cleanup confirmed/);
-  assert.match(update.changes.evidence, /git fetch \/var\/lib\/cchan-agents\/repos\/personal-agent\.git agent\/coder\/t7/);
+  assert.match(update.changes.evidence, /git fetch --upload-pack=\"git -c safe\.directory=\/var\/lib\/cchan-agents\/repos\/personal-agent\.git upload-pack\" \/var\/lib\/cchan-agents\/repos\/personal-agent\.git agent\/coder\/t7:review\/coder-t7/);
   assert.ok(client.calls.filter(call => call[0] === 'post_message').length >= 2);
 });
 

@@ -44,7 +44,8 @@ agents cannot see it, because `ProtectHome` hides `/home`.
    `finish_execution` reports `cleanup_confirmed` to the Board accordingly.
 8. **Board result.**
    - Success: the ticket goes to **review** with the agent's outcome and evidence, plus the runner's summary (model,
-     turns, minutes, branch @ head, commits, cleanup) and the `git fetch` line for reviewing the branch.
+     turns, minutes, branch @ head, commits, cleanup) and the `git fetch` line for reviewing the branch (with `--upload-pack` setting
+     `safe.directory`, because the bare clone belongs to `cchan-agents`; the reviewer needs the `cchan-agents` group).
    - Blocked: a **Needs-you** question goes to the owner.
    - Failure, timeout or stop: the ticket goes back to **todo** with the reason, and the claim is released.
    - Every step is also posted on the ticket's thread.

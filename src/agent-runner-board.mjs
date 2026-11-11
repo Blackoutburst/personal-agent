@@ -25,6 +25,12 @@ const minutes = run => run.startedAt && run.endedAt ? Math.max(1, Math.round((ru
 const FINISH_REASON = { succeeded: 'completed', blocked: 'completed', stopped: 'stop_requested', cancelled: 'cancelled',
   timeout: 'timeout', interrupted: 'runner_error' };
 
+// The bare clone belongs to cchan-agents, so a reviewer's fetch needs safe.directory on the upload-pack side too.
+export function reviewFetch(repo, branch) {
+  const dir = `/var/lib/cchan-agents/repos/${repo}.git`;
+  return `Review: git fetch --upload-pack="git -c safe.directory=${dir} upload-pack" ${dir} ${branch}:review/${branch.split('/').slice(1).join('-')}`;
+}
+
 export function runSummary(run) {
   const parts = [`run ${run.id}`, `${run.provider}/${run.modelAlias}`, `${run.turns} turn(s)`];
   const took = minutes(run); if (took) parts.push(`${took} min`);
@@ -135,7 +141,7 @@ export class BoardReporter {
       const result = run.result ?? {};
       const outcome = result.kind === 'done' ? result.outcome
         : `${run.agent} finished without the OUTCOME block. Its last words: ${result.outcome ?? ''}`.slice(0, 4000);
-      const evidence = [result.evidence, `Runner: ${summary}.`, run.branch ? `Review: git fetch /var/lib/cchan-agents/repos/${run.repo}.git ${run.branch}` : '']
+      const evidence = [result.evidence, `Runner: ${summary}.`, run.branch ? reviewFetch(run.repo, run.branch) : '']
         .filter(Boolean).join('\n\n');
       await this.#ticket(run, { status: 'review', outcome, evidence, release_claim: true });
       await this.#post(run, `${run.agent} finished; the ticket is in review. ${summary}.`, 'finished');
