@@ -9,7 +9,7 @@ const updater = require('./src/updater');
 const settingsStore = require('./src/settings');
 const { parseArrival, createUnread, toastFor, tooltip } = require('./src/unread');
 const { badgeBitmap } = require('./src/badge');
-const { withDot } = require('./src/dot');
+const { dottedBitmap } = require('./src/icon');
 
 app.setName('Companion');
 // Persistent default session: cookies from the platform login survive restarts.
@@ -41,17 +41,24 @@ function appIcon(unreadLook, size) {
   if (!iconCache.has(key)) {
     let img = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
     img = img.resize({ width: size, height: size, quality: 'best' });
-    if (unreadLook) img = nativeImage.createFromBitmap(withDot(img.toBitmap(), size), { width: size, height: size });
+    if (unreadLook) {
+      try { const b = dottedBitmap(img); img = nativeImage.createFromBitmap(b.buffer, { width: b.width, height: b.height }); }
+      catch (e) { console.error('unread icon failed, using the plain icon:', e); } // never take the main process down (#93)
+    }
     iconCache.set(key, img);
   }
   return iconCache.get(key);
 }
 function renderUnread(n) {
-  if (tray) { tray.setToolTip(tooltip(n)); tray.setImage(appIcon(n > 0, 32)); }
+  try {
+    if (tray) { tray.setToolTip(tooltip(n)); tray.setImage(appIcon(n > 0, 32)); }
+  } catch (e) { console.error('tray update failed:', e); }
   if (win && !win.isDestroyed()) {
-    win.setIcon(appIcon(n > 0, 256));
-    if (n > 0) { const b = badgeBitmap(n); win.setOverlayIcon(nativeImage.createFromBitmap(b.buffer, { width: b.width, height: b.height }), `${n} unread`); }
-    else win.setOverlayIcon(null, '');
+    try { win.setIcon(appIcon(n > 0, 256)); } catch (e) { console.error('window icon failed:', e); }
+    try {
+      if (n > 0) { const b = badgeBitmap(n); win.setOverlayIcon(nativeImage.createFromBitmap(b.buffer, { width: b.width, height: b.height }), `${n} unread`); }
+      else win.setOverlayIcon(null, '');
+    } catch (e) { console.error('overlay badge failed:', e); }
   }
 }
 // Runs on every start, so the Run entry is rewritten with the path of the exe that is running now. A 0.3.0 portable user who

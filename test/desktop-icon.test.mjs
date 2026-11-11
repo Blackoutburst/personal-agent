@@ -52,3 +52,31 @@ test('exe icon can be set and read back (portable executable fixture)', { skip: 
   const got = readExeIcons(setExeIcon(exe, ico)).map((i) => i.sha256).sort();
   assert.deepEqual(got, icoImages(ico).map((i) => i.sha256).sort());
 });
+
+// #93: the real buffer-building code, fed an image-like object for every size the app uses (and DPI-scaled bitmaps).
+const { dottedBitmap } = require('../desktop/src/icon.js');
+const fakeImg = (bytes) => ({ toBitmap: () => Buffer.alloc(bytes, 0x80) });
+
+test('dottedBitmap: buffer length equals width*height*4 for every size used (window 256, tray 32, others)', () => {
+  for (const size of [16, 24, 32, 48, 64, 128, 256]) {
+    const b = dottedBitmap(fakeImg(size * size * 4));
+    assert.equal(b.width, size); assert.equal(b.height, size);
+    assert.equal(b.buffer.length, b.width * b.height * 4, String(size));
+  }
+});
+
+test('dottedBitmap: a DPI-scaled bitmap (e.g. 32px asked, 64px returned) gets matching dimensions, not the requested size', () => {
+  const b = dottedBitmap(fakeImg(64 * 64 * 4));
+  assert.deepEqual([b.width, b.height, b.buffer.length], [64, 64, 64 * 64 * 4]);
+});
+
+test('dottedBitmap throws on a non-square buffer, so the caller keeps the plain icon', () => {
+  assert.throws(() => dottedBitmap(fakeImg(32 * 32 * 4 + 4)), /not a square/);
+  assert.throws(() => dottedBitmap(fakeImg(0)), /not a square/);
+});
+
+test('main.js wraps the icon path so an error can never reach the main process', () => {
+  const src = fs.readFileSync(new URL('../desktop/main.js', import.meta.url), 'utf8');
+  assert.match(src, /try \{ const b = dottedBitmap\(img\)[\s\S]*?catch \(e\) \{ console\.error/);
+  assert.match(src, /function renderUnread[\s\S]*?try \{[\s\S]*?tray\.setImage/);
+});
