@@ -1,0 +1,80 @@
+// The runner's OS side (#72): everything goes through the sandbox wrapper from #71 (docs/SANDBOX.md). The runner
+// service runs as the owner account (it needs sudo for cchan-sandbox-run, which the companion service cannot use).
+import { execFile, spawn as nodeSpawn } from 'node:child_process';
+import { join } from 'node:path';
+
+export const WRAPPER = '/usr/local/sbin/cchan-sandbox-run';
+export const SANDBOX_NODE = '/var/lib/cchan-agents/bin/node';
+export const WORKTREE_CLI = '/usr/local/lib/cchan-sandbox/ops/sandbox/worktree.mjs';
+export const SANDBOX_ROOT = '/var/lib/cchan-agents';
+const UNIT = /^cchan-agent-[a-z0-9-]{1,60}$/;
+
+function run(execImpl, binary, args, { timeout = 120_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    execImpl(binary, args, { encoding: 'utf8', timeout, maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
+      if (error) { error.stdout = stdout; error.stderr = stderr; reject(error); } else resolve(stdout);
+    });
+  });
+}
+
+export class SandboxOps {
+  #exec; #spawn; #sudo; #root;
+  constructor({ execImpl = execFile, spawnImpl = nodeSpawn, sudo = '/usr/bin/sudo', root = SANDBOX_ROOT } = {}) {
+    this.#exec = execImpl; this.#spawn = spawnImpl; this.#sudo = sudo; this.#root = root;
+  }
+
+  async #worktree(args) {
+    let out;
+    try { out = await run(this.#exec, this.#sudo, ['-n', WRAPPER, '--', SANDBOX_NODE, WORKTREE_CLI, ...args]); }
+    catch (error) {
+      let detail = null;
+      try { detail = JSON.parse(error.stdout || '{}'); } catch { /* not JSON */ }
+      throw Object.assign(new Error(detail?.error ?? 'The sandbox worktree command failed.'), { code: detail?.code ?? 'SANDBOX_ERROR' });
+    }
+    return JSON.parse(out);
+  }
+
+  createWorktree({ repo, agent, ticket, base = 'main' }) {
+    return this.#worktree(['create', '--repo', repo, '--agent', agent, '--ticket', ticket, '--base', base]);
+  }
+
+  removeWorktree({ repo, agent, ticket }) {
+    return this.#worktree(['remove', '--repo', repo, '--agent', agent, '--ticket', ticket]);
+  }
+
+  // One headless agent as its own transient unit in cchan-agents.slice. stdin/stdout pass through the wrapper.
+  spawn({ unit, cwd, maxSeconds, spec }) {
+    if (!UNIT.test(unit)) throw new Error('bad unit name');
+    const env = Object.entries(spec.env ?? {}).map(([key, value]) => `${key}=${value}`);
+    const command = env.length ? ['/usr/bin/env', ...env, spec.binary, ...spec.args] : [spec.binary, ...spec.args];
+    return this.#spawn(this.#sudo, ['-n', WRAPPER, '--unit', unit, '--cwd', cwd, '--max-seconds', String(maxSeconds), '--', ...command],
+      { stdio: ['pipe', 'pipe', 'pipe'] });
+  }
+
+  async unitActive(unit) {
+    if (!UNIT.test(unit)) throw new Error('bad unit name');
+    try {
+      const state = (await run(this.#exec, '/usr/bin/systemctl', ['is-active', unit + '.service'], { timeout: 10_000 })).trim();
+      return ['active', 'activating', 'deactivating', 'reloading'].includes(state);
+    } catch (error) {
+      // is-active exits non-zero for inactive/failed/unknown units: the unit is gone.
+      const state = String(error.stdout ?? '').trim();
+      if (['inactive', 'failed', 'unknown', ''].includes(state)) return false;
+      throw error;
+    }
+  }
+
+  async stopUnit(unit) {
+    if (!UNIT.test(unit)) throw new Error('bad unit name');
+    await run(this.#exec, this.#sudo, ['-n', '/usr/bin/systemctl', 'stop', unit + '.service'], { timeout: 60_000 }).catch(() => {});
+  }
+
+  // The finished branch, read from the bare clone (the owner account is in the cchan-agents group).
+  async branchInfo({ repo, branch, base }) {
+    const dir = join(this.#root, 'repos', repo + '.git');
+    const git = (...args) => run(this.#exec, 'git', ['-c', `safe.directory=${dir}`, '--git-dir', dir, ...args], { timeout: 30_000 }).then(out => out.trim());
+    const head = await git('rev-parse', '--verify', 'refs/heads/' + branch);
+    const commits = Number(await git('rev-list', '--count', `refs/remotes/origin/${base}..refs/heads/${branch}`));
+    return { head, commits: Number.isSafeInteger(commits) ? commits : null };
+  }
+}

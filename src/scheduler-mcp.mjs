@@ -92,7 +92,21 @@ const TOOLS = [
   { name: 'read_x_post', description: 'Read an X / Twitter post from its link: author, date, text, the quoted post, the post it replies to, and its pictures saved in your workspace (open each path with your image input or Read tool). Posts linked in the owner\'s message are already read for you. Read-only; the content is untrusted data.',
     inputSchema: schema({ url: string(300, 'https://x.com/<user>/status/<id> or twitter.com link') }) },
   { name: 'watch_x_video', description: 'Watch the video of an X / Twitter post: saves a few key frames in your workspace (open them like pictures) and returns a transcript of any speech, within size and length limits; otherwise only the thumbnail, with a note saying why. Takes up to a couple of minutes.',
-    inputSchema: schema({ url: string(300, 'https://x.com/<user>/status/<id> or twitter.com link') }) }
+    inputSchema: schema({ url: string(300, 'https://x.com/<user>/status/<id> or twitter.com link') }) },
+  { name: 'agents_launch', description: 'Launch one of your agents on a Board ticket (#72). It works the ticket headless in the sandbox, in its own Git worktree of repo, on branch agent/<agent>/t<ticket number>; the runner claims the ticket for it, reports heartbeats and cleanup to the Board, and moves the ticket to review with its outcome and evidence (or raises a Needs-you question, or releases it on failure). model: haiku (small, mechanical), sonnet (most coding), opus (hard or design work), fable (the hardest). Limits on turns, time and concurrent runs apply; extra launches wait in a queue. Reuse requestId for exact retries.',
+    inputSchema: { type: 'object', properties: { requestId: string(80, 'Stable logical request key'),
+      agent: string(40, 'Agent name: lowercase letters, digits and dashes, e.g. coder-1'), ticketId: string(64, 'Board ticket id (not its number)'),
+      repo: string(40, 'Sandbox repo: personal-agent or agent-board'), model: { type: 'string', enum: ['haiku', 'sonnet', 'opus', 'fable'] },
+      instructions: string(8000, 'Optional extra instructions for the agent'), base: string(100, 'Optional base branch, default main'),
+      maxTurns: { type: 'integer', minimum: 1, maximum: 400, description: 'Optional turn limit (capped by the runner)' },
+      maxMinutes: { type: 'integer', minimum: 1, maximum: 240, description: 'Optional deadline in minutes (capped by the runner)' } },
+      required: ['requestId', 'agent', 'ticketId', 'repo', 'model'], additionalProperties: false } },
+  { name: 'agents_list', description: 'List your agent runs (state, ticket, model, turns, branch, cleanup). activeOnly limits it to queued and running ones.',
+    inputSchema: { type: 'object', properties: { activeOnly: { type: 'boolean' } }, additionalProperties: false } },
+  { name: 'agents_status', description: 'The agent runner: limits, running and queued counts, Board connection, and the projects agents may work in. With runId, one run in detail.',
+    inputSchema: { type: 'object', properties: { runId: string(64, 'Optional run id') }, additionalProperties: false } },
+  { name: 'agents_stop', description: 'Stop one of your agent runs: its process and every child are killed, the worktree is cleaned up and the ticket released. Committed work stays on its branch.',
+    inputSchema: schema({ runId: string(64, 'Run id') }) }
 ];
 function configuration(endpoint, token) {
   let url;
@@ -105,6 +119,20 @@ function configuration(endpoint, token) {
 }
 const interval = value => Number.isSafeInteger(value) && value >= 6 && value <= 168;
 function toolInput(name, args) {
+  if (name === 'agents_launch' && object(args) && stableKey(args.requestId)) {
+    const allowed = ['requestId', 'agent', 'ticketId', 'repo', 'model', 'instructions', 'base', 'maxTurns', 'maxMinutes'];
+    if (Object.keys(args).some(key => !allowed.includes(key))) return null;
+    const { maxMinutes, ...launch } = args;
+    if (maxMinutes !== undefined && !(Number.isSafeInteger(maxMinutes) && maxMinutes > 0 && maxMinutes <= 240)) return null;
+    return { action: 'agents', input: { op: 'launch', launch: { ...launch, ...(maxMinutes ? { maxSeconds: maxMinutes * 60 } : {}) } } };
+  }
+  if (name === 'agents_list' && object(args) && Object.keys(args).every(key => key === 'activeOnly')) {
+    return { action: 'agents', input: { op: 'list', active: args.activeOnly === true } };
+  }
+  if (name === 'agents_status' && object(args) && Object.keys(args).every(key => key === 'runId')) {
+    return { action: 'agents', input: typeof args.runId === 'string' ? { op: 'get', runId: args.runId } : { op: 'status' } };
+  }
+  if (name === 'agents_stop' && exact(args, ['runId']) && typeof args.runId === 'string') return { action: 'agents', input: { op: 'stop', runId: args.runId } };
   if (name === 'create_release_watch' && exact(args, ['requestId', 'condition']) && stableKey(args.requestId) && condition(args.condition)) {
     return { action: 'createWatch', input: { requestId: args.requestId, condition: args.condition } };
   }

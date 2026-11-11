@@ -17,6 +17,9 @@ Environment=COMPANION_PILOT_FILE=/home/ubuntu/personal-agent-config/pilot.json
 # Per-owner agents (RUNTIME.md). Owners map platform accounts to Claude or Codex; no secrets.
 Environment=COMPANION_RUNTIME_FILE=/home/ubuntu/.config/personal-agent/owners.json
 Environment=COMPANION_RUNTIME_DIR=/home/ubuntu/personal-agent-data/runtimes
+# C-chan's agent runner (#72, docs/AGENT-RUNNER.md): its socket, and the owners whose companion may launch agents.
+Environment=COMPANION_AGENT_RUNNER_SOCKET=/home/ubuntu/personal-agent-data/agent-runner/runner.sock
+Environment=COMPANION_AGENT_RUNNER_OWNERS=blackout
 # claude lives in ~/.local/bin; codex is a Node script found through nvm's node.
 Environment=PATH=/home/ubuntu/.nvm/versions/node/v24.9.0/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure

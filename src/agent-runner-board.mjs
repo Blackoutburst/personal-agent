@@ -1,0 +1,186 @@
+// The runner's Board side (#72, docs/AGENT-RUNNER.md). The runner has its own Board worker identity, paired once by
+// the owner, with the credential kept inside its connect.py bridge (never read here). Sub-agents in the sandbox have
+// no Board access, so this reporter does the Board work for them:
+//   begin     read the ticket, check its project is allowed, claim it
+//   started   reserve and start a Board Runtime execution (capacity, heartbeats, cleanup proof), post "started"
+//   heartbeat execution heartbeat (the Board may ask to stop), lease renewal with a progress line
+//   finish    finish the execution with cleanup_confirmed, then: review with outcome/evidence, a Needs-you question,
+//             or release the ticket with the failure explained
+// The Runtime execution part is best effort: if the Board refuses it (no Runtime grant), the run continues with lease
+// renewals and thread posts, and the run record says so.
+const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/;
+const RENEW_EVERY = 5;
+
+const pick = (value, ...paths) => {
+  for (const path of paths) {
+    let item = value;
+    for (const key of path.split('.')) item = item?.[key];
+    if (item !== undefined && item !== null) return item;
+  }
+  return null;
+};
+const minutes = run => run.startedAt && run.endedAt ? Math.max(1, Math.round((run.endedAt - run.startedAt) / 60000)) : null;
+const FINISH_REASON = { succeeded: 'completed', blocked: 'completed', stopped: 'stop_requested', cancelled: 'cancelled',
+  timeout: 'timeout', interrupted: 'runner_error' };
+
+export function runSummary(run) {
+  const parts = [`run ${run.id}`, `${run.provider}/${run.modelAlias}`, `${run.turns} turn(s)`];
+  const took = minutes(run); if (took) parts.push(`${took} min`);
+  if (run.branch) parts.push(`branch ${run.branch}${run.head ? ` @ ${run.head.slice(0, 10)}` : ''}${run.commits !== null && run.commits !== undefined ? ` (${run.commits} commit(s))` : ''}`);
+  const { unitGone, worktreeRemoved } = run.cleanup ?? {};
+  parts.push(unitGone && worktreeRemoved ? 'cleanup confirmed (unit gone, worktree removed)'
+    : `cleanup NOT confirmed (unit gone: ${unitGone}, worktree removed: ${worktreeRemoved})`);
+  return parts.join(', ');
+}
+
+export class BoardReporter {
+  #client; #projects; #ownerId; #log; #beats = new Map();
+
+  // client: a BoardClient (call(tool, args)). projects: Board project ids C-chan's agents may work in.
+  // ownerId: who Needs-you questions go to.
+  constructor({ client, projects, ownerId, log = () => {} }) {
+    this.#client = client; this.#projects = new Set(projects); this.#ownerId = ownerId; this.#log = log;
+  }
+
+  async #post(run, body, key) {
+    if (!run.board?.threadId) return;
+    try { await this.#client.call('post_message', { thread_id: run.board.threadId, body, idempotency_key: `${run.id}-${key}` }); }
+    catch (error) { this.#log(`post for ${run.id} failed: ${error.code ?? error.message}`); }
+  }
+
+  #version(run, ticket) { if (Number.isSafeInteger(ticket?.version)) run.board.version = ticket.version; }
+
+  async begin(run) {
+    run.board = { claimed: false, execution: null, revision: null, executionError: null };
+    const read = await this.#client.call('get_ticket', { ticket_id: run.ticketId, view: 'full' });
+    const ticket = read?.ticket ?? read;
+    if (!ticket?.id) throw Object.assign(new Error('Ticket not found on the Board.'), { code: 'NOT_FOUND' });
+    if (!this.#projects.has(ticket.project_id)) throw Object.assign(new Error('This ticket is outside the projects C-chan\'s agents may work in.'), { code: 'FORBIDDEN' });
+    if (ticket.status === 'done') throw Object.assign(new Error('This ticket is already done.'), { code: 'INVALID' });
+    run.board.projectId = ticket.project_id; run.board.threadId = ticket.thread_id ?? null; this.#version(run, ticket);
+    const claimed = await this.#client.call('claim_ticket', { ticket_id: ticket.id, expected_version: ticket.version });
+    this.#version(run, claimed);
+    run.board.claimed = true;
+    return { number: ticket.number, title: ticket.title ?? '', description: ticket.description ?? '',
+      acceptanceCriteria: ticket.acceptance_criteria ?? '' };
+  }
+
+  async started(run) {
+    try {
+      const reserved = await this.#client.call('reserve_execution', { idempotency_key: `${run.id}-reserve`,
+        project_id: run.board.projectId, ticket_id: run.ticketId, work_id: run.id, turn_id: `${run.id}-1`,
+        provider: run.provider, model: run.model });
+      const execution = pick(reserved, 'execution.id', 'execution_id', 'id');
+      const revision = pick(reserved, 'execution.revision', 'revision');
+      if (!ID.test(String(execution ?? ''))) throw new Error('no execution id');
+      const active = await this.#client.call('start_execution', { execution_id: execution, expected_revision: revision });
+      run.board.execution = execution; run.board.revision = pick(active, 'execution.revision', 'revision') ?? revision;
+    } catch (error) {
+      run.board.executionError = String(error.code ?? error.message).slice(0, 120);
+      this.#log(`Runtime execution not recorded for ${run.id}: ${run.board.executionError}`);
+    }
+    await this.#post(run, `${run.agent} started on this ticket (${run.provider}/${run.modelAlias}, at most ${run.maxTurns} turns, `
+      + `${Math.round(run.maxSeconds / 60)} min). Branch ${run.branch}${run.resumed ? ' (resumed)' : ''}. Run ${run.id}.`, 'started');
+  }
+
+  async heartbeat(run) {
+    let stop = null;
+    if (run.board.execution) {
+      try {
+        const beat = await this.#client.call('heartbeat_execution', { execution_id: run.board.execution, expected_revision: run.board.revision });
+        run.board.revision = pick(beat, 'execution.revision', 'revision') ?? run.board.revision;
+        if (pick(beat, 'should_stop', 'execution.should_stop', 'control.should_stop') === true) stop = { stop: true, reason: 'stop_requested' };
+      } catch (error) { this.#log(`execution heartbeat for ${run.id} failed: ${error.code ?? error.message}`); }
+    }
+    const count = (this.#beats.get(run.id) ?? 0) + 1; this.#beats.set(run.id, count);
+    if (count % RENEW_EVERY === 0 && run.board.claimed) {
+      try {
+        const renewed = await this.#client.call('renew_ticket', { ticket_id: run.ticketId, expected_version: run.board.version,
+          progress: `${run.agent} working: ${run.turns} turn(s) so far (run ${run.id}).` });
+        this.#version(run, renewed);
+      } catch (error) {
+        this.#log(`lease renewal for ${run.id} failed: ${error.code ?? error.message}`);
+        if (/expired|replaced|not.*claim/i.test(String(error.message))) stop = { stop: true, reason: 'claim_lost' };
+      }
+    }
+    return stop;
+  }
+
+  async finish(run) {
+    this.#beats.delete(run.id);
+    if (!run.board?.claimed) return;
+    const confirmed = Boolean(run.cleanup?.unitGone && run.cleanup?.worktreeRemoved);
+    if (run.board.execution) {
+      const status = run.state === 'succeeded' ? 'completed' : run.state === 'blocked' ? 'blocked'
+        : ['stopped', 'cancelled'].includes(run.state) ? 'cancelled' : 'blocked';
+      const reason = !confirmed ? 'cleanup_unconfirmed' : run.errorCode === 'USAGE_LIMIT' ? 'quota_or_rate_limit'
+        : run.errorCode === 'NOT_SIGNED_IN' ? 'authentication_failed' : FINISH_REASON[run.state] ?? 'execution_failed';
+      try {
+        await this.#client.call('finish_execution', { execution_id: run.board.execution, expected_revision: run.board.revision,
+          status, cleanup_confirmed: confirmed, reason });
+      } catch (error) { this.#log(`finish_execution for ${run.id} failed: ${error.code ?? error.message}`); }
+    }
+    const summary = runSummary(run);
+    if (run.state === 'succeeded') {
+      const result = run.result ?? {};
+      const outcome = result.kind === 'done' ? result.outcome
+        : `${run.agent} finished without the OUTCOME block. Its last words: ${result.outcome ?? ''}`.slice(0, 4000);
+      const evidence = [result.evidence, `Runner: ${summary}.`, run.branch ? `Review: git fetch /var/lib/cchan-agents/repos/${run.repo}.git ${run.branch}` : '']
+        .filter(Boolean).join('\n\n');
+      await this.#ticket(run, { status: 'review', outcome, evidence, release_claim: true });
+      await this.#post(run, `${run.agent} finished; the ticket is in review. ${summary}.`, 'finished');
+    } else if (run.state === 'blocked') {
+      try {
+        await this.#client.call('request_human_input', { ticket_id: run.ticketId, owner_id: this.#ownerId, kind: 'question',
+          question: run.result.question, summary: run.result.question.slice(0, 240), idempotency_key: `${run.id}-blocked`,
+          expected_version: run.board.version });
+      } catch (error) {
+        this.#log(`Needs-you for ${run.id} failed: ${error.code ?? error.message}`);
+        await this.#ticket(run, { release_claim: true, progress: `${run.agent} is blocked: ${run.result.question}`.slice(0, 2000) });
+      }
+      await this.#post(run, `${run.agent} stopped with a question for the owner (Needs-you). ${summary}.`, 'blocked');
+    } else {
+      const why = run.error ? String(run.error).slice(0, 400) : run.state;
+      await this.#ticket(run, { status: 'todo', release_claim: true, progress: `Last run ${run.state}: ${why}`.slice(0, 2000) });
+      await this.#post(run, `${run.agent}'s run ended: ${run.state} (${why}). The ticket is released. ${summary}.`, 'ended');
+    }
+  }
+
+  async #ticket(run, changes) {
+    try {
+      const updated = await this.#client.call('update_ticket', { ticket_id: run.ticketId, expected_version: run.board.version, changes });
+      this.#version(run, updated);
+    } catch (error) { this.#log(`ticket update for ${run.id} failed: ${error.code ?? error.message}`); }
+  }
+}
+
+// Board events that should wake C-chan right away, from a cheap model-free watch of the allowed projects: a ticket
+// becoming ready (its dependencies delivered), entering review, getting done or getting blocked.
+export class BoardWatch {
+  #client; #projects; #seen = new Map(); #primed = false;
+  constructor({ client, projects }) { this.#client = client; this.#projects = projects; }
+
+  async poll() {
+    const events = [];
+    for (const projectId of this.#projects) {
+      let cursor = null;
+      for (let page = 0; page < 10; page++) {
+        const listed = await this.#client.call('list_tickets', { project_id: projectId, limit: 100, ...(cursor ? { cursor } : {}) });
+        for (const ticket of listed?.items ?? []) {
+          const now = { status: ticket.status, ready: ticket.ready === true, waiting: ticket.waiting_on_human === true };
+          const before = this.#seen.get(ticket.id);
+          this.#seen.set(ticket.id, now);
+          if (!this.#primed || !before) continue;
+          const base = { ticketId: ticket.id, ticketNumber: ticket.number, title: String(ticket.title ?? '').slice(0, 200), projectId };
+          if (now.ready && !before.ready && now.status === 'todo') events.push({ type: 'board.ready', ...base });
+          if (now.status !== before.status && ['review', 'done', 'blocked'].includes(now.status)) events.push({ type: `board.${now.status}`, ...base });
+          if (now.waiting && !before.waiting) events.push({ type: 'board.needs_you', ...base });
+        }
+        cursor = listed?.next_cursor ?? null;
+        if (!cursor) break;
+      }
+    }
+    this.#primed = true;
+    return events;
+  }
+}

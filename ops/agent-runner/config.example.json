@@ -1,0 +1,7 @@
+{
+  "projects": ["f0ad83b792830c7cd190412ee8f48997"],
+  "ownerId": "blackoutburst",
+  "limits": { "maxConcurrent": 2, "maxTurns": 80, "maxSeconds": 3600, "maxQueued": 20, "heartbeatSeconds": 60 },
+  "watchSeconds": 20,
+  "board": { "configDir": "/home/ubuntu/.config/cchan-agent-runner/board", "sessionId": "cchan-agent-runner" }
+}

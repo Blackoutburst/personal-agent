@@ -24,6 +24,7 @@ import { SchedulerStore, SchedulerService } from './src/scheduler.mjs';
 import { createSchedulerHttp, schedulerOperation } from './src/scheduler-http.mjs';
 import { Calendar } from './src/calendar.mjs';
 import { GitHub } from './src/github.mjs';
+import { AgentRunnerClient, AgentEvents } from './src/agent-runner-client.mjs';
 import { Mail } from './src/mail.mjs';
 import { Studio, createStudioHttp } from './src/studio.mjs';
 import { StudioCalendar } from './src/studio-calendar.mjs';
@@ -109,7 +110,7 @@ function androidRelease(dataDir) {
 }
 
 export async function startServer({ dataDir, mode = 'unavailable', port = 4318, pilotFile, publicOrigin,
-  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, githubOptions = {}, mailOptions = {}, xOptions = {}, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {}, pushOptions = {}, groupOptions = {}, minecraftOptions = {} } = {}) {
+  pilotSubjects, validateAccount, runtimeFile, runtimeDir, binaries, githubOptions = {}, mailOptions = {}, xOptions = {}, runnerOptions = {}, conversationOptions = {}, schedulerOptions = {}, discordOptions = {}, fileOptions = {}, weatherOptions = {}, boardOptions = {}, pushOptions = {}, groupOptions = {}, minecraftOptions = {}, agentRunnerOptions = {} } = {}) {
   if (!['unavailable', 'demo', 'account'].includes(mode)) throw new Error('COMPANION_MODE must be unavailable, demo or account');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid COMPANION_PORT');
   // Only trusted startup configuration can select a public proxy origin.
@@ -138,7 +139,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let ownerProfileHttp;
   let schedulerHttp, schedulerService, schedulerStore, calendar = null, studioCalendar = null, github = null, mail = null, x = null, discord = null;
   let groupChat = null, groupHttp = null;
-  let asr = null, files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
+  let asr = null, files = null, fileHttp, contacts = null, weather = null, boardCompanion = null, agents = null, agentEvents = null, agentOwners = [], pushDevices = null, pushNotifier = null, webPush = null, webPushNotifier = null, connectors = null;
   let activeClients = null, pushHold = null, minecraft = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
@@ -232,7 +233,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           return fail(415, 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json.');
         }
         const parsed = await readJsonBody(req, 16384);
-        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value, { calendar, github, mail, x, studioCalendar });
+        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value, { calendar, github, mail, x, studioCalendar, agents });
         if (result.closeConnection) res.setHeader('connection', 'close');
         return send(result.status, result.body);
       }
@@ -318,6 +319,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       if (owners.length) {
         if (!runtimeDir) throw new Error('COMPANION_RUNTIME_DIR is required with COMPANION_RUNTIME_FILE');
         const appServersFor = runnerOptions.mcpServersFor ?? (() => []);
+        agentOwners = agentRunnerOptions.socket || agentRunnerOptions.client ? (agentRunnerOptions.owners ?? []) : [];
         runner = new CompanionRunner({ store, owners, runtimeDir, binaries, ...runnerOptions,
           mcpServersFor: owner => {
             const additional = appServersFor(owner), companionId = companionIdFor(store, owner);
@@ -331,7 +333,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
                   'list_calendar', 'create_event', 'update_event', 'delete_event',
                   'github_list_repos', 'github_repo', 'github_pulls', 'github_pull', 'github_create_repo', 'read_x_post', 'watch_x_video',
                   'mail_status', 'mail_inbox', 'mail_read', 'mail_send', 'mail_mark_handled', 'mail_opt_out',
-                  'studio_calendar_list', 'studio_calendar_create', 'studio_calendar_update', 'studio_calendar_delete'] }];
+                  'studio_calendar_list', 'studio_calendar_create', 'studio_calendar_update', 'studio_calendar_delete',
+                  // C-chan's agent runner (#72), only for the owners allowed to manage agents.
+                  ...(agentOwners.includes(owner.label) ? ['agents_launch', 'agents_list', 'agents_status', 'agents_stop'] : [])] }];
           } });
         agentsConfigured = true;
       }
@@ -537,6 +541,15 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       boardCompanion = new BoardCompanion({ store, owners, profiles, scheduler: schedulerService,
         companionIdFor: owner => companionIdFor(store, owner), active: companionId => connectors.enabled(companionId, 'board'),
         log: message => console.error(message), inbox: boardInbox, ...boardOptions });
+      // C-chan's agent runner (#72, docs/AGENT-RUNNER.md): its own service on a Unix socket. Its events wake the first
+      // allowed owner's companion as Board wakes.
+      if (agentOwners?.length) {
+        const client = agentRunnerOptions.client ?? new AgentRunnerClient({ socket: agentRunnerOptions.socket });
+        const allowedIds = () => owners.filter(owner => agentOwners.includes(owner.label)).map(owner => companionIdFor(store, owner)).filter(Boolean);
+        agents = { client, allowed: companionId => allowedIds().includes(companionId) };
+        agentEvents = new AgentEvents({ store, client, scheduler: schedulerService, companionFor: () => allowedIds()[0] ?? null,
+          log: message => console.error(message) });
+      }
       // Android push (docs/PUSH.md): on when the FCM service-account key exists. Devices register through /api/companion.
       pushDevices = new PushDevices({ store });
       const pushKey = pushOptions.keyFile ?? process.env.COMPANION_PUSH_KEY
@@ -612,13 +625,14 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     schedulerService?.start();
     if (weatherOptions.poll !== false) weather?.start();
     if (boardOptions.poll !== false) boardCompanion?.start();
+    if (agentRunnerOptions.poll !== false) agentEvents?.start();
     if (discordOptions.connect !== false) discord?.start();
     if (minecraftOptions.start !== false) minecraft?.start();
     // Pushes a previous run still held go out now (fail open).
     pushHold?.recover();
   } catch (error) {
     pushHold?.stop();
-    weather?.stop(); boardCompanion?.stop();
+    weather?.stop(); boardCompanion?.stop(); agentEvents?.stop();
     discord?.stop(); await minecraft?.stop();
     await schedulerService?.stop();
     if (server.listening) await new Promise(resolve => server.close(resolve));
@@ -631,7 +645,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
     conversations, files, scheduler: schedulerService, discord, groupChat, mail, minecraft,
     async close() {
       pushHold?.stop();
-      weather?.stop(); boardCompanion?.stop();
+      weather?.stop(); boardCompanion?.stop(); agentEvents?.stop();
       discord?.stop(); await minecraft?.stop();
       await schedulerService?.stop();
       await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
@@ -656,6 +670,8 @@ if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === pat
       binaries: { claude: process.env.COMPANION_CLAUDE_BIN || undefined, codex: process.env.COMPANION_CODEX_BIN || undefined },
       // Texting like a person (Conversations): the normal wait for more owner texts (shorter after a finished-looking
       // message, longer after a fragment, held while they type), bubble-by-bubble replies, restart and silence.
+      agentRunnerOptions: process.env.COMPANION_AGENT_RUNNER_SOCKET ? { socket: process.env.COMPANION_AGENT_RUNNER_SOCKET,
+        owners: String(process.env.COMPANION_AGENT_RUNNER_OWNERS ?? '').split(',').map(label => label.trim()).filter(Boolean) } : {},
       conversationOptions: { gatherMs: Number(process.env.COMPANION_GATHER_MS ?? 3500), texting: process.env.COMPANION_TEXTING !== 'off' } });
     console.log(`Personal Agent local bootstrap: ${app.url} (${process.env.COMPANION_MODE || 'unavailable'})`);
     let stopping = false;

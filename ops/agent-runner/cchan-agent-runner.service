@@ -1,0 +1,24 @@
+[Unit]
+Description=C-chan agent runner (#72): launches sub-agents into the cchan-agents sandbox
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=cchan-agents
+WorkingDirectory=/home/ubuntu/personal-agent/current
+ExecStart=/opt/blackoutburst-platform-runtime/node-v24.22.1 /home/ubuntu/personal-agent/current/ops/agent-runner/runner-service.mjs
+Environment=HOME=/home/ubuntu
+Environment=CCHAN_RUNNER_CONFIG=/home/ubuntu/.config/cchan-agent-runner/config.json
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+# Needs sudo for cchan-sandbox-run, so no NoNewPrivileges. Agents themselves run in their own hardened units.
+UMask=0077
+PrivateTmp=true
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
