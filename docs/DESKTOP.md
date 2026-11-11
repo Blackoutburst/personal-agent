@@ -18,13 +18,15 @@ What was tried:
   stub under wine to produce the uninstaller). Needs wine, or a Windows/CI host.
 - **Portable target: works.** Output `desktop/dist/Companion-Portable-<version>-x64.exe`
   (single self-extracting exe, no install, no uninstaller).
-- The system `npm` on the host is broken (missing `semver`), so the script accepts `NPM_CLI`
-  pointing at a working `npm-cli.js` (e.g. from `npm-10.x.tgz` on the registry) and puts a shim on PATH.
+- The system `npm` on the host is broken (missing `semver`). `scripts/build-desktop.sh` therefore
+  checks `npm -v`; if it fails (and `NPM_CLI` is not set) it downloads the pinned `npm-10.9.2.tgz`
+  from the registry into a temp dir, verifies its sha512 integrity against the value pinned in the
+  script (aborts on mismatch), and puts an `npm` shim on PATH (electron-builder calls `npm` itself).
 
 ## Rebuild
 
-    scripts/build-desktop.sh                      # working npm
-    NPM_CLI=/path/to/npm-cli.js scripts/build-desktop.sh   # broken system npm
+    scripts/build-desktop.sh                      # picks system npm, or fetches pinned npm 10.9.2 if it is broken
+    NPM_CLI=/path/to/npm-cli.js scripts/build-desktop.sh   # force a specific npm
 
 Output: `desktop/dist/Companion-Portable-0.1.0-x64.exe` (git-ignored). On Windows with a working
 toolchain, change the target to `nsis` in `desktop/package.json` for a real installer.
@@ -64,6 +66,28 @@ Clients:
   server version is newer than `app.getVersion()`, a small dismissible "Update available" bar with a Download link
   appears in the window (re-added after each page load). The link downloads the exe; you run it yourself. Signed out
   or offline means no banner.
+## Tray, toasts, badge, autostart, shortcut (#83)
+
+- **Tray**: closing the window hides it; the app keeps running in the tray. Left click toggles the window; menu:
+  Open, Start with Windows (checkbox), Quit (the only way to exit). A second launch shows the window.
+  Shortcut/tray/autostart logic is in `desktop/main.js`; the testable parts are in `desktop/src/`.
+- **Toasts**: the web client announces each new companion message (chat or group) by setting
+  `<html data-companion-arrival>` and firing `companion-arrival` (`dataArrived` in `public/companion-app.mjs`; the
+  conversation id only, no text). `desktop/preload.js` forwards it to the main process, which shows one native
+  Windows toast "<companion name> / New message" via Electron `Notification` (no text leaves the page). This covers
+  her own first messages, reminders and replies, since all go through the same poll. Toasts appear only when the
+  window is not visible and focused. Clicking one shows the window and opens `#chat` (or the group).
+- **No duplicates**: the shell denies the page's own `notifications` permission, so web push / the service worker
+  in the embedded page can never raise a second toast. Arrivals are also de-duplicated (same conversation within 4 s,
+  repeated message id) in `src/unread.js`. Consequence: the web "notifications" switch shows as blocked in the app.
+- **Unread**: counted per arrival while the window is hidden/unfocused; shown as a red overlay badge on the taskbar
+  icon (`setOverlayIcon`, 16x16 bitmap drawn in `src/badge.js`, "9+" above 9) and in the tray tooltip. Cleared when
+  the window is shown and focused. The count lives in memory only. It is an arrival counter, not the server's unread totals.
+- **Start with Windows**: tray menu checkbox, off by default, stored in `settings.json` in the user data dir. Uses
+  `app.setLoginItemSettings` with the portable exe path (`PORTABLE_EXECUTABLE_FILE`) and `--hidden`, so it starts in
+  the tray. Only applies to the packaged app. If the portable exe is moved, toggle it off and on.
+- **Global shortcut**: **Ctrl+Alt+C** shows/hides the window (hides only if it is already focused). If another app
+  owns it the registration fails silently (logged); the tray still works.
 
 ## Not verified / limitations
 
@@ -76,5 +100,10 @@ Clients:
   implemented but untested in a live window; live-site cookie attributes were not inspected.
 - The `.exe` file icon (Explorer/taskbar-of-exe) is Electron's default: editing the exe resources
   needs wine, so `signAndEditExecutable` is off. The window/taskbar icon at runtime is the companion's.
+- #83 features (tray, toast, overlay badge, autostart, shortcut) are **built, not run on Windows**. Unverified:
+  toast activation after a click on a closed-to-tray app, overlay rendering, that the page's `dataset` event
+  reaches the preload in a real window, autostart from the portable exe's path. The live site must be deployed with
+  the `dataArrived` hook before toasts fire; until then the app just shows no toasts.
 - Unsigned: Windows SmartScreen will warn on first run.
 - No tray or notifications (later tickets). No silent self-install: the app only announces updates (below).
+- No auto-update (later ticket).

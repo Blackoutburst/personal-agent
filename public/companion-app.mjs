@@ -90,6 +90,8 @@ const arrivalListeners = new Set();
 function onDataArrived(listener) { arrivalListeners.add(listener); return () => arrivalListeners.delete(listener); }
 function dataArrived(source, detail = null) {
   motion.wake();
+  // Desktop shell hook (docs/DESKTOP.md): the Electron app's preload reads this to show a native toast. Ids only, no text.
+  try { document.documentElement.dataset.companionArrival = JSON.stringify({ source, detail }); document.documentElement.dispatchEvent(new Event('companion-arrival')); } catch { /* optional */ }
   for (const listener of arrivalListeners) { try { listener({ source, detail, hidden: document.visibilityState === 'hidden' }); } catch { /* one listener cannot stop the others */ } }
 }
 // #59 follow-up: a red dot on the favicon and "(•) " in the title for a message that arrived while the owner was not
