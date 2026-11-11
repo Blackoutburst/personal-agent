@@ -29,14 +29,18 @@ const CONTACT_WAKE = 'contact', TALKING_WAKES = [...OWN_WAKES, CONTACT_WAKE];
 // Background wakes read the Board only, except Board-triggered ("board") wakes: a Needs-you request or a mention needs
 // the companion to answer on the Board, so those keep every Board tool the owner configured.
 // Background wakes never browse: native web tools are for owner chat turns (#42) and the app's own watch checks.
-const wakeToolFilter = kind => name => !WEB_TOOLS.includes(name) && !['mcp__scheduler__create_release_watch', 'mcp__scheduler__create_topic_watch', 'mcp__scheduler__update_release_watch',
+export const wakeToolFilter = kind => name => !WEB_TOOLS.includes(name) && !['mcp__scheduler__create_release_watch', 'mcp__scheduler__create_topic_watch', 'mcp__scheduler__update_release_watch',
   'mcp__scheduler__create_event', 'mcp__scheduler__update_event', 'mcp__scheduler__delete_event', 'mcp__scheduler__github_create_repo',
   'mcp__scheduler__read_x_post', 'mcp__scheduler__watch_x_video'].includes(name)
   // The companion's own wakes (#54) and contact wakes (#58) never send mail: mail stays with owner chats and Board/mail wakes.
   && !(TALKING_WAKES.includes(kind) && name === 'mcp__scheduler__mail_send')
   // Nor do they launch or stop agents (#72): that follows owner chats and Board wakes (runner events arrive as Board wakes).
   && !(TALKING_WAKES.includes(kind) && ['mcp__scheduler__agents_launch', 'mcp__scheduler__agents_stop', 'mcp__scheduler__agents_save_agent',
-    'mcp__scheduler__agents_archive_agent', 'mcp__scheduler__agents_save_team', 'mcp__scheduler__agents_archive_team'].includes(name))
+    'mcp__scheduler__agents_archive_agent', 'mcp__scheduler__agents_save_team', 'mcp__scheduler__agents_archive_team',
+    'mcp__scheduler__agents_decide'].includes(name))
+  // A standing approval (#76) is the owner's yes in chat: no wake of any kind (Board, own, contact, mail...) may record or
+  // withdraw one, so Board text can never grant C-chan autonomy.
+  && !['mcp__scheduler__agents_approve_project', 'mcp__scheduler__agents_revoke_project'].includes(name)
   // Nor do they change the shared Studio calendar (#65); mail, connector and Board wakes may, like mail_send.
   && !(TALKING_WAKES.includes(kind) && name.startsWith('mcp__scheduler__studio_calendar_') && name !== 'mcp__scheduler__studio_calendar_list')
   && (!name.startsWith(BOARD_PREFIX) || kind === 'board' || READ_ONLY_BOARD_TOOLS.includes(name.slice(BOARD_PREFIX.length)));

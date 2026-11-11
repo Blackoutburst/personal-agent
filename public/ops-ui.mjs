@@ -6,7 +6,11 @@ const COLUMNS = [['todo', 'À faire'], ['in_progress', 'En cours'], ['review', '
 const STATES = { queued: 'En attente', preparing: 'Préparation', running: 'En cours', stopping: 'Arrêt', succeeded: 'Livré', blocked: 'Bloqué',
   failed: 'Échec', timeout: 'Délai dépassé', stopped: 'Arrêté', cancelled: 'Annulé', interrupted: 'Interrompu' };
 const KINDS = { launch: 'Lancement', escalate: 'Escalade', return: 'Retour', result: 'Résultat', review: 'Revue', accept: 'Acceptation',
-  blocked: 'Blocage', ready: 'Prêt', needs_you: 'Vous attend' };
+  blocked: 'Blocage', ready: 'Prêt', needs_you: 'Vous attend', attention: 'À traiter', unbacked: 'Sans revue',
+  decided_plan: 'Plan', decided_dispatch: 'Attribution', decided_unblock: 'Déblocage', decided_reassign: 'Réattribution',
+  decided_split: 'Découpage', decided_escalate_model: 'Modèle supérieur', decided_accept: 'Acceptée (revue)', decided_return: 'Renvoyée (revue)',
+  decided_escalate_owner: 'Question à Blackout', decided_answer: 'Réponse', decided_pause: 'Pause', decided_approval: 'Accord de Blackout',
+  decided_approval_revoked: 'Accord retiré' };
 export const REFRESH_MS = 10_000;
 
 export const duration = seconds => seconds < 90 ? `${Math.round(seconds)} s` : seconds < 5400 ? `${Math.round(seconds / 60)} min`
@@ -86,8 +90,20 @@ export function createOpsUI({ document, fetchImpl = fetch, home, visible = () =>
     return wrap;
   }
 
+  // Manager mode (#76): the projects Blackout approved, and the weekly budget that caps Opus and Fable.
+  function manager(data) {
+    const wrap = node('div', { className: 'ops-manager' });
+    for (const approval of data.approvals ?? []) wrap.append(node('div', { textContent: `Projet approuvé (${when(approval.approvedAt)}) : ${approval.direction}` }));
+    if (!(data.approvals ?? []).length) wrap.append(node('div', { className: 'note', textContent: 'Aucun projet approuvé : C-chan demande avant d\'agir.' }));
+    const weekly = data.budget?.weekly;
+    wrap.append(node('div', { textContent: weekly ? `Utilisation hebdomadaire : ${Math.round(weekly.utilization * 100)} %`
+      + (data.budget.premiumAllowed ? '' : ` (au-dessus de ${Math.round(data.budget.premiumMaxWeekly * 100)} % : ni Opus ni Fable)`) : 'Utilisation hebdomadaire : inconnue pour le moment' }));
+    return wrap;
+  }
+
   function render(data) {
     body.replaceChildren(section('Agents', agents(data.agents ?? [])), section('Pipeline', pipeline(data.pipeline)),
+      ...(data.manager ? [section('Gestion', manager(data.manager))] : []),
       section('Décisions de C-chan', decisions(data.decisions ?? [])), section('Consommation', usage(data.usage)));
     stamp.textContent = ` Mis à jour ${when(data.at)}`;
   }

@@ -221,12 +221,16 @@ export class BoardReporter {
 
 // Board events that should wake C-chan right away, from a cheap model-free watch of the allowed projects: a ticket
 // becoming ready (its dependencies delivered), entering review, getting done or getting blocked.
+// It also keeps the latest snapshot (tickets()) for manager mode's sweep (#76): since is when the watch first saw the
+// ticket's current status and waiting state.
 export class BoardWatch {
-  #client; #projects; #seen = new Map(); #primed = false;
-  constructor({ client, projects }) { this.#client = client; this.#projects = projects; }
+  #client; #projects; #now; #seen = new Map(); #primed = false; #snapshot = null;
+  constructor({ client, projects, now = Date.now }) { this.#client = client; this.#projects = projects; this.#now = now; }
+
+  tickets() { return this.#snapshot ? this.#snapshot.map(ticket => ({ ...ticket })) : null; }
 
   async poll() {
-    const events = [];
+    const events = [], snapshot = [], at = this.#now();
     for (const projectId of this.#projects) {
       let cursor = null;
       for (let page = 0; page < 10; page++) {
@@ -234,7 +238,9 @@ export class BoardWatch {
         for (const ticket of listed?.items ?? []) {
           const now = { status: ticket.status, ready: ticket.ready === true, waiting: ticket.waiting_on_human === true };
           const before = this.#seen.get(ticket.id);
+          now.since = before && before.status === now.status && before.waiting === now.waiting ? before.since : at;
           this.#seen.set(ticket.id, now);
+          snapshot.push({ id: ticket.id, number: ticket.number ?? null, status: now.status, ready: now.ready, waiting: now.waiting, projectId, since: now.since });
           if (!this.#primed || !before) continue;
           const base = { ticketId: ticket.id, ticketNumber: ticket.number, title: String(ticket.title ?? '').slice(0, 200), projectId };
           if (now.ready && !before.ready && now.status === 'todo') events.push({ type: 'board.ready', ...base });
@@ -246,6 +252,7 @@ export class BoardWatch {
       }
     }
     this.#primed = true;
+    this.#snapshot = snapshot;
     return events;
   }
 }

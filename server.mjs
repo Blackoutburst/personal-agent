@@ -337,7 +337,9 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
                   // C-chan's agent runner (#72) and roster (#73), only for the owners allowed to manage agents.
                   // test/agent-tools-allowed.test.mjs checks every agents_* tool of scheduler-mcp is listed here.
                   ...(agentOwners.includes(owner.label) ? ['agents_launch', 'agents_list', 'agents_status', 'agents_stop',
-                    'agents_roster', 'agents_save_agent', 'agents_archive_agent', 'agents_save_team', 'agents_archive_team'] : [])] }];
+                    'agents_roster', 'agents_save_agent', 'agents_archive_agent', 'agents_save_team', 'agents_archive_team',
+                    // Manager mode (#76). agents_approve_project/agents_revoke_project are refused in every wake (conversations.mjs).
+                    'agents_manager', 'agents_approve_project', 'agents_revoke_project', 'agents_decide'] : [])] }];
           } });
         agentsConfigured = true;
       }
@@ -428,7 +430,8 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         ensureWorkspace(workspace.dir, workspace.owner);
         const current = weather.current(companionId), place = current ? weather.snapshot(companionId).place : null;
         return instructions({ owner: workspace.owner, profile: profiles.get(companionId), dir: workspace.dir,
-          files: workspace.owner.provider === 'claude' || fresh, recent, weather: current ? { place, current } : null }) +
+          files: workspace.owner.provider === 'claude' || fresh, recent, weather: current ? { place, current } : null,
+          manager: agentOwners.includes(workspace.owner.label) }) +
           '\n\nUse your scheduler tools for reminders the owner asks for. Check list_schedules for the current time and owner timezone, then resolve an explicit ISO timestamp. Never claim a reminder was saved without a successful tool result. Do not create unsolicited reminders or enable periodic checks for the owner; for your own follow-ups use schedule_followup.';
       };
       // Each owner's own token, encrypted with a server key kept outside the database (made on first link).

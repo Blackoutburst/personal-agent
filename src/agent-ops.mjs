@@ -50,8 +50,26 @@ export function decisionLog(runs, events, limit = 60) {
     else if (event.type === 'board.blocked') out.push({ ...base, kind: 'blocked', text: `${n} is blocked` });
     else if (event.type === 'board.ready') out.push({ ...base, kind: 'ready', text: `${n} became ready` });
     else if (event.type === 'board.needs_you') out.push({ ...base, kind: 'needs_you', text: `${n} is waiting on the owner` });
+    else if (event.type === 'manager.attention') out.push({ ...base, kind: 'attention', text: clip(event.suggestion ?? `${n} needs C-chan`, 400) });
+    else if (event.type === 'manager.unbacked') out.push({ ...base, kind: 'unbacked', text: `${n} was marked done with no accept decision backed by a reviewer report` });
   }
   return out.slice(-limit).reverse();
+}
+
+// C-chan's explicit decisions (#76, the manager's log): what she decided and why, with the reviewer's report for an
+// accept or a return. The reason is C-chan's own text, shown as plain text.
+const DECIDED = { plan: 'planned', dispatch: 'dispatched', unblock: 'unblocked', reassign: 'reassigned', split: 'split',
+  escalate_model: 'escalated the model of', accept: 'accepted', return: 'returned', escalate_owner: 'asked Blackout about',
+  answer: 'answered for', pause: 'paused', approval: 'standing approval', approval_revoked: 'approval withdrawn' };
+export function explicitDecisions(decisions) {
+  return decisions.map(item => {
+    const n = item.ticketNumber ? `#${item.ticketNumber}` : item.ticketId ? 'a ticket' : 'the project';
+    const review = item.reviewRunId ? ` (reviewer ${item.reviewer}, run ${item.reviewRunId}: ${item.verdict}; author ${item.author ?? '?'})` : '';
+    const model = item.kind === 'escalate_model' && item.model ? ` to ${item.model}` : '';
+    const what = ['approval', 'approval_revoked'].includes(item.kind) ? DECIDED[item.kind] : `${DECIDED[item.kind] ?? item.kind} ${n}${model}`;
+    return { decisionId: item.id, at: item.at, ticketNumber: item.ticketNumber ?? null, agent: item.agent ?? null, kind: `decided_${item.kind}`,
+      reason: clip(item.reason, 1000), reviewRunId: item.reviewRunId ?? null, text: clip(`${what}${review}: ${item.reason}`, 1400) };
+  });
 }
 
 // Usage of the runs. The Max plan reports no token counts to the runner, so this is what it can measure: runs, turns
@@ -83,10 +101,16 @@ export function pipelineOf(tickets) {
   return out;
 }
 
-export function buildOps({ runs, events, tickets = null, now = Date.now() }) {
+// manager (#76): with it, C-chan's explicit decisions are merged into the log (newest first) and the standing approvals
+// and budget are shown.
+export function buildOps({ runs, events, tickets = null, manager = null, now = Date.now() }) {
   const sorted = [...runs].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+  let decisions = decisionLog(runs, events);
+  if (manager) decisions = [...decisions, ...explicitDecisions(manager.decisions({ limit: 60 }))].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, 90);
   return { at: now, agents: sorted.slice(0, 40).map(run => agentRow(run, now)),
-    pipeline: tickets === null ? null : pipelineOf(tickets), decisions: decisionLog(runs, events), usage: usageSummary(runs, now) };
+    pipeline: tickets === null ? null : pipelineOf(tickets), decisions, usage: usageSummary(runs, now),
+    ...(manager ? { manager: { approvals: manager.approvals().map(item => ({ projectId: item.projectId, direction: clip(item.direction, 600), approvedAt: item.approvedAt })),
+      budget: manager.usage() } } : {}) };
 }
 
 // Read-only Board view for the pipeline and a ticket's message history, cached so the app's refreshes stay cheap.

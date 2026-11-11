@@ -12,6 +12,7 @@ import { dirname } from 'node:path';
 import { resolveModel } from './agent-providers.mjs';
 import { hardLimit, AGENT_HARD_LIMITS } from './escalation.mjs';
 import { RosterError } from './agent-roster.mjs';
+import { ManagerError } from './agent-manager.mjs';
 
 export const DEFAULT_LIMITS = Object.freeze({ maxConcurrent: 2, maxTurns: 80, maxSeconds: 3600, maxQueued: 20,
   heartbeatSeconds: 60 });
@@ -136,13 +137,14 @@ export function reviewPrompt(run, ticket) {
 }
 
 export class AgentRunner extends EventEmitter {
-  #file; #ops; #reporter; #roster; #limits; #log; #now; #state; #children = new Map(); #timers = new Map(); #pumping = false;
+  #file; #ops; #reporter; #roster; #manager; #limits; #log; #now; #state; #children = new Map(); #timers = new Map(); #pumping = false;
 
   // file: JSON state file. ops: sandbox operations (see SandboxOps). reporter: Board hooks (see BoardReporter).
   // roster: C-chan's agent roster (#73); with it, every launch must name an active roster agent and follows its policy.
-  constructor({ file, ops, reporter, roster = null, limits = {}, log = () => {}, now = Date.now }) {
+  // manager: manager mode (#76); it reads the weekly usage from the runs' rate events and refuses Opus/Fable above budget.
+  constructor({ file, ops, reporter, roster = null, manager = null, limits = {}, log = () => {}, now = Date.now }) {
     super();
-    this.#file = file; this.#ops = ops; this.#reporter = reporter; this.#roster = roster; this.#limits = normalizeLimits(limits);
+    this.#file = file; this.#ops = ops; this.#reporter = reporter; this.#roster = roster; this.#manager = manager; this.#limits = normalizeLimits(limits);
     this.#log = log; this.#now = now;
     this.#state = this.#load();
   }
@@ -200,9 +202,13 @@ export class AgentRunner extends EventEmitter {
   events(after = 0) { return this.#state.events.filter(event => event.seq > after); }
 
   // A Board event from the watch (board.ready, board.review, ...), logged with the run events so C-chan wakes on both.
+  // Manager findings (#76, manager.*) also keep their kind, suggestion and the ids they name.
   note(event) {
     const value = { seq: ++this.#state.seq, at: this.#now(), type: String(event.type), ticketId: event.ticketId ?? null,
       ticketNumber: event.ticketNumber ?? null, title: text(event.title, 200), projectId: event.projectId ?? null };
+    if (value.type.startsWith('manager.')) {
+      for (const key of ['key', 'kind', 'suggestion', 'model', 'agent', 'reviewRunId', 'verdict']) if (typeof event[key] === 'string') value[key] = text(event[key], 1000);
+    }
     this.#state.events.push(value);
     if (this.#state.events.length > MAX_EVENTS) this.#state.events.splice(0, this.#state.events.length - MAX_EVENTS);
     this.#save();
@@ -238,6 +244,11 @@ export class AgentRunner extends EventEmitter {
     }
     // The roster (#73): the agent must exist and be active, and its policy decides model, repos, actions and limits.
     // An unknown name with a model becomes a per-task coder for this ticket, so a plain launch still works.
+    const budget = model => {
+      try { this.#manager?.checkLaunch({ model }); }
+      catch (error) { if (error instanceof ManagerError) throw new AgentRunnerError(error.code, error.message); throw error; }
+    };
+    if (alias) budget(alias);
     let policy = null;
     if (this.#roster) {
       try {
@@ -251,6 +262,8 @@ export class AgentRunner extends EventEmitter {
       }
       alias = policy.model;
     }
+    // Budget (#76): no Opus or Fable above the weekly usage threshold (the roster agent's model decides).
+    budget(alias);
     let reviewBranch = null;
     if (mode === 'review') {
       reviewBranch = input.reviewBranch ?? this.#state.runs.filter(run => run.ticketId === ticketId && run.mode !== 'review'
@@ -365,7 +378,7 @@ export class AgentRunner extends EventEmitter {
     let buffer = '', final = null, failure = null, rate = null;
     const handle = event => {
       if (event.type === 'turn') run.turns += 1;
-      else if (event.type === 'rate') rate = event;
+      else if (event.type === 'rate') { rate = event; try { this.#manager?.noteRate(event); } catch (error) { this.#log(`usage reading failed: ${error.message}`); } }
       else if (event.type === 'done') final = event.text ?? '';
       else if (event.type === 'error') failure ??= event;
     };
