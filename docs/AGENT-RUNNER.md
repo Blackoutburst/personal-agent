@@ -120,6 +120,15 @@ C-chan's tools: `agents_roster`, `agents_save_agent` (create, or update with `ex
 `agents_archive_agent`, `agents_save_team`, `agents_archive_team`. As with launch and stop, C-chan's own proactive
 wakes cannot use the write tools.
 
+## Manager mode (#76)
+
+C-chan manages Blackout's approved projects on her own: see [MANAGER.md](MANAGER.md). The runner adds:
+
+- the budget: no Opus or Fable launch at or above 80% weekly usage (`BUDGET`), read from the runs' rate events;
+- the decision log: accept and return checked against an independent review run;
+- a sweep after every Board poll that raises `manager.attention` wake events (ready and idle, needs a review, verdict
+  ready, failing, quota reset, stuck) and `manager.unbacked` (done with no backed accept).
+
 ## Limits
 
 Set in the runner config (`limits`) and capped in code:
@@ -188,6 +197,12 @@ C-chan is never woken on a timer for this:
 | `POST /roster/agents/<name>/archive` | archive it (`expectedVersion`) |
 | `POST /roster/teams` | create or update a team (`expectedVersion` to update) |
 | `POST /roster/teams/<name>/archive` | archive it (`expectedVersion`, `archiveMembers`) |
+| `GET /manager` | manager mode (#76): approvals, weekly budget, attention findings, recent decisions |
+| `POST /manager/approvals` | a standing approval `{ projectId, direction, requestId }` (owner chat only) |
+| `POST /manager/approvals/<project>/revoke` | withdraw it |
+| `POST /manager/decisions` | log a decision; accept/return need an independent `reviewRunId` |
+
+Routing is in `src/agent-runner-api.mjs` (`createRunnerApi`), shared by the service and the tests.
 
 ## Setup (once)
 
@@ -220,5 +235,6 @@ C-chan is never woken on a timer for this:
   `COMPANION_AGENT_RUNNER_OWNERS` get them approved and reach the runner. Others are refused.
 - A runner restart interrupts running agents rather than reattaching to them.
 - The sandbox has `node` but no working `npm` yet, and worktrees have no `node_modules`, so an agent cannot run
-  `npm test` or tests that need npm dependencies (seen in the first end-to-end run, #79). Planned with #78: a
-  node+npm toolchain in the sandbox `bin/`, and `npm ci` in new worktrees.
+  `npm test` or tests that need npm dependencies (seen in the first end-to-end run, #79). Since #78,
+  `node ops/sandbox/install-deps.mjs` links the pinned packages into a worktree, and `node --test` runs the whole suite
+  there; `npm` itself still does not start in the sandbox.

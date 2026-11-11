@@ -10,6 +10,10 @@ owner's project scope and four fixed owner powers: dispatch, answer requests, ac
 pause/resume agents. It never claims or does ticket work. Pairing it, its permissions and its
 projects stay with the human owner.
 
+> Manager mode (#76, [MANAGER.md](MANAGER.md)): for the owner whose companion runs the agent runner, a project the owner
+> approved in chat is managed without confirm-first. The rule below ("only after the owner's yes in chat") still holds
+> everywhere else.
+
 ## Setup (once per owner, by the owner)
 
 1. Board → Agents → Profiles → Create companion.

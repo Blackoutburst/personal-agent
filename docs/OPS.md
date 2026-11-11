@@ -14,10 +14,15 @@ stop or change anything from here.
 | Usage: runs, turns and run time per model, last 24 h and 7 days, plan-limit stops | the runner's run list |
 | Per-ticket Board messages | click a ticket: read-only `get_ticket` then `get_thread` for a ticket of an allowed project |
 
-**Decision log is derived, not authored.** Nothing records C-chan's reasoning ("because..."). The log reads what the
+**Explicit decisions (#76).** With manager mode, C-chan logs her decisions with a reason (`agents_decide`). They are
+merged into the log as `decided_*` lines: for an accept or return, with the reviewer, run, verdict and author. A
+"Gestion" section shows the projects Blackout approved and the weekly usage that caps Opus and Fable. See
+[MANAGER.md](MANAGER.md). The Android Ops tab does not show these yet (not built in the sandbox).
+
+**Decision log, derived part.** Nothing records C-chan's reasoning ("because..."). The log reads what the
 runner observed: a launch on a stronger model than the ticket's previous run is an *escalation*, a later launch on the same
-ticket is a *return*, `board.done` is *accepted*. Reasons stay in the Board thread (per-ticket history). If C-chan should
-log explicit reasons, that needs a write path (a tool) and is a follow-up.
+ticket is a *return*, `board.done` is *accepted*. Reasons stay in the Board thread (per-ticket history). Explicit reasons come from
+`agents_decide` (above).
 
 **Usage is what the runner can measure.** The Max plan reports no token counts, so it shows turns and run time per model
 and how often the plan limit stopped a run.
