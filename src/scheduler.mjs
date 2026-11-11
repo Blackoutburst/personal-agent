@@ -69,6 +69,10 @@ CREATE TABLE IF NOT EXISTS scheduler_routine_occurrences(id TEXT PRIMARY KEY,com
 CREATE UNIQUE INDEX IF NOT EXISTS scheduler_routine_attempt ON scheduler_routine_occurrences(companion_id,routine,period)
  WHERE admitted_at IS NOT NULL;`;
 
+// #72: agent runner events (a run ended, a ticket became ready) are Board wakes C-chan works on at any hour, so agents
+// chain back to back at night too. Like own wakes (#54), any message they produce still waits for quiet hours to end.
+const agentWork = row => row.kind === 'board' && typeof row.slot_key === 'string' && row.slot_key.startsWith('event:agents-');
+
 export class SchedulerStore {
   #db; #timezone; #now; #spacing; #cap; #release; #proactive; #boardSpacing; #log; #heldLogged = new Set();
   // log(line) receives only kinds, reasons and id prefixes: never prompts or private content.
@@ -424,7 +428,7 @@ export class SchedulerStore {
   pending(companionId) { return this.#tx(() => { this.#owner(companionId); return this.#pending(companionId); }); }
   #eligible(companionId, row, settings, time, starting = false) {
     if (!row || !settings?.enabled || TERMINAL.has(row.state)
-      || !(starting && (row.release_watch || row.proactive)) && this.#quiet(companionId, settings, time)) return false;
+      || !(starting && (row.release_watch || row.proactive || agentWork(row))) && this.#quiet(companionId, settings, time)) return false;
     if (row.release_watch) return this.#release.eligible(companionId, settings.identity_key, row, time);
     // #54: own wakes and follow-ups may start in quiet hours (quiet work); their messages still wait for quiet to end.
     if (row.proactive) return this.#proactive.eligible(companionId, settings.identity_key, row);
@@ -449,7 +453,7 @@ export class SchedulerStore {
     const settings = this.#owner(companionId, false), now = this.#time();
     const row = this.#lookup(companionId, id);
     if (!this.#eligible(companionId, row, settings, now, true)) {
-      if (row && settings?.enabled && !TERMINAL.has(row.state) && !row.release_watch && !row.proactive && this.#quiet(companionId, settings, now)) this.#held(row, 'quiet_hours');
+      if (row && settings?.enabled && !TERMINAL.has(row.state) && !row.release_watch && !row.proactive && !agentWork(row) && this.#quiet(companionId, settings, now)) this.#held(row, 'quiet_hours');
       return false;
     }
     if (row.admitted_at !== null) return true;

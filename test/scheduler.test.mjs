@@ -509,3 +509,15 @@ test('the owner can change or remove the Board wake cap, and invalid caps are re
   assert.equal(f.scheduler.list(f.b).settings.boardWakeCap, 200, 'Another owner keeps the default');
   assert.equal(f.open().scheduler.list(f.a).settings.boardWakeCap, null, 'The choice persists across connections');
 });
+
+test('agent runner wakes start in quiet hours; their message still waits, and other Board wakes stay held (#72)', t => {
+  const f = fixture(t); f.clock = Date.UTC(2026, 10, 2, 23);
+  const agents = f.scheduler.enqueueEvent(f.a, { requestId: 'agents-0123456789abcdef', kind: 'board', prompt: 'Agent run r ended.' });
+  const mention = f.scheduler.enqueueEvent(f.a, { requestId: 'board-mention-0123456789abcdef', kind: 'board', prompt: 'Mention.' });
+  assert.equal(f.admit(f.a, agents.id), true);
+  assert.equal(f.scheduler.canDeliver(f.a, agents.id), false, 'a message to the owner waits for quiet hours to end');
+  f.advance(MINUTE);
+  assert.equal(f.admit(f.a, mention.id), false);
+  f.clock = Date.UTC(2026, 10, 3, 8, 1);
+  assert.equal(f.scheduler.canDeliver(f.a, agents.id), true);
+});

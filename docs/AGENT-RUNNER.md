@@ -82,6 +82,8 @@ C-chan is never woken on a timer for this:
   stay on the Board. Board wakes keep a 30 s spacing, so the next agent starts within seconds of a run ending or a
   dependency finishing.
 - Board wakes and owner chats may use `agents_launch` and `agents_stop`. C-chan's own proactive wakes may not.
+- Runner wakes (`agents-…`) start even during the owner's quiet hours, so agents chain at night too. A message C-chan
+  writes to the owner from such a wake still waits until quiet hours end.
 
 ## Providers
 
@@ -145,3 +147,6 @@ C-chan is never woken on a timer for this:
 - The agent tools are listed to every companion's tool server, but only the owners in
   `COMPANION_AGENT_RUNNER_OWNERS` get them approved and reach the runner. Others are refused.
 - A runner restart interrupts running agents rather than reattaching to them.
+- The sandbox has `node` but no working `npm` yet, and worktrees have no `node_modules`, so an agent cannot run
+  `npm test` or tests that need npm dependencies (seen in the first end-to-end run, #79). Planned with #78: a
+  node+npm toolchain in the sandbox `bin/`, and `npm ci` in new worktrees.
