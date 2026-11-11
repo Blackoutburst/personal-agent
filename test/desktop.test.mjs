@@ -68,3 +68,84 @@ test('session cookies on the site get an expiry; others and persistent ones do n
   assert.equal(persistentVersion({ ...base, domain: 'evil.test' }, urls.SITE), null);
   assert.equal(persistentVersion(null, urls.SITE), null);
 });
+
+// ---- #83: tray, toasts, unread badge, autostart, shortcut ----
+const unreadMod = require('../desktop/src/unread.js');
+const settingsMod = require('../desktop/src/settings.js');
+const badge = require('../desktop/src/badge.js');
+
+test('parseArrival accepts chat/group arrivals and drops junk', () => {
+  assert.deepEqual(unreadMod.parseArrival('{"source":"chat","detail":"abc-123"}'), { source: 'chat', detail: 'abc-123', id: null });
+  assert.equal(unreadMod.parseArrival('{"source":"board"}'), null);
+  assert.equal(unreadMod.parseArrival('nope'), null);
+  assert.equal(unreadMod.parseArrival(''), null);
+  assert.equal(unreadMod.parseArrival('{"source":"chat","detail":"<script>"}').detail, null);
+});
+
+test('unread counts arrivals while not looking, clears on view, notifies onChange', () => {
+  const seen = []; let t = 0;
+  const u = unreadMod.createUnread({ now: () => t, onChange: (n) => seen.push(n) });
+  const a = { source: 'chat', detail: 'x', id: null };
+  assert.deepEqual(u.arrive(a), { counted: true, toast: true });
+  t += 10000; u.arrive(a);
+  assert.equal(u.count, 2);
+  u.clear(); u.clear();
+  assert.equal(u.count, 0);
+  assert.deepEqual(seen, [1, 2, 0]);
+});
+
+test('arrivals while the chat is being looked at neither count nor toast', () => {
+  const u = unreadMod.createUnread();
+  assert.deepEqual(u.arrive({ source: 'chat', detail: 'x', id: null }, { looking: true }), { counted: false, toast: false });
+  assert.equal(u.count, 0);
+});
+
+test('toast de-duplication: same conversation inside the window and repeated ids are one toast', () => {
+  let t = 1000;
+  const u = unreadMod.createUnread({ now: () => t });
+  const a = { source: 'chat', detail: 'x', id: null };
+  assert.equal(u.arrive(a).toast, true);
+  t += 500; assert.equal(u.arrive(a).toast, false);
+  t += unreadMod.DEDUPE_MS; assert.equal(u.arrive(a).toast, true);
+  const m = { source: 'group', detail: 'g', id: 'm1' };
+  assert.equal(u.arrive(m).toast, true);
+  t += 60000; assert.equal(u.arrive(m).toast, false);
+  assert.equal(u.arrive({ ...m, id: 'm2' }).toast, true);
+  assert.equal(u.count, 4);
+});
+
+test('toast content and click target', () => {
+  const g = '0123456789abcdef0123456789abcdef0123'.slice(0, 8) + '-0000-0000-0000-000000000000';
+  assert.deepEqual(unreadMod.toastFor({ source: 'chat', detail: 'x' }, '(•) Pip'), { title: 'Pip', body: 'New message', hash: '#chat' });
+  assert.equal(unreadMod.toastFor({ source: 'chat' }, '').title, 'Your companion');
+  assert.equal(unreadMod.targetHash({ source: 'group', detail: g }), '#group/' + g);
+  assert.equal(unreadMod.targetHash({ source: 'group', detail: 'bad' }), '#chat');
+  assert.equal(unreadMod.tooltip(0, 'Companion'), 'Companion');
+  assert.equal(unreadMod.tooltip(3, 'Companion'), 'Companion (3 unread)');
+});
+
+test('settings: off by default, round-trips, ignores bad values and files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'desk-'));
+  const f = path.join(dir, 'settings.json');
+  assert.deepEqual(settingsMod.load(f), { autostart: false });
+  settingsMod.save(f, { autostart: true });
+  assert.deepEqual(settingsMod.load(f), { autostart: true });
+  fs.writeFileSync(f, '{"autostart":"yes"}');
+  assert.deepEqual(settingsMod.load(f), { autostart: false });
+  fs.writeFileSync(f, 'garbage');
+  assert.deepEqual(settingsMod.load(f), { autostart: false });
+  assert.deepEqual(settingsMod.loginItem(true, 'C:\\a.exe'), { openAtLogin: true, path: 'C:\\a.exe', args: ['--hidden'] });
+  assert.equal(settingsMod.loginItem(false, 'x').openAtLogin, false);
+  assert.equal(settingsMod.SHORTCUT, 'Control+Alt+C');
+});
+
+test('badge bitmap: 16x16 BGRA, red disc, white digits, 9+ cap', () => {
+  assert.equal(badge.label(3), '3'); assert.equal(badge.label(10), '9+'); assert.equal(badge.label(0), '0');
+  const b = badge.badgeBitmap(3);
+  assert.equal(b.buffer.length, 16 * 16 * 4);
+  assert.equal(b.buffer[3], 0);                         // corner transparent
+  const mid = (8 * 16 + 3) * 4;                         // inside disc, off the glyph
+  assert.deepEqual([...b.buffer.slice(mid, mid + 4)], [0x2d, 0x32, 0xe5, 255]);
+  assert.ok([...b.buffer].some((v, i) => i % 4 === 0 && v === 255 && b.buffer[i + 1] === 255)); // white pixels
+  assert.notDeepEqual(badge.badgeBitmap(3).buffer, badge.badgeBitmap(12).buffer);
+});
