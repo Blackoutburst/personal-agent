@@ -193,3 +193,15 @@ test('manager-mode instructions replace confirm-first only for the agent owner (
     assert.ok(managed.includes(part), part);
   }
 });
+
+// Review gate, tightened in review: a run without the reviewer role, or a review that recorded no head, is not enough.
+test('checkReview needs the reviewer role and the reviewed head (#76 review)', async () => {
+  const { checkReview } = await import('../src/agent-manager.mjs');
+  const work = { id: 'w1', ticketId: 'T', mode: 'work', state: 'succeeded', agent: 'coder-1', branch: 'agent/coder-1/t1', head: 'h2', endedAt: 1 };
+  const review = extra => ({ id: 'r1', ticketId: 'T', mode: 'review', state: 'succeeded', agent: 'rev', role: 'reviewer',
+    reviewBranch: 'agent/coder-1/t1', reviewHead: 'h2', result: { kind: 'review', verdict: 'approve' }, endedAt: 2, ...extra });
+  assert.equal(checkReview([work, review()], { ticketId: 'T', reviewRunId: 'r1', verdict: 'approve' }).review.id, 'r1');
+  assert.throws(() => checkReview([work, review({ role: undefined })], { ticketId: 'T', reviewRunId: 'r1' }), { code: 'NOT_INDEPENDENT' });
+  assert.throws(() => checkReview([work, review({ role: 'coder' })], { ticketId: 'T', reviewRunId: 'r1' }), { code: 'NOT_INDEPENDENT' });
+  assert.throws(() => checkReview([work, review({ reviewHead: undefined })], { ticketId: 'T', reviewRunId: 'r1' }), { code: 'STALE_REVIEW' });
+});

@@ -63,11 +63,12 @@ export function checkReview(runs, { ticketId, reviewRunId, verdict = null }) {
     throw new ManagerError('NO_REVIEW', `Review run ${review.id} ended ${review.state} without a verdict; launch another review.`);
   }
   const authors = new Set(runs.filter(run => run.mode !== 'review' && run.ticketId === ticketId && run.branch === review.reviewBranch).map(run => run.agent));
-  if (authors.has(review.agent) || (review.role && review.role !== 'reviewer')) {
+  if (authors.has(review.agent) || review.role !== 'reviewer') {
     throw new ManagerError('NOT_INDEPENDENT', `${review.agent} is not an independent reviewer of ${review.reviewBranch}: the reviewer must be a reviewer agent and never the author.`);
   }
   const work = latestWork(runs, ticketId);
-  if (work && review.reviewHead && work.head !== review.reviewHead) {
+  // A review that recorded no head cannot prove it saw the current work, so it counts as stale.
+  if (work && work.head !== review.reviewHead) {
     throw new ManagerError('STALE_REVIEW', `Review ${review.id} checked ${String(review.reviewHead).slice(0, 10)}, but the latest work is ${String(work.head).slice(0, 10)} (${work.agent}). Review the current work first.`);
   }
   if (verdict && review.result.verdict !== verdict) {
