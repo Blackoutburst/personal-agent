@@ -9,8 +9,11 @@ test('each hard limit is recognised (#74)', () => {
 });
 
 test('ordinary work is not a hard limit', () => {
-  for (const text of ['Fix the flaky test in board-inbox', 'Keep the change small and add tests', 'Rename the helper', '']) assert.equal(hardLimit(text), null, text);
+  for (const text of ['Fix the flaky test in board-inbox', 'Keep the change small and add tests', 'Rename the helper', '',
+    'Delete the old test and the unused helper', 'Count the tokens of each reply', 'Use the design tokens from the theme', 'Delete stale cache entries in memory']) assert.equal(hardLimit(text), null, text);
   assert.equal(hardLimit(null), null);
+  for (const text of ['Delete the user accounts', 'delete all backups', 'Store the GitHub token in the config', 'force-push main'])
+    assert.notEqual(hardLimit(text), null, text);
   assert.equal(hardLimit({ a: 1 }), null);
 });
 

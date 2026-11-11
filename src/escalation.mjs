@@ -1,13 +1,14 @@
 // Escalation (#74, docs/ESCALATION.md). C-chan resolves most blocked/review deadlocks herself. Five hard limits always go
 // to the owner, even in manager mode: deployments, spending, deleting things, credentials and security.
 //   - hardLimit(text): which hard limit a piece of text asks for, or null. A deliberately broad keyword check: a false
-//     positive costs the owner one short question, a false negative lets an agent act alone.
+//     positive costs the owner one short question, a false negative lets an agent act alone. Everyday coding words
+//     (deleting a test or a helper, design tokens, token counts) are not hard limits: deletion needs a data-like target.
 //   - needsYouBatchPrompt: several pending Needs-you requests become ONE wake, hence one short message with numbered choices.
 const LIMITS = [
   ['deployment', 'deployment', /\b(deploy(?:s|ed|ing|ment|ments)?|go(?:ing)?\s+live|release\s+to\s+prod\w*|push(?:ing)?\s+to\s+prod\w*|promote\s+to\s+prod\w*|production\s+(?:release|rollout|push)|roll\s?out\s+to\s+prod\w*|ship\s+to\s+prod\w*|restart\s+(?:the\s+)?(?:prod\w*|live)\b)/i],
   ['spending', 'spending money', /(\b(?:spend\w*|pay(?:s|ing|ment|ments)?|purchase\w*|buy(?:ing)?|bill(?:ed|ing)?|subscri(?:be|ption)\w*|upgrade\s+(?:the\s+)?(?:plan|tier)|top[\s-]?up|invoice\w*|credit\s+card|paid\s+(?:plan|tier|api))\b|[$€£]\s?\d)/i],
-  ['deletion', 'deleting things', /\b(delet(?:e|es|ed|ing|ion)|remov(?:e|es|ed|ing)\s+(?:all|the\s+(?:repo|repository|database|data|branch|account|project|bucket|volume|backups?))|drop\s+(?:the\s+)?(?:table|database|schema)|wipe\w*|purg(?:e|es|ed|ing)|destroy\w*|rm\s+-rf|force[\s-]push|git\s+push\s+(?:-f|--force)\b|erase\w*|truncate\s+table)/i],
-  ['credentials', 'credentials', /\b(credentials?|passwords?|passphrase|api[\s_-]?keys?|secrets?|tokens?|private\s+keys?|ssh\s+keys?|\.env\b|oauth|2fa|login\s+details|sign[\s-]?in\s+(?:details|info))/i],
+  ['deletion', 'deleting things', /\b(delet(?:e|es|ed|ing|ion)\s+(?:of\s+)?(?:all\s+|every\s+|the\s+|our\s+|their\s+)?(?:[\w-]+\s+)?(?:repos?|repositor(?:y|ies)|databases?|db|data|branch(?:es)?|accounts?|projects?|buckets?|volumes?|backups?|users?|production|prod|servers?|history|records?|tickets?|mail(?:box)?|messages|releases?)\b|remov(?:e|es|ed|ing)\s+(?:all|the\s+(?:repo|repository|database|data|branch|account|project|bucket|volume|backups?))|drop\s+(?:the\s+)?(?:table|database|schema)|wipe\w*|purg(?:e|es|ed|ing)|destroy\w*|rm\s+-rf|force[\s-]push|git\s+push\s+(?:-f|--force)\b|erase\w*|truncate\s+table)/i],
+  ['credentials', 'credentials', /\b(credentials?|passwords?|passphrase|api[\s_-]?keys?|secrets?|(?:api|access|auth|bearer|refresh|github|session|board)[\s_-]?tokens?|private\s+keys?|ssh\s+keys?|\.env\b|oauth|2fa|login\s+details|sign[\s-]?in\s+(?:details|info))/i],
   ['security', 'security', /\b(security|vulnerabilit\w*|exploit\w*|firewall|permissions?\s+(?:change|grant|escalat\w*)|grant\s+(?:access|admin|root|sudo)|sudo|root\s+access|disable\s+(?:auth\w*|2fa|the\s+sandbox|sandbox|verification|signature|tls|ssl)|bypass\s+(?:auth\w*|security|the\s+sandbox|sandbox)|open\s+(?:a\s+)?port|cve-\d{4}-\d+|chmod\s+777|sandbox\s+escape)/i]
 ];
 
