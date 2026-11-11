@@ -1,13 +1,17 @@
 'use strict';
 // Sets / reads the icon of a Windows exe with resedit (pure JS, no wine, no rcedit).
 const crypto = require('node:crypto');
-const ResEdit = require('resedit');
+// resedit is loaded on first use, so icoImages (and the suite) work without the desktop packages installed (#85 merge
+// step: the sandbox installs only the root packages).
+let resEdit = null;
+const ResEditLib = () => (resEdit ??= require('resedit'));
 
 const LANG = 1033;
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 
 // Returns the exe bytes with every icon group replaced by the images of icoBuf (or group 1 created if none).
 function setExeIcon(exeBuf, icoBuf) {
+  const ResEdit = ResEditLib();
   const exe = ResEdit.NtExecutable.from(exeBuf, { ignoreCert: true });
   const res = ResEdit.NtExecutableResource.from(exe);
   const ico = ResEdit.Data.IconFile.from(icoBuf);
@@ -21,6 +25,7 @@ function setExeIcon(exeBuf, icoBuf) {
 
 // Reads back the icon group: [{width,height,sha256}] of each image (PNG or DIB payload), by size.
 function readExeIcons(exeBuf) {
+  const ResEdit = ResEditLib();
   const exe = ResEdit.NtExecutable.from(exeBuf, { ignoreCert: true });
   const res = ResEdit.NtExecutableResource.from(exe);
   const out = [];
