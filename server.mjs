@@ -39,7 +39,6 @@ import { PersonalityStore } from './src/personality.mjs';
 import { Contacts, ContactError, contactWakePrompt } from './src/contacts.mjs';
 import { Weather } from './src/weather.mjs';
 import { BoardCompanion } from './src/board-companion.mjs';
-import { BoardInbox } from './src/board-inbox.mjs';
 import { PushDevices, FcmSender, PushNotifier } from './src/push.mjs';
 import { WebPushSubscriptions, WebPushSender, WebPushNotifier, loadVapidKeys } from './src/web-push.mjs';
 import { ActiveClients, PushHold } from './src/active-clients.mjs';
@@ -464,12 +463,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         deliverGroup: event => { pushNotifier?.group(event); webPushNotifier?.group(event); },
         groupRead: (companionId, groupId, messageId) => groupChat?.readBy(companionId, groupId, messageId) ?? false,
         ...(pushOptions.holdMs ? { holdMs: pushOptions.holdMs } : {}), log: message => console.error(message) });
-      // #61b: a silent Board wake's activity line names the companion and quotes its own Board post when it can.
-      const boardInbox = new BoardInbox({ store, ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}),
-        nameFor: companionId => profiles.get(companionId)?.name ?? null,
-        lookup: (companionId, boardThreadId, since) => boardCompanion?.ownPost(companionId, boardThreadId, since) ?? null });
+      // #75: no Board inbox. The Board tab is gone, so Board wakes (Needs-you, mentions, owner pings) reach the main chat,
+      // batched by BoardCompanion (#74). The BoardInbox tables stay untouched for rollback (docs/BOARD-INBOX.md).
       const webBudget = new WebBudget({ store });
-      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, wakeTools, webBudget, boardInbox,
+      conversations = new Conversations({ store, runner, systemPrompt, files, fileToolsForTurn, wakeTools, webBudget,
         // #53: the companion's own wakes may choose to look in on a group chat it is in.
         groupWakes: { note: companionId => groupChat?.wakeNote(companionId) ?? '', nudge: (companionId, groupId, note) => groupChat?.nudge(companionId, groupId, note) ?? false },
         linkContext: (companionId, text) => x.forTurn(companionId, text),
@@ -541,7 +538,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       // Board companion duties (docs/BOARD-COMPANION.md): Needs-you wakes, profile sync and attachments.
       boardCompanion = new BoardCompanion({ store, owners, profiles, scheduler: schedulerService,
         companionIdFor: owner => companionIdFor(store, owner), active: companionId => connectors.enabled(companionId, 'board'),
-        log: message => console.error(message), inbox: boardInbox, ...boardOptions });
+        log: message => console.error(message), ...boardOptions });
       // C-chan's agent runner (#72, docs/AGENT-RUNNER.md): its own service on a Unix socket. Its events wake the first
       // allowed owner's companion as Board wakes.
       if (agentOwners?.length) {
@@ -566,7 +563,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       webPushNotifier = new WebPushNotifier({ subscriptions: webPush.subscriptions, sender: webPushSender,
         nameFor: companionId => profiles.get(companionId)?.name, log: message => console.error(message) });
       // Discord (docs/DISCORD.md): each owner's own bot, DMs with the paired owner only.
-      discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, files, boardInbox, ...discordOptions,
+      discord = new DiscordBridge({ links: new DiscordLinks({ store }), conversations, files, ...discordOptions,
         log: message => console.error(message) });
       // Minecraft (#68, docs/MINECRAFT.md): companions whose owners.json entry has a "minecraft" block play on the shared
       // survival server. A game turn is a native turn in the companion's own workspace with its usual instructions and

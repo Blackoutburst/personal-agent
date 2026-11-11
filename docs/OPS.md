@@ -36,10 +36,12 @@ Refresh button ("Actualiser").
 
 ## Board tab removed
 
-The web nav link and the Board list view are gone (`#board` now lands in the chat; "Done" in a Board sub-conversation
-returns to the chat). On Android the Board tab button is gone; notification links still open a Board sub-conversation in
-the chat. Board messages to Blackout (Needs-you, mentions) are meant to arrive in the main chat as the batched escalation
-message (#74); until #74 lands they still go to Board sub-conversations, reachable by notification and `#board/<thread>`.
+The web nav link and the Board list view are gone (`#board` now lands in the chat). On Android the Board tab button is
+gone. Board messages to Blackout (Needs-you, mentions, owner pings, review pings) now arrive in the **main chat**:
+`server.mjs` no longer wires a `BoardInbox`, so `BoardCompanion` wakes are delivered to the ongoing conversation, and
+several pending Needs-you requests are one batched wake / one message (#74, `needsYouBatchPrompt`). Covered by
+`test/board-main-chat.test.mjs`. The `BoardInbox` module and tables stay in the repo (rollback; old Board
+sub-conversations show as past chats). The per-ticket history is in Ops.
 
 ## Android note
 
