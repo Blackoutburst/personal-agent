@@ -95,6 +95,11 @@ data class UiState(
     val ownerProfileError: String? = null,
     val ownerProfileNotice: String? = null,
     val weather: WeatherSnapshot? = null,
+    /** Ops tab (#75): the last snapshot, a load error, the open ticket history and whether the server offers Ops at all. */
+    val ops: OpsSnapshot? = null,
+    val opsError: String? = null,
+    val opsHistory: OpsHistory? = null,
+    val opsAvailable: Boolean = true,
     val weatherBusy: Boolean = false,
     val weatherError: String? = null,
     val saving: Boolean = false,
@@ -531,6 +536,35 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             if (current(version)) _state.update { it.copy(saving = false) }
         }
     }
+
+    // ---- Ops (#75): read-only view of C-chan's agents. ----
+    fun loadOps() {
+        val version = scope
+        viewModelScope.launch {
+            try { val result = api.ops(); if (current(version)) _state.update { it.copy(ops = result, opsError = null, opsAvailable = true) } }
+            catch (error: ApiException) {
+                if (!current(version)) return@launch
+                when {
+                    // 403 here means "no Ops for this member", not "signed out" (ApiException.signedOut counts every 403).
+                    error.code == "STUDIO_FORBIDDEN" || error.status == 404 -> _state.update { it.copy(opsAvailable = false) }
+                    error.signedOut -> signedOut()
+                    else -> _state.update { it.copy(opsError = "Ops is not available right now. Try Refresh.") }
+                }
+            }
+        }
+    }
+    fun loadOpsHistory(ticket: OpsTicket) {
+        if (ticket.id.isEmpty()) return
+        val version = scope
+        viewModelScope.launch {
+            try { val result = api.opsMessages(ticket.id); if (current(version)) _state.update { it.copy(opsHistory = result) } }
+            catch (error: ApiException) {
+                if (!current(version)) return@launch
+                if (error.signedOut) signedOut() else _state.update { it.copy(opsError = "The ticket history is not available right now.") }
+            }
+        }
+    }
+    fun closeOpsHistory() { _state.update { it.copy(opsHistory = null) } }
 
     // ---- Weather: the owner's city; the outfit and the companion follow the local weather. ----
     fun loadWeather() {

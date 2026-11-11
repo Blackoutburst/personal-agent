@@ -1,11 +1,13 @@
 // The Studio tab (#65): an app grid (APPS) whose tiles open the Studio mailbox (#63/#64, read-only correspondence) or the
 // shared Studio calendar (src/studio-calendar.mjs, through public/calendar-ui.mjs). Routes: #studio, #studio/<app id>.
 import { createCalendarUI } from './calendar-ui.mjs';
+import { createOpsUI } from './ops-ui.mjs';
 
 // One entry per app; a new Studio app adds its tile here, an access flag in /api/studio "access" and a view below.
 export const APPS = Object.freeze([
   Object.freeze({ id: 'mail', name: 'Boîte mail', line: 'Contacts et échanges du Studio, en lecture.', icon: '✉' }),
-  Object.freeze({ id: 'calendar', name: 'Calendrier', line: 'Rendez-vous et échéances partagés par les membres et leurs compagnons.', icon: '▦' })
+  Object.freeze({ id: 'calendar', name: 'Calendrier', line: 'Rendez-vous et échéances partagés par les membres et leurs compagnons.', icon: '▦' }),
+  Object.freeze({ id: 'ops', name: 'Ops', line: 'Les agents de C-chan : en cours, tickets, décisions et consommation.', icon: '◉' })
 ]);
 const CALENDAR_LABELS = { calendar: 'Calendrier', previous: 'Mois précédent', next: 'Mois suivant', today: 'Aujourd’hui', addEvent: 'Ajouter un événement',
   weekdays: ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'], holiday: 'Férié', allDay: 'Toute la journée', todaySuffix: ', aujourd’hui', open: ', ouvrir',
@@ -30,7 +32,7 @@ const date = value => new Date(value).toLocaleString('fr-FR', { dateStyle: 'medi
 // navigate(appId | null): go to #studio/<app> or back to the grid (the host app routes it back to show).
 export function createStudioUI({ document, fetchImpl = fetch, onDenied = () => {}, navigate = null, requestId }) {
   const home = document.getElementById('studio-home'), nav = document.getElementById('nav-studio');
-  if (!home) return { show: async () => {}, probe: async () => {}, clear() {} };
+  if (!home) return { show: async () => {}, probe: async () => {}, clear() {}, hide() {} };
   const node = (tag, props = {}) => Object.assign(document.createElement(tag), props);
   let epoch = 0, request = 0, detailRequest = 0, openRequest = 0, data = null, selected = null, messages = [], nextOffset = null;
   let apps = null, current = null;
@@ -55,6 +57,9 @@ export function createStudioUI({ document, fetchImpl = fetch, onDenied = () => {
     features: { holidays: false, repeat: false, reminders: false }, notesMax: 2000, byline: bylineFor, agenda: true,
     fields: [{ key: 'company', label: 'Entreprise (facultatif)', max: 200 }, { key: 'contact', label: 'Contact (facultatif)', max: 254 }],
     visible: () => current === 'calendar', ...(requestId ? { requestId } : {}) });
+  const opsView = node('section', { className: 'studio-app studio-ops', hidden: true });
+  opsView.setAttribute('aria-label', 'Ops : les agents de C-chan');
+  const opsUI = createOpsUI({ document, fetchImpl, home: opsView, visible: () => current === 'ops', onDenied });
   const note = node('p', { className: 'note', role: 'status' });
   const refresh = node('button', { type: 'button', className: 'button', textContent: 'Actualiser' });
   const search = node('input', { type: 'search', placeholder: 'Chercher une entreprise ou un contact' });
@@ -66,7 +71,7 @@ export function createStudioUI({ document, fetchImpl = fetch, onDenied = () => {
   const provenance = node('p', { className: 'studio-provenance' });
   layout.append(list, detail);
   mailView.append(node('p', { className: 'intro', textContent: 'Contacts et échanges. C-chan reste votre interlocutrice pour les envois.' }), controls, note, layout, provenance);
-  home.replaceChildren(gridNote, grid, appBar, mailView, calendarView);
+  home.replaceChildren(gridNote, grid, appBar, mailView, calendarView, opsView);
   function renderGrid() {
     grid.replaceChildren();
     for (const app of APPS) {
@@ -81,9 +86,10 @@ export function createStudioUI({ document, fetchImpl = fetch, onDenied = () => {
     }
   }
   function layoutFor(app) {
+    if (app !== 'ops') opsUI.hide();
     current = app;
     grid.hidden = app !== null; appBar.hidden = app === null; gridNote.hidden = app !== null;
-    mailView.hidden = app !== 'mail'; calendarView.hidden = app !== 'calendar';
+    mailView.hidden = app !== 'mail'; calendarView.hidden = app !== 'calendar'; opsView.hidden = app !== 'ops';
     appTitle.textContent = APPS.find(item => item.id === app)?.name ?? '';
   }
   // The grid, or one app (opening it refreshes it). An app this member may not open shows the grid with a note.
@@ -94,7 +100,7 @@ export function createStudioUI({ document, fetchImpl = fetch, onDenied = () => {
       try {
         const result = await api({ action: 'access' });
         if (owner !== epoch || token !== openRequest) return;
-        apps = { mail: true, calendar: false, ...(result.apps ?? {}) }; if (nav) nav.hidden = false;
+        apps = { mail: true, calendar: false, ops: false, ...(result.apps ?? {}) }; if (nav) nav.hidden = false;
       } catch (error) {
         if (owner !== epoch || token !== openRequest) return;
         if (error.status === 401 || error.status === 403) failed(error); else gridNote.textContent = 'Le Studio n’est pas disponible. Réessayez dans un instant.';
@@ -107,6 +113,7 @@ export function createStudioUI({ document, fetchImpl = fetch, onDenied = () => {
     if (wanted) appTitle.focus?.();
     if (wanted === 'mail') await showMail();
     else if (wanted === 'calendar') await calendarUI.show();
+    else if (wanted === 'ops') await opsUI.show();
   }
   async function api(body) {
     const response = await fetchImpl('api/studio', { method: 'POST', credentials: 'same-origin', cache: 'no-store',
@@ -124,7 +131,7 @@ export function createStudioUI({ document, fetchImpl = fetch, onDenied = () => {
     const owner = epoch;
     try {
       const result = await api({ action: 'access' });
-      if (owner === epoch) { apps = { mail: true, calendar: false, ...(result.apps ?? {}) }; if (nav) nav.hidden = false; }
+      if (owner === epoch) { apps = { mail: true, calendar: false, ops: false, ...(result.apps ?? {}) }; if (nav) nav.hidden = false; }
     }
     catch (error) { if (owner === epoch && error.status === 401) failed(error); }
   }
@@ -200,8 +207,8 @@ export function createStudioUI({ document, fetchImpl = fetch, onDenied = () => {
     epoch++; request++; detailRequest++; data = null; selected = null; messages = []; nextOffset = null; search.value = '';
     list.replaceChildren(); detail.replaceChildren(); provenance.textContent = ''; note.textContent = ''; refresh.disabled = false;
     layout.dataset.detail = 'false'; if (nav) nav.hidden = true;
-    openRequest++; apps = null; grid.replaceChildren(); gridNote.textContent = ''; layoutFor(null); calendarUI.clear();
+    openRequest++; apps = null; grid.replaceChildren(); gridNote.textContent = ''; layoutFor(null); calendarUI.clear(); opsUI.clear();
   }
   search.addEventListener('input', renderList); refresh.addEventListener('click', () => { void showMail(); });
-  return { show, probe, clear };
+  return { show, probe, clear, hide: () => opsUI.hide() };
 }

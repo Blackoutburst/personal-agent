@@ -69,6 +69,7 @@ const STATIC = new Map([
   ['/personality-ui.mjs', ['personality-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/contact-ui.mjs', ['contact-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/studio-ui.mjs', ['studio-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/ops-ui.mjs', ['ops-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/board-ui.mjs', ['board-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/group-ui.mjs', ['group-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/owner-profile-ui.mjs', ['owner-profile-ui.mjs', 'text/javascript; charset=utf-8']],
@@ -451,7 +452,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       studioCalendar = new StudioCalendar({ store, owners, timezoneFor: companionId => profiles.get(companionId)?.timezone ?? 'UTC',
         nameFor: (companionId, kind) => kind === 'human' ? ownerProfiles.publicProfile(companionId).displayName : profiles.get(companionId)?.name ?? null,
         ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
-      studioHttp = createStudioHttp({ access, calendar: studioCalendar, studio: new Studio({ store, owners, ...(mailOptions.now ? { now: mailOptions.now } : {}) }) });
+      studioHttp = createStudioHttp({ access, calendar: studioCalendar, ops: () => agents?.client ?? null, studio: new Studio({ store, owners, ...(mailOptions.now ? { now: mailOptions.now } : {}) }) });
       connectors = new Connectors({ store, discord: () => discord, github: () => github, x: () => x, mail: () => mail, minecraft: () => minecraft,
         studioMember: companionId => studioCalendar.member(companionId), boardConfigured: companionId => Boolean(boardCompanion?.configuredFor(companionId)) });
       // Board inbox (#55, docs/BOARD-INBOX.md): one sub-conversation per Board thread or ticket, out of the main chat.

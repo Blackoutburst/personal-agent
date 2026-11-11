@@ -13,8 +13,9 @@ an access flag in the `/api/studio` `access` answer and its view.
 | --- | --- | --- | --- |
 | Boîte mail | `#studio/mail` | the `studioViewers` | the read-only contact book and correspondence (#52), unchanged |
 | Calendrier | `#studio/calendar` | every Studio member | the shared Studio calendar below |
+| Ops | `#studio/ops` | every Studio member, when the agent runner is configured | read-only view of C-chan's agents (#75, docs/OPS.md) |
 
-`{ "action": "access" }` answers `{ allowed: true, apps: { mail, calendar } }`, or 403 when neither is allowed. The Studio
+`{ "action": "access" }` answers `{ allowed: true, apps: { mail, calendar, ops } }`, or 403 when neither is allowed. The Studio
 nav link appears for any member, so an owner who shares the mailbox without being a viewer (screamer today) sees the
 tab with the Calendar tile only.
 

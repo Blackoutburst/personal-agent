@@ -7,6 +7,8 @@
 //   GET  /status                     limits, run counts, Board connection
 //   GET  /runs[?active=1]            runs, newest last
 //   GET  /runs/<id>                  one run
+//   GET  /ops                        agents, pipeline, decisions, usage (read-only, for the Studio Ops app)
+//   GET  /tickets/<id>/messages      a ticket's Board thread (read-only)
 //   POST /runs                       launch { agent, ticketId, repo, model, provider?, base?, instructions?, maxTurns?, maxSeconds?, requestId? }
 //   POST /runs/<id>/stop             stop a run (its unit and every child process)
 //   GET  /events?after=N[&wait=S]    run and Board events after seq N; waits up to S seconds (max 30) for the next one
@@ -23,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const { AgentRunner, AgentRunnerError } = await import(join(ROOT, 'src', 'agent-runner.mjs'));
+const { buildOps, OpsBoard } = await import(join(ROOT, 'src', 'agent-ops.mjs'));
 const { SandboxOps } = await import(join(ROOT, 'src', 'agent-sandbox-ops.mjs'));
 const { BoardReporter, BoardWatch, BoardRosterMirror } = await import(join(ROOT, 'src', 'agent-runner-board.mjs'));
 const { Roster, RosterError } = await import(join(ROOT, 'src', 'agent-roster.mjs'));
@@ -48,6 +51,7 @@ const runner = new AgentRunner({ file: stateFile, ops: new SandboxOps(), log, li
   reporter: new BoardReporter({ client: board, projects: config.projects, ownerId: config.ownerId, log }) });
 runner.on('event', event => log(`event ${event.seq} ${event.type} ${event.runId ?? ''} #${event.ticketNumber ?? '?'} ${event.state ?? ''}`));
 
+const opsBoard = new OpsBoard({ client: board, projects: config.projects });
 const watch = new BoardWatch({ client: board, projects: config.projects });
 let boardState = { ok: null, at: null, error: null };
 async function poll() {
@@ -89,6 +93,17 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && parts[0] === 'runs' && parts.length === 2) {
       const run = runner.get(parts[1]);
       return run ? send(200, { run }) : send(404, { error: { code: 'NOT_FOUND', message: 'No such run.' } });
+    }
+    // Read-only data for the Studio Ops app (#75): agents, pipeline, decisions and usage.
+    if (request.method === 'GET' && url.pathname === '/ops') {
+      let tickets = null;
+      try { tickets = await opsBoard.tickets(); } catch (error) { log(`ops: Board read failed: ${error.code ?? error.message}`); }
+      return send(200, buildOps({ runs: runner.list(), events: runner.events(0), tickets }));
+    }
+    if (request.method === 'GET' && parts[0] === 'tickets' && parts[2] === 'messages' && parts.length === 3 && /^[A-Za-z0-9_-]{1,100}$/.test(parts[1])) {
+      let history = null;
+      try { history = await opsBoard.messages(parts[1]); } catch (error) { return send(502, { error: { code: 'BOARD_UNAVAILABLE', message: 'The Board is not reachable.' } }); }
+      return history ? send(200, history) : send(404, { error: { code: 'NOT_FOUND', message: 'No such ticket.' } });
     }
     if (request.method === 'POST' && url.pathname === '/runs') return send(202, { run: runner.launch(await body(request)) });
     if (request.method === 'POST' && parts[0] === 'runs' && parts[2] === 'stop' && parts.length === 3) return send(200, { run: runner.stop(parts[1]) });

@@ -133,7 +133,7 @@ fun tonesFor(choice: ThemeChoice): Tones = when (choice) {
     ThemeChoice.Dark -> DarkTones
 }
 
-private enum class Tab(val label: String) { Chat("Chat"), Group("Groups"), Board("Board"), Calendar("Calendar"), Me("Me") }
+private enum class Tab(val label: String) { Chat("Chat"), Group("Groups"), Board("Board"), Ops("Ops"), Calendar("Calendar"), Me("Me") }
 /** Sections of the Me tab; memories come first. */
 private enum class MeSection(val label: String) { Memories("Memories"), Profile("Your profile"), Companion("Companion"), Watches("Watches"), Connectors("Connectors"), Settings("Settings") }
 
@@ -203,15 +203,18 @@ private fun Home(model: CompanionModel, state: UiState, memoryExport: MemoryExpo
             when (tab) {
                 Tab.Chat -> ChatScreen(model, state)
                 Tab.Group -> GroupsTab(model)
-                Tab.Board -> if (state.boardThread != null && state.threadId == state.boardThread) ChatScreen(model, state) else BoardScreen(model, state)
+                // #75: the Board list is gone; Tab.Board only hosts a Board sub-conversation opened from a notification.
+                Tab.Board -> ChatScreen(model, state)
+                Tab.Ops -> OpsScreen(model, state)
                 Tab.Calendar -> CalendarScreen(model, state)
                 Tab.Me -> MeScreen(model, state, memoryExport) { tab = Tab.Chat }
             }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-            // The Board tab shows once the owner has a Board conversation (an older server never reports one).
+            // #75: no Board tab button any more (Board messages arrive in the main chat; history is in Ops). Ops shows
+            // unless the server says this member has none.
             val shownTabs = Tab.entries.filter {
-                (it != Tab.Board || state.boardAny || state.boardThread != null || tab == Tab.Board) &&
+                it != Tab.Board && (it != Tab.Ops || state.opsAvailable || tab == Tab.Ops) &&
                     (it != Tab.Group || tab == Tab.Group || groups.openId != null ||
                         groups.available && (!groups.groups.isNullOrEmpty() || groups.canCreate))
             }

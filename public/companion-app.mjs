@@ -178,7 +178,7 @@ function show(next) {
   if (lookShown()) startLook();
   if (next === 'me' && (meSection === 'watches' || meSection === 'settings')) void remindersUI.show();
   if (next === 'calendar') void calendarUI.show();
-  if (next === 'studio') void studioUI.show(studioApp);
+  if (next === 'studio') void studioUI.show(studioApp); else studioUI.hide();
   if (next === 'me' && meSection === 'settings') { $('theme-pick').hidden = false; renderThemePick(); void webPushUI.show(); }
   pushPresence.update(); activeClient.update(); unreadMark.check();
   renderAll();
@@ -198,14 +198,14 @@ function route() {
   const me = { me: 'memories', memories: 'memories', 'me/companion': 'companion', look: 'companion', 'me/watches': 'watches', watches: 'watches',
     'me/connectors': 'connectors', 'me/settings': 'settings', 'me/profile': 'profile' }[hash];
   if (me) meSection = me;
-  // #board is the Board tab; #board/<thread> opens that Board sub-conversation in the chat view (also from a push).
+  // #75: the Board tab is gone (Board messages come to the main chat, history is in Studio > Ops); #board/<thread> opens that Board sub-conversation in the chat view (also from a push).
   const board = /^board\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(hash);
   boardThread = board ? board[1] : null;
   const group = /^group\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(hash);
   groupThread = group ? group[1] : null;
   const studio = /^studio(?:\/([a-z]+))?$/.exec(hash);
   studioApp = studio?.[1] ?? null;
-  show(hash === 'group' || group ? 'group' : hash === 'board' ? 'board' : board ? 'chat' : studio ? 'studio' : hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
+  show(hash === 'group' || group ? 'group' : board ? 'chat' : studio ? 'studio' : hash === 'calendar' ? 'calendar' : me ? 'me' : 'chat');
 }
 
 async function start() {
@@ -863,7 +863,7 @@ $('back-to-chat').addEventListener('click', async () => { clearUploads(); await 
 $('board-done').addEventListener('click', async () => {
   if (!onBoardThread()) return;
   const done = !boardUI.topic(selectedBoard)?.archived;
-  if (await boardUI.archive(selectedBoard, done) && done) location.hash = '#board'; else renderAll();
+  if (await boardUI.archive(selectedBoard, done) && done) location.hash = '#chat'; else renderAll();
 });
 // The Board badge follows new Board messages while the app is open.
 // #60: every 30 s while the owner is around, every minute in a hidden tab, every 2 minutes after 5 idle minutes.

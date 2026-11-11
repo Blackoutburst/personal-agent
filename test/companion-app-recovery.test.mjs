@@ -62,7 +62,7 @@ function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: prof
         connection: outcome.error === 'ACCESS_DENIED' ? 'denied' : outcome.status === 'uncertain' ? 'reconnecting' : 'ready', error: outcome.error ?? null }); return { requestId: pending.requestId, text, ...outcome }; },
     retry() { writes.push('retry'); return Promise.resolve(); }, cancel() { writes.push('cancel'); return Promise.resolve(); }, deleteThread() { writes.push('delete'); return Promise.resolve(); }
   };
-  const feature = opts => { if (opts?.onDenied) denials.push(opts.onDenied); return { clear() {}, load() {}, show: async () => {}, probe: async () => {}, refreshIfOpen: async () => {} }; };
+  const feature = opts => { if (opts?.onDenied) denials.push(opts.onDenied); return { clear() {}, hide() {}, load() {}, show: async () => {}, probe: async () => {}, refreshIfOpen: async () => {} }; };
   const response = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
   const profile = { name: 'Pip', character: 'pip', color: 'peach', outfit: 'auto' };
   const sandbox = { console, structuredClone, URL, AbortController, TextEncoder, TextDecoder, Intl, Date, Promise, Set, Map, Object, JSON, String, Number,
@@ -225,8 +225,7 @@ test('a Board push link opens that sub-conversation in the chat view, marks it r
   assert.equal(f.$('past-chats').hidden, true); assert.equal(f.$('new-chat').hidden, true);
   await f.$('board-done').emit('click'); await flush();
   assert.ok(f.boardCalls.includes(`archive:${BOARD_THREAD}:true`));
-  assert.equal(f.location(), '#board', 'Done goes back to the Board list');
-  assert.ok(f.boardCalls.includes('show'));
+  assert.equal(f.location(), '#chat', 'Done goes back to the main chat (the Board tab is gone, #75)');
   f.sandbox.location.hash = '#chat'; await flush();
   assert.equal(f.reads.at(-1), 'open', 'Chat reopens the main conversation');
   assert.equal(f.$('board-banner').hidden, true); assert.equal(f.$('past-chats').hidden, false);

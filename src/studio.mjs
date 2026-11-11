@@ -73,7 +73,8 @@ export class Studio {
     return { company, messages, nextOffset: rows.length > 50 ? offset + 50 : null };
   }
 }
-export function createStudioHttp({ access, studio, calendar = null }) {
+// ops: () => the agent runner client (call(method, path, body, options)) or null when none is configured (#75).
+export function createStudioHttp({ access, studio, calendar = null, ops = () => null }) {
   return async request => {
     const parsed = await access.read(request, 16384);
     if (parsed.failure) return parsed.failure;
@@ -89,7 +90,21 @@ export function createStudioHttp({ access, studio, calendar = null }) {
         const mail = (() => { try { studio.scope(id); return true; } catch (error) { if (error instanceof StudioError) return false; throw error; } })();
         const shared = Boolean(calendar?.member(id));
         if (!mail && !shared) throw new StudioError('STUDIO_FORBIDDEN', 403);
-        return { status: 200, body: { allowed: true, apps: { mail, calendar: shared } } };
+        return { status: 200, body: { allowed: true, apps: { mail, calendar: shared, ops: Boolean(ops()) && (mail || shared) } } };
+      }
+      // Ops (#75): read-only view of C-chan's agents, any Studio member. The runner answers; nothing is written.
+      if ((value.action === 'ops' && only(['action'])) || (value.action === 'opsMessages' && only(['action', 'ticketId']))) {
+        const runner = ops();
+        if (!runner) throw new StudioError('STUDIO_FORBIDDEN', 403);
+        try { studio.scope(id); } catch (error) { if (!(error instanceof StudioError) || !calendar?.member(id)) throw error; }
+        const path = value.action === 'ops' ? '/ops' : /^[A-Za-z0-9_-]{1,100}$/.test(value.ticketId ?? '') ? `/tickets/${value.ticketId}/messages` : null;
+        if (!path) throw new StudioError('INVALID_REQUEST');
+        try {
+          const answer = await runner.call('GET', path, null, { timeoutMs: 20_000 });
+          if (answer.status === 404) throw new StudioError('STUDIO_NOT_FOUND', 404);
+          if (answer.status !== 200) throw new StudioError('OPS_UNAVAILABLE', 503);
+          return { status: 200, body: answer.body };
+        } catch (error) { throw error instanceof StudioError ? error : new StudioError('OPS_UNAVAILABLE', 503); }
       }
       if (isStudioCalendarAction(value.action) && only(['action', 'input'])) return studioCalendarOperation(calendar, id, value, { kind: 'human', lang: 'fr' });
       if (value.action === 'list' && only(['action'])) return { status: 200, body: studio.list(id) };

@@ -202,7 +202,7 @@ test('real HTTP: /api/studio access lists the apps, calendar actions follow memb
   const access = [];
   for (const token of tokens) access.push(await call(token, { action: 'access' }));
   assert.deepEqual(access.map(r => r.status), [200, 200, 200, 403]);
-  assert.deepEqual(access.slice(0, 3).map(r => r.body.apps), [{ mail: true, calendar: true }, { mail: true, calendar: true }, { mail: false, calendar: true }]);
+  assert.deepEqual(access.slice(0, 3).map(r => r.body.apps), [{ mail: true, calendar: true, ops: false }, { mail: true, calendar: true, ops: false }, { mail: false, calendar: true, ops: false }]);
   assert.equal((await call(tokens[2], { action: 'list' })).status, 403, 'The mailbox stays with its viewers');
   const created = await call(tokens[1], { action: 'createEvent', input: { requestId: 'ui-1', event: meeting() } });
   assert.equal(created.status, 200); assert.equal(created.body.event.createdBy.kind, 'human'); assert.equal(created.body.event.createdBy.name, 'bob');

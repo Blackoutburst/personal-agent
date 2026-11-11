@@ -339,6 +339,12 @@ class Api(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
             put("action", "boardArchive"); put("threadId", threadId); put("archived", archived)
         }), threadId)
     }
+    /** Ops tab (#75): C-chan's agents, read-only (POST api/studio). 403 or 404 on a server or member without Ops. */
+    suspend fun ops(): OpsSnapshot = parseOps(post(companion + "api/studio", buildJsonObject { put("action", "ops") }))
+    suspend fun opsMessages(ticketId: String): OpsHistory {
+        if (!Regex("[A-Za-z0-9_-]{1,100}").matches(ticketId)) throw ApiException("INVALID_REQUEST")
+        return parseOpsHistory(post(companion + "api/studio", buildJsonObject { put("action", "opsMessages"); put("ticketId", ticketId) }))
+    }
     // ---- Group chat (#53, src/group-chat.mjs): POST api/groups. An older server answers 404 (the tab then stays hidden). ----
     private suspend fun group(body: JsonObject): JsonElement = post(companion + "api/groups", body)
     private fun checkGroupId(groupId: String) { if (!fileId(groupId)) throw ApiException("INVALID_REQUEST") }

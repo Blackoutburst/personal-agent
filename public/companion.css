@@ -654,3 +654,14 @@ legend { font-weight: 700; margin-bottom: 10px; }
   .topbar:has(#nav-group:not([hidden])):has(:is(#nav-board, #nav-studio):not([hidden])) .nav { flex-shrink: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .topbar:has(#nav-group:not([hidden])):has(:is(#nav-board, #nav-studio):not([hidden])) .nav a { padding: 7px 8px; font-size: 12.5px; }
 }
+
+/* Studio > Ops (#75) */
+.ops-section { margin: 18px 0; }
+.ops-agents, .ops-decisions, .ops-messages { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ops-agent { padding: 10px 12px; border: 1px solid var(--shade); border-radius: 10px; overflow-wrap: anywhere; }
+.ops-agent.live { border-left: 4px solid var(--ink); }
+.ops-pipeline { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.ops-column { min-width: 0; display: grid; gap: 6px; align-content: start; }
+.ops-ticket { text-align: left; padding: 6px 8px; border: 1px solid var(--shade); border-radius: 8px; background: none; color: inherit; font: inherit; cursor: pointer; overflow-wrap: anywhere; }
+.ops-ticket:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+.ops-messages li, .ops-decisions li { overflow-wrap: anywhere; white-space: pre-wrap; }
