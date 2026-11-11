@@ -1,7 +1,7 @@
 'use strict';
 const path = require('node:path');
 const { app, BrowserWindow, shell, screen, session, Tray, Menu, Notification, nativeImage, globalShortcut, ipcMain } = require('electron');
-const { COMPANION_URL, isInternal, isExternalOpenable, afterLogin } = require('./src/urls');
+const { COMPANION_URL, isInternal, isExternalOpenable, afterLogin, isSignedIn, SESSION_URL } = require('./src/urls');
 const windowState = require('./src/window-state');
 const { persistentVersion } = require('./src/cookies');
 const { SITE } = require('./src/urls');
@@ -137,11 +137,23 @@ function createWindow() {
   // After the platform sign-in the site may land on its home or the Board: send the window back to the companion.
   // A short burst limit stops a loop if the server keeps bouncing us.
   let sent = [];
-  const backToCompanion = (_e, url) => {
-    const to = afterLogin(url);
+  const signedIn = async () => {
+    try {
+      const r = await session.defaultSession.fetch(SESSION_URL, { headers: { accept: 'application/json' } });
+      return r.ok && isSignedIn(await r.json());
+    } catch { return false; }   // unknown = treat as signed out: do nothing
+  };
+  const backToCompanion = async (_e, url) => {
+    if (!win || win.isDestroyed()) return;
+    let to = afterLogin(url, false);                 // sign-in page: add next=, no session needed
+    if (!to && afterLogin(url, true)) {              // a would-be bounce: only when truly signed in
+      if (!(await signedIn())) return;
+      if (!win || win.isDestroyed() || win.webContents.getURL() !== url) return;   // moved on meanwhile
+      to = afterLogin(url, true);
+    }
     const now = Date.now();
     sent = sent.filter((t) => now - t < 10000);
-    if (!to || sent.length >= 3 || !win || win.isDestroyed()) return;
+    if (!to || sent.length >= 3) return;
     sent.push(now);
     win.loadURL(to);
   };

@@ -68,13 +68,33 @@ Clients:
   or offline means no banner.
 ## Login return (#87)
 
-The platform sign-in does not hand the window back to the companion by itself (Android uses its own PKCE app flow, which
-does not apply here). `afterLogin` in `src/urls.js` (pure, tested) decides after every main-frame navigation: the bare
-`/account/` page is reloaded once with `?next=<companion url>`; account pages stay; the companion stays; any other
-blackoutburst.com page (platform home, Board subdomain) is sent back to the companion. At most 3 such redirects per 10 s,
-so a server bounce cannot loop. Board links clicked in the chat are not internal, so they still open in the system
-browser. Not verified on Windows against the live login; whether the platform honours `next` is unknown (the redirect
-back does not depend on it).
+Redirect chain, traced with `curl -sI` on 2026-11-11 (signed out) and from the Android code:
+
+1. `GET /personal-agent-preview/` -> 200 (the companion page itself; it shows the sign-in when there is no session).
+2. `GET /account/` -> 200, the platform account SPA (`/platform/community.js`); sign-in happens there.
+3. `GET /` (platform home) -> 200, no redirect. The page the user reported landing on.
+4. `GET board.blackoutburst.com/` -> **302 to `https://blackoutburst.com/account/`** when signed out. So the Board is an
+   SSO hop: it bounces through the account page and only comes back signed in.
+5. `GET /api/account/session` -> 200 JSON `{"user":null,...}` signed out (observed). The signed-in body is NOT verified: that endpoint is platform code outside this repo. `isSignedIn` accepts a `user` object with an `id`, the shape `src/account-validator.mjs:46-48` reads from the platform's `/internal/account/session` (200 `{user:{id}}` signed in, 401 signed out; loopback only, not reachable from the app).
+   (`/api/account/me` and `/api/desktop` are 404/denied without a login.)
+
+Android does not use a return URL: it starts `/account/?app=companion&challenge=..&state=..` (PKCE) and the platform hands
+the result back through the `blackoutburst-companion://auth` deep link. That does not exist for a window, so the window
+decides itself. Whether the platform honours `?next=` on `/account/` could not be tested without signing in; the redirect
+back below does not depend on it.
+
+`afterLogin(url, signedIn)` in `src/urls.js` (pure, tested), run after every main-frame navigation:
+- bare `/account/` -> reloaded once with `?next=<companion url>` (needs no session);
+- companion and other account/api-account pages -> stay;
+- any other blackoutburst.com page (platform home, Board) -> back to the companion **only if** `signedIn === true`.
+  `main.js` computes that by fetching `/api/account/session` with the window's own session (`isSignedIn`, `user.id` present).
+  Signed out, unknown, or a failed fetch = no redirect, so the Board -> account SSO hop and the login itself are never cut.
+  The check is repeated against the current URL after the fetch so a stale answer cannot redirect a page the user left.
+- at most 3 redirects per 10 s as a loop guard. Board links clicked in the chat are not internal, so they still open in
+  the system browser.
+
+Not verified in a live Electron window on Windows (no signing-in possible here); the decision logic is covered by
+`test/desktop.test.mjs`.
 
 ## Tray, toasts, badge, autostart, shortcut (#83)
 
