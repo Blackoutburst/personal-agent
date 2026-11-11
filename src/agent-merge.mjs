@@ -8,14 +8,17 @@
 // The result says what happened; on 'conflict' and 'tests_failed' nothing was pushed. Releasing the server (restart,
 // rollout) is not part of this: it stays with the owner.
 // Git runs with the identity and the keys already configured for the owner on this server: nothing new is created here.
-// Tests run with a scrubbed environment (a throw-away HOME, no agent socket), so reviewed code does not see ssh keys.
+// The reviewed code (the test run and the prepare step) never runs as the owner: with `sandbox` set both go through the same
+// cchan-sandbox-run wrapper the agent units use (its own hardened unit, no owner keys, no agent socket). Without it (tests
+// on temp repos) they run directly with a scrubbed environment (a throw-away HOME). Only git itself runs as the owner.
 import { execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export const DEFAULT_IDENTITY = Object.freeze({ name: 'Blackoutburst', email: 'github@blackoutburst.dev' });
 const TAIL = 8000;
+const MISSING_DEPS = /ERR_MODULE_NOT_FOUND|Cannot find (package|module) '/;
 
 const tail = value => String(value ?? '').slice(-TAIL);
 function run(binary, args, { cwd, env, timeout = 120_000 } = {}) {
@@ -27,10 +30,12 @@ function run(binary, args, { cwd, env, timeout = 120_000 } = {}) {
   });
 }
 
+// sandbox: (command, { cwd, timeoutMs }) => argv, wraps a command to run in the agent sandbox (see SandboxOps.merge).
 // origin: a Git URL or path. source: the sandbox clone holding the reviewed branch. Returns { status, ... }.
 export async function mergeAccepted({ origin, source, branch, expectedHead, base = 'main', ticketNumber = null,
-  identity = DEFAULT_IDENTITY, testCommand = ['node', '--test'], prepareCommand = null, attempts = 3, testTimeoutMs = 30 * 60_000,
+  identity = DEFAULT_IDENTITY, testCommand = ['node', '--test'], prepareCommand = null, sandbox = null, attempts = 3, testTimeoutMs = 30 * 60_000,
   gitTimeoutMs = 120_000, tmp = tmpdir() } = {}) {
+  mkdirSync(tmp, { recursive: true });
   const dir = mkdtempSync(join(tmp, 'cchan-merge-'));
   const work = join(dir, 'work'), home = join(dir, 'home');
   mkdirSync(home);
@@ -55,7 +60,8 @@ export async function mergeAccepted({ origin, source, branch, expectedHead, base
       if ((await git(['merge-base', '--is-ancestor', head, tip])).ok) {
         return { status: 'already_merged', mergeCommit: tip, head, output: `${branch} @ ${head.slice(0, 10)} is already part of ${base}.` };
       }
-      await git(['checkout', '--quiet', '--detach', tip]);
+      step = await git(['checkout', '--quiet', '--detach', tip]);
+      if (!step.ok) return fail('error', `Could not check out origin/${base} @ ${tip.slice(0, 10)}: ${step.output}`, { head, baseHead: tip });
       const message = `Merge ${branch}${ticketNumber ? ` (ticket #${ticketNumber})` : ''} into ${base}`;
       step = await git(['merge', '--no-ff', '--no-edit', '-m', message, head]);
       if (!step.ok) {
@@ -65,12 +71,21 @@ export async function mergeAccepted({ origin, source, branch, expectedHead, base
       }
       const merged = (await git(['rev-parse', 'HEAD'])).output;
 
+      // Reviewed code runs in the sandbox (a different user), which has to be able to write into the checkout.
+      if (sandbox) await run('chmod', ['-R', 'a+rwX', work], { timeout: gitTimeoutMs });
       const env = { PATH: process.env.PATH, HOME: home, LANG: 'C.UTF-8', CI: '1' };
+      const exec = (command, timeout) => {
+        const argv = sandbox ? sandbox(command, { cwd: work, timeoutMs: timeout }) : command;
+        return run(argv[0], argv.slice(1), { cwd: work, env: sandbox ? process.env : env, timeout });
+      };
       if (prepareCommand) {
-        step = await run(prepareCommand[0], prepareCommand.slice(1), { cwd: work, env, timeout: testTimeoutMs });
+        step = await exec(prepareCommand, testTimeoutMs);
         if (!step.ok) return fail('error', `Preparing the test run failed (${prepareCommand.join(' ')}): ${step.output}`, { head, baseHead: tip });
       }
-      step = await run(testCommand[0], testCommand.slice(1), { cwd: work, env, timeout: testTimeoutMs });
+      step = await exec(testCommand, testTimeoutMs);
+      if (!step.ok && !prepareCommand && MISSING_DEPS.test(step.output)) {
+        return fail('error', `The test run could not start because dependencies are missing and no prepareCommand is configured (config.merge.prepareCommand, e.g. ["node","ops/sandbox/install-deps.mjs"]):\n${step.output}`, { head, baseHead: tip });
+      }
       if (!step.ok) {
         return fail('tests_failed', `${testCommand.join(' ')} failed${step.timedOut ? ' (timed out)' : ` (exit ${step.code})`} on ${branch} merged into ${base} @ ${tip.slice(0, 10)}:\n${step.output}`, { head, baseHead: tip });
       }

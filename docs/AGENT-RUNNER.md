@@ -127,8 +127,10 @@ the run fails with `POLICY`, whatever the agent reported.
   already part of `main` is reported as merged.
 
 `config.merge` (see `ops/agent-runner/config.example.json`): `identity`, `testCommand` (default `["node","--test"]`),
-`prepareCommand` (optional, runs before the tests, for example to link `node_modules`; its failure is `MERGE_ERROR`,
-not a test failure) and `origin` (override of the remote). Releasing the server (restart, rollout) is not part of it
+`prepareCommand` (runs before the tests; the example config uses `["node","ops/sandbox/install-deps.mjs"]` to link
+`node_modules`; its failure is `MERGE_ERROR`, not a test failure. Without it, a test run that cannot start because
+packages are missing is also `MERGE_ERROR`). Git runs as the owner; the prepare step and the test run go through
+`sudo cchan-sandbox-run` like agent units, in a clone under `/var/lib/cchan-agents/merge` and `origin` (override of the remote). Releasing the server (restart, rollout) is not part of it
 and stays with the owner.
 
 **On the Board.** Each roster agent is mirrored as a managed agent profile named `C-chan · <name>`, with role, model,

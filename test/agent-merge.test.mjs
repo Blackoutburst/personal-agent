@@ -2,7 +2,7 @@
 // core, and the runner/reporter gating around it with fakes for the sandbox and the Board.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -125,6 +125,65 @@ test('merge: a failed prepare step is an error, not a test failure, and nothing 
   const result = await merge(r, head, { prepareCommand: ['node', '-e', 'process.exit(3)'] });
   assert.equal(result.status, 'error');
   assert.match(result.output, /Preparing the test run failed/);
+  assert.equal(r.mainOf(), before);
+});
+
+test('merge: the test and prepare steps go through the sandbox wrapper, git does not (#85)', async t => {
+  const r = repos(t);
+  const head = r.onBranch(BRANCH, { 'feature.txt': 'feature\n' });
+  const seen = [];
+  const sandbox = (command, { cwd, timeoutMs }) => { seen.push({ command, cwd, timeoutMs }); return command; };
+  const result = await merge(r, head, { sandbox, prepareCommand: ['node', '-e', '0'], testTimeoutMs: 90_000 });
+  assert.equal(result.status, 'merged');
+  assert.deepEqual(seen.map(s => s.command), [['node', '-e', '0'], ['node', '--test']]);
+  assert.ok(seen.every(s => s.cwd.includes('cchan-merge-') && s.timeoutMs === 90_000));
+});
+
+test('SandboxOps.merge wraps the test run in sudo cchan-sandbox-run under the sandbox root (#85)', async t => {
+  const { SandboxOps, WRAPPER } = await import('../src/agent-sandbox-ops.mjs');
+  const r = repos(t);
+  const head = r.onBranch(BRANCH, { 'feature.txt': 'feature\n' });
+  // A stand-in for sudo (the real wrapper needs root and systemd): logs its arguments, then runs the command after `--`
+  // in the --cwd directory, like cchan-sandbox-run would.
+  const log = join(r.root, 'sudo.log'), fake = join(r.root, 'fake-sudo');
+  writeFileSync(fake, `#!/bin/bash\nprintf '%s\\n' "$*" >> ${log}\nargs=("$@"); cwd=.\nfor ((i=0;i<$#;i++)); do [ "\${args[i]}" = --cwd ] && cwd=\${args[i+1]}; [ "\${args[i]}" = -- ] && { cd "$cwd" && exec "\${args[@]:i+1}"; }; done\nexit 99\n`, { mode: 0o755 });
+  const ops = new SandboxOps({ sudo: fake, root: join(r.root, 'sbroot') });
+  mkdirSync(join(r.root, 'sbroot', 'repos'), { recursive: true });
+  execFileSync('git', ['clone', '--quiet', '--mirror', r.sandbox, join(r.root, 'sbroot', 'repos', 'demo.git')]);
+  const result = await ops.merge({ repo: 'demo', branch: BRANCH, base: 'main', expectedHead: head, ticketNumber: 85, origin: r.origin,
+    identity: IDENTITY, testCommand: ['node', '--test'], prepareCommand: ['node', '-e', '0'] });
+  assert.equal(result.status, 'merged', result.output);
+  const calls = readFileSync(log, 'utf8').trim().split('\n');
+  assert.equal(calls.length, 2);
+  for (const line of calls) {
+    assert.ok(line.startsWith(`-n ${WRAPPER} --cwd ${join(r.root, 'sbroot', 'merge')}/`), line);
+    assert.match(line, /--max-seconds \d+ -- node /);
+  }
+});
+
+test('merge: missing dependencies without a prepareCommand are an error, not a test failure (#85)', async t => {
+  const r = repos(t);
+  const head = r.onBranch(BRANCH, { 'dep.test.mjs': "import 'not-installed-package';\n" });
+  const before = r.mainOf();
+  const result = await merge(r, head);
+  assert.equal(result.status, 'error');
+  assert.match(result.output, /dependencies are missing.*prepareCommand/s);
+  assert.equal(r.mainOf(), before);
+});
+
+test('merge: a failed git checkout --detach stops the merge instead of going on (#85)', async t => {
+  const r = repos(t);
+  const head = r.onBranch(BRANCH, { 'feature.txt': 'feature\n' });
+  const before = r.mainOf();
+  // A git shim that fails `checkout` and passes everything else through.
+  const bin = join(r.root, 'shim'); mkdirSync(bin);
+  const real = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(bin, 'git'), `#!/bin/bash\nfor a in "$@"; do [ "$a" = checkout ] && { echo "fatal: checkout refused" >&2; exit 1; }; done\nexec ${real} "$@"\n`, { mode: 0o755 });
+  const oldPath = process.env.PATH; process.env.PATH = `${bin}:${oldPath}`;
+  let result;
+  try { result = await merge(r, head); } finally { process.env.PATH = oldPath; }
+  assert.equal(result.status, 'error');
+  assert.match(result.output, /Could not check out/);
   assert.equal(r.mainOf(), before);
 });
 

@@ -98,6 +98,8 @@ export class SandboxOps {
       try { url = (await run(this.#exec, 'git', ['-c', `safe.directory=${dir}`, '--git-dir', dir, 'remote', 'get-url', 'origin'], { timeout: 15_000 })).trim(); }
       catch { return { status: 'error', output: `The sandbox clone of ${repo} has no origin remote.` }; }
     }
-    return mergeAccepted({ origin: url, source: dir, branch, expectedHead, base, ticketNumber, identity, testCommand, prepareCommand });
+    return mergeAccepted({ origin: url, source: dir, branch, expectedHead, base, ticketNumber, identity, testCommand, prepareCommand,
+      tmp: join(this.#root, 'merge'), sandbox: (command, { cwd, timeoutMs }) => [this.#sudo, '-n', WRAPPER, '--cwd', cwd,
+        '--max-seconds', String(Math.ceil((timeoutMs ?? 1_800_000) / 1000)), '--', ...command] });
   }
 }

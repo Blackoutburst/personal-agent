@@ -4,6 +4,6 @@
   "limits": { "maxConcurrent": 2, "maxTurns": 80, "maxSeconds": 3600, "maxQueued": 20, "heartbeatSeconds": 60 },
   "watchSeconds": 20,
   "manager": { "premiumMaxWeekly": 0.8 },
-  "merge": { "identity": { "name": "Blackoutburst", "email": "github@blackoutburst.dev" }, "testCommand": ["node", "--test"] },
+  "merge": { "identity": { "name": "Blackoutburst", "email": "github@blackoutburst.dev" }, "prepareCommand": ["node", "ops/sandbox/install-deps.mjs"], "testCommand": ["node", "--test"] },
   "board": { "configDir": "/home/ubuntu/.config/cchan-agent-runner/board", "sessionId": "cchan-agent-runner" }
 }
