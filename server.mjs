@@ -334,8 +334,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
                   'github_list_repos', 'github_repo', 'github_pulls', 'github_pull', 'github_create_repo', 'read_x_post', 'watch_x_video',
                   'mail_status', 'mail_inbox', 'mail_read', 'mail_send', 'mail_mark_handled', 'mail_opt_out',
                   'studio_calendar_list', 'studio_calendar_create', 'studio_calendar_update', 'studio_calendar_delete',
-                  // C-chan's agent runner (#72), only for the owners allowed to manage agents.
-                  ...(agentOwners.includes(owner.label) ? ['agents_launch', 'agents_list', 'agents_status', 'agents_stop'] : [])] }];
+                  // C-chan's agent runner (#72) and roster (#73), only for the owners allowed to manage agents.
+                  // test/agent-tools-allowed.test.mjs checks every agents_* tool of scheduler-mcp is listed here.
+                  ...(agentOwners.includes(owner.label) ? ['agents_launch', 'agents_list', 'agents_status', 'agents_stop',
+                    'agents_roster', 'agents_save_agent', 'agents_archive_agent', 'agents_save_team', 'agents_archive_team'] : [])] }];
           } });
         agentsConfigured = true;
       }
