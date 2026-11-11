@@ -1,7 +1,7 @@
 'use strict';
 const path = require('node:path');
 const { app, BrowserWindow, shell, screen, session, Tray, Menu, Notification, nativeImage, globalShortcut, ipcMain } = require('electron');
-const { COMPANION_URL, isInternal, isExternalOpenable } = require('./src/urls');
+const { COMPANION_URL, isInternal, isExternalOpenable, afterLogin } = require('./src/urls');
 const windowState = require('./src/window-state');
 const { persistentVersion } = require('./src/cookies');
 const { SITE } = require('./src/urls');
@@ -13,7 +13,6 @@ const { badgeBitmap } = require('./src/badge');
 app.setName('Companion');
 // Persistent default session: cookies from the platform login survive restarts.
 const stateFile = () => path.join(app.getPath('userData'), 'window-state.json');
-let win = null;
 let pendingUpdate = null; // set by the daily check; the banner is (re)added after each page load
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 const startHidden = process.argv.includes('--hidden');
@@ -121,6 +120,19 @@ function createWindow() {
   win.webContents.on('will-navigate', (e, url) => {
     if (!isInternal(url)) { e.preventDefault(); openExternal(url); }
   });
+  // After the platform sign-in the site may land on its home or the Board: send the window back to the companion.
+  // A short burst limit stops a loop if the server keeps bouncing us.
+  let sent = [];
+  const backToCompanion = (_e, url) => {
+    const to = afterLogin(url);
+    const now = Date.now();
+    sent = sent.filter((t) => now - t < 10000);
+    if (!to || sent.length >= 3 || !win || win.isDestroyed()) return;
+    sent.push(now);
+    win.loadURL(to);
+  };
+  win.webContents.on('did-navigate', backToCompanion);
+  win.webContents.on('did-navigate-in-page', (e, url, isMain) => { if (isMain) backToCompanion(e, url); });
   win.webContents.on('did-fail-load', (_e, code, _d, url, isMain) => {
     if (isMain && code !== -3) setTimeout(() => win && !win.isDestroyed() && win.loadURL(COMPANION_URL), 5000);
   });

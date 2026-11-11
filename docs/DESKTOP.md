@@ -66,6 +66,16 @@ Clients:
   server version is newer than `app.getVersion()`, a small dismissible "Update available" bar with a Download link
   appears in the window (re-added after each page load). The link downloads the exe; you run it yourself. Signed out
   or offline means no banner.
+## Login return (#87)
+
+The platform sign-in does not hand the window back to the companion by itself (Android uses its own PKCE app flow, which
+does not apply here). `afterLogin` in `src/urls.js` (pure, tested) decides after every main-frame navigation: the bare
+`/account/` page is reloaded once with `?next=<companion url>`; account pages stay; the companion stays; any other
+blackoutburst.com page (platform home, Board subdomain) is sent back to the companion. At most 3 such redirects per 10 s,
+so a server bounce cannot loop. Board links clicked in the chat are not internal, so they still open in the system
+browser. Not verified on Windows against the live login; whether the platform honours `next` is unknown (the redirect
+back does not depend on it).
+
 ## Tray, toasts, badge, autostart, shortcut (#83)
 
 - **Tray**: closing the window hides it; the app keeps running in the tray. Left click toggles the window; menu:

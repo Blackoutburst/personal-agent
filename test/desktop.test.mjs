@@ -163,3 +163,24 @@ test('badge bitmap: 16x16 BGRA, red disc, white digits, 9+ cap', () => {
   assert.ok([...b.buffer].some((v, i) => i % 4 === 0 && v === 255 && b.buffer[i + 1] === 255)); // white pixels
   assert.notDeepEqual(badge.badgeBitmap(3).buffer, badge.badgeBitmap(12).buffer);
 });
+
+test('afterLogin: where the window goes after sign-in (#87)', () => {
+  const C = urls.COMPANION_URL;
+  // landing pages that are not the companion go back to it
+  for (const u of ['https://blackoutburst.com/', 'https://blackoutburst.com/board', 'https://blackoutburst.com/dashboard?x=1',
+    'https://board.blackoutburst.com/', 'https://board.blackoutburst.com/?ticket=5']) assert.equal(urls.afterLogin(u), C, u);
+  // the companion and sign-in in progress stay
+  for (const u of [C, C + '?a=1#chat', 'https://blackoutburst.com/personal-agent-preview',
+    'https://blackoutburst.com/account/?next=x', 'https://blackoutburst.com/account/settings', 'https://blackoutburst.com/api/account/session'])
+    assert.equal(urls.afterLogin(u), null, u);
+  // the bare sign-in page gets the companion as return target
+  const login = new URL(urls.afterLogin('https://blackoutburst.com/account/'));
+  assert.equal(login.pathname, '/account/'); assert.equal(login.searchParams.get('next'), C);
+  assert.equal(urls.afterLogin(login.href), null);
+  // other sites, lookalikes, http, credentials, junk: untouched
+  for (const u of ['https://github.com/x', 'https://blackoutburst.com.evil.test/', 'https://evilblackoutburst.com/',
+    'http://blackoutburst.com/', 'https://u:p@blackoutburst.com/', 'nope', '']) assert.equal(urls.afterLogin(u), null, u);
+  // Board links from the chat are not internal, so they still open in the system browser
+  assert.equal(urls.isInternal('https://board.blackoutburst.com/?ticket=5'), false);
+  assert.ok(urls.isExternalOpenable('https://board.blackoutburst.com/?ticket=5'));
+});

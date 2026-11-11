@@ -1,7 +1,7 @@
 {
   "name": "companion-desktop",
   "productName": "Companion",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Windows desktop shell for the Blackoutburst companion",
   "private": true,
   "main": "main.js",
