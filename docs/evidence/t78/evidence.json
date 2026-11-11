@@ -1,0 +1,157 @@
+{
+  "tool": "ops/verify/verify.mjs",
+  "startedAt": "2026-11-11T12:47:50.121Z",
+  "commit": "7c7316230958d89707105072f0c481a3564d785b",
+  "dirty": false,
+  "branch": "agent/coder-2/t78",
+  "viewport": {
+    "width": 420,
+    "height": 860
+  },
+  "steps": [
+    {
+      "do": "goto",
+      "phase": "setup",
+      "hash": "",
+      "ok": true
+    },
+    {
+      "do": "wait",
+      "phase": "setup",
+      "selector": "#view-look:not([hidden])",
+      "ok": true
+    },
+    {
+      "do": "fill",
+      "phase": "setup",
+      "selector": "#name",
+      "value": "Verify",
+      "ok": true
+    },
+    {
+      "do": "click",
+      "phase": "setup",
+      "selector": "#save-look",
+      "ok": true
+    },
+    {
+      "do": "wait",
+      "phase": "setup",
+      "selector": "#view-chat:not([hidden])",
+      "ok": true
+    },
+    {
+      "do": "goto",
+      "feature": "chat",
+      "ok": true
+    },
+    {
+      "do": "expect",
+      "selector": "#view-chat #input",
+      "ok": true
+    },
+    {
+      "do": "screenshot",
+      "name": "chat-empty",
+      "ok": true
+    },
+    {
+      "do": "fill",
+      "selector": "#input",
+      "value": "Hello from the verification demo",
+      "ok": true
+    },
+    {
+      "do": "expect",
+      "selector": "#send:not([disabled])",
+      "ok": true
+    },
+    {
+      "do": "click",
+      "selector": "#send",
+      "ok": true
+    },
+    {
+      "do": "expect",
+      "selector": "#messages",
+      "text": "Hello from the verification demo",
+      "ok": true
+    },
+    {
+      "do": "screenshot",
+      "name": "chat-after-send",
+      "ok": true
+    },
+    {
+      "do": "goto",
+      "feature": "calendar",
+      "ok": true
+    },
+    {
+      "do": "expect",
+      "selector": "#view-calendar h1",
+      "text": "Calendar",
+      "ok": true
+    },
+    {
+      "do": "screenshot",
+      "name": "calendar",
+      "ok": true
+    },
+    {
+      "do": "goto",
+      "feature": "me-settings",
+      "ok": true
+    },
+    {
+      "do": "state",
+      "result": {
+        "view": "me",
+        "url": "/#me/settings",
+        "title": "Verify",
+        "text": "Your profile\nMemories\nCompanion\nWatches\nConnectors\nSettings\nSettings\n\nQuiet hours, routines and how the app looks. Reminders and watches wait until quiet hours end.\n\nDaily digest\nAt\nWeekly check-in\nOn\nMonday\nTuesday\nWednesday\nThursday\nFriday\nSaturday\nSunday\nAt\nProactive companion\nWakes per day\nOccasional check-ins\nBoard wakes per day\nNo limit\nQuiet from\nuntil\nSave\nYour timezone: UTC. Daily and weekly times use this zone. Quiet hours can delay delivery. Occasional check-ins run at most every six hours and stay silent without a useful update. A proactive companion also wakes on its own a few times a day, at varied times, and writes only when it has something worth saying; at night it works quietly and its messages wait for the morning. Board wakes per day limits how often your companion wakes to answer Board mentions in any 24 hours.\nNotifications\n\nNotifications are blocked for this app. Allow them in the system or browser settings, then come back.\n\nApp theme\nSystem\nLight\nDark"
+      },
+      "ok": true
+    },
+    {
+      "do": "screenshot",
+      "name": "me-settings",
+      "ok": true
+    }
+  ],
+  "screenshots": [
+    {
+      "name": "chat-empty",
+      "file": "01-chat-empty.png",
+      "view": "chat",
+      "url": "/#chat",
+      "sha256": "084ce357f903d8cba1853e6c2372705eec971437d18cec0d51a9778b3261d332"
+    },
+    {
+      "name": "chat-after-send",
+      "file": "02-chat-after-send.png",
+      "view": "chat",
+      "url": "/#chat",
+      "sha256": "80f1c1fb8ca9751c4589fbbc9928f448edf77f3d70391976ff033e098b62545a"
+    },
+    {
+      "name": "calendar",
+      "file": "03-calendar.png",
+      "view": "calendar",
+      "url": "/#calendar",
+      "sha256": "ef96e7137dc105cb42028790cb9745fac8fb976279534b6901d46f214cd6df98"
+    },
+    {
+      "name": "me-settings",
+      "file": "04-me-settings.png",
+      "view": "me",
+      "url": "/#me/settings",
+      "sha256": "f40ad42feefe47b7faa83b34ad30f5f3866a42d089952ddfaf47ca91707668cd"
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "failedRequests": [],
+  "ok": true,
+  "finishedAt": "2026-11-11T12:47:51.110Z"
+}
