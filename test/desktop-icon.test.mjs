@@ -45,6 +45,7 @@ test('build/icon.ico is multi-size with PNG-compressed 256', () => {
   for (const s of [16, 32, 48, 256]) assert.ok(sizes.includes(s), `size ${s}`);
 });
 
+// Needs a built exe: runs after scripts/build-desktop.sh (desktop/dist/win-unpacked/Companion.exe); skipped, visibly, in a clean checkout.
 test('exe icon can be set and read back (portable executable fixture)', { skip: !fs.existsSync(new URL('../desktop/dist/win-unpacked/Companion.exe', import.meta.url)) }, () => {
   const exe = fs.readFileSync(new URL('../desktop/dist/win-unpacked/Companion.exe', import.meta.url));
   const ico = fs.readFileSync(new URL('../desktop/build/icon.ico', import.meta.url));
