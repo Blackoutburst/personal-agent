@@ -60,11 +60,14 @@ const DESCRIBE = {
   'board.review': 'entered review', 'board.done': 'is done', 'board.blocked': 'is blocked', 'board.needs_you': 'is waiting on a human'
 };
 // One wake prompt for a batch of events. Only ids, numbers and states: titles are Board text and stay on the Board.
+const LIMITED = new Set(['USAGE_LIMIT', 'RATE_LIMITED']);
+
 export function eventsPrompt(events) {
   const lines = events.slice(0, 30).map(event => {
     const ticket = event.ticketNumber ? `#${event.ticketNumber}` : 'ticket';
     if (event.type === 'run.ended') return `- Agent run ${event.runId} (${event.agent}) on ${ticket} ended: ${event.state}`
-      + `${event.cleanupConfirmed === false ? ' (cleanup NOT confirmed)' : ''}.`;
+      + `${event.errorCode ? ` (${event.errorCode})` : ''}${event.cleanupConfirmed === false ? ' (cleanup NOT confirmed)' : ''}`
+      + `${LIMITED.has(event.errorCode) ? `: the provider's quota or rate limit, not a code failure; relaunch ${event.retryAt ? `after ${event.retryAt}` : 'later'}` : ''}.`;
     return `- ${event.runId ? `Agent run ${event.runId} on ` : ''}${ticket} ${DESCRIBE[event.type] ?? event.type}.`;
   });
   return 'Agent runner events (your agents and the Board projects they work in):\n' + lines.join('\n')

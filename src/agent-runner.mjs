@@ -14,7 +14,7 @@ import { hardLimit, AGENT_HARD_LIMITS } from './escalation.mjs';
 
 export const DEFAULT_LIMITS = Object.freeze({ maxConcurrent: 2, maxTurns: 80, maxSeconds: 3600, maxQueued: 20,
   heartbeatSeconds: 60 });
-const CAPS = Object.freeze({ maxConcurrent: 4, maxTurns: 400, maxSeconds: 4 * 3600, maxQueued: 100 });
+const CAPS = Object.freeze({ maxConcurrent: 8, maxTurns: 400, maxSeconds: 4 * 3600, maxQueued: 100 });
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/;
 const ACTIVE = new Set(['queued', 'preparing', 'running', 'stopping']);
@@ -33,6 +33,16 @@ export function normalizeLimits(value = {}) {
     out[key] = Math.min(value[key], CAPS[key] ?? value[key]);
   }
   return out;
+}
+
+// Quota and rate-limit failures are not code failures: the provider refused the work for now. USAGE_LIMIT is the
+// subscription quota (retryAt is when it resets, if the provider said); RATE_LIMITED is a transient API rate limit or
+// overload. C-chan pauses and relaunches later instead of treating either as the agent's fault.
+export const LIMITED = new Set(['USAGE_LIMIT', 'RATE_LIMITED']);
+function retryAt(resetsAt) {
+  if (typeof resetsAt === 'number' && Number.isFinite(resetsAt) && resetsAt > 0) return new Date(resetsAt < 1e12 ? resetsAt * 1000 : resetsAt).toISOString();
+  if (typeof resetsAt === 'string' && !Number.isNaN(Date.parse(resetsAt))) return new Date(resetsAt).toISOString();
+  return null;
 }
 
 const text = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
@@ -299,8 +309,9 @@ export class AgentRunner extends EventEmitter {
     let outcome;
     if (run.stopReason) outcome = { state: 'stopped', error: run.stopReason };
     else if (exit.error) outcome = { state: 'failed', error: text(exit.error.message, 300), errorCode: 'RUNNER_ERROR' };
-    else if (rate?.status === 'rejected') outcome = { state: 'failed', error: 'Subscription usage limit reached.', errorCode: 'USAGE_LIMIT' };
-    else if (failure) outcome = { state: 'failed', error: failure.detail ?? failure.code, errorCode: failure.code };
+    else if (rate?.status === 'rejected') outcome = { state: 'failed', error: 'Subscription usage limit reached.', errorCode: 'USAGE_LIMIT', retryAt: retryAt(rate.resetsAt) };
+    else if (failure) outcome = { state: 'failed', error: failure.detail ?? failure.code, errorCode: failure.code,
+      ...(LIMITED.has(failure.code) ? { retryAt: retryAt(rate?.resetsAt) } : {}) };
     else if (final === null) {
       outcome = elapsed >= run.maxSeconds - 2 ? { state: 'timeout', error: `Deadline of ${run.maxSeconds}s reached.`, errorCode: 'TIMEOUT' }
         : { state: 'failed', error: `Agent exited with code ${exit.code} without a result.`, errorCode: 'PROVIDER_ERROR' };
@@ -337,7 +348,7 @@ export class AgentRunner extends EventEmitter {
       } catch (error) { this.#log(`worktree cleanup for ${run.id} failed: ${error.message}`); }
     }
     this.#set(run, { ...outcome, endedAt: this.#now(), cleanup: { unitGone, worktreeRemoved } }, 'run.ended',
-      { cleanupConfirmed: unitGone && worktreeRemoved });
+      { cleanupConfirmed: unitGone && worktreeRemoved, errorCode: outcome.errorCode ?? null, retryAt: outcome.retryAt ?? null });
     try { await this.#reporter.finish(run); }
     catch (error) { this.#log(`board finish for ${run.id} failed: ${error.code ?? error.message}`); }
     this.#pump();

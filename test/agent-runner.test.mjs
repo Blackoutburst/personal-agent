@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { AgentRunner, parseReport, agentPrompt, normalizeLimits } from '../src/agent-runner.mjs';
 import { claude, codex, resolveModel } from '../src/agent-providers.mjs';
 import { BoardReporter, BoardWatch, runSummary } from '../src/agent-runner-board.mjs';
+import { eventsPrompt } from '../src/agent-runner-client.mjs';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function until(check, ms = 2000) {
@@ -109,7 +110,8 @@ test('limits are validated and capped; one run per ticket and per agent; request
   assert.equal(launch(r, { requestId: 'k1', maxTurns: 5 }).id, first.id);
   assert.throws(() => launch(r, { agent: 'other' }), e => e.code === 'BUSY');
   assert.throws(() => launch(r, { ticketId: 'other' }), e => e.code === 'BUSY');
-  assert.deepEqual(normalizeLimits({ maxConcurrent: 99, maxTurns: 9999 }).maxConcurrent, 4);
+  assert.deepEqual(normalizeLimits({ maxConcurrent: 99, maxTurns: 9999 }).maxConcurrent, 8);
+  assert.equal(normalizeLimits({ maxConcurrent: 5 }).maxConcurrent, 5);
   assert.equal(normalizeLimits({ maxTurns: 9999 }).maxTurns, 400);
 });
 
@@ -132,7 +134,9 @@ test('failures are classified: max turns, usage limit, no result, deadline (#72)
   const { r, children } = runner(t);
   const cases = [
     [child => { child.say({ type: 'result', subtype: 'error_max_turns', is_error: true, result: '' }); child.exit(1); }, 'MAX_TURNS'],
-    [child => { child.say({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } }); child.exit(1); }, 'USAGE_LIMIT'],
+    [child => { child.say({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1794400000 } }); child.exit(1); }, 'USAGE_LIMIT'],
+    [child => { child.say({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}' }); child.exit(1); }, 'RATE_LIMITED'],
+    [child => { child.say({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal' }); child.exit(1); }, 'PROVIDER_ERROR'],
     [child => child.exit(1), 'PROVIDER_ERROR']
   ];
   let n = 0;
@@ -144,7 +148,16 @@ test('failures are classified: max turns, usage limit, no result, deadline (#72)
     await until(() => r.get(run.id).state === 'failed');
     assert.equal(r.get(run.id).errorCode, code);
     assert.deepEqual(r.get(run.id).cleanup, { unitGone: true, worktreeRemoved: true });
+    const ended = r.events(0).filter(event => event.type === 'run.ended' && event.runId === run.id).at(-1);
+    assert.equal(ended.errorCode, code);
   }
+  // The quota reset time is carried to the run and its event, so C-chan relaunches after it.
+  const quota = r.list().find(run => run.errorCode === 'USAGE_LIMIT');
+  assert.equal(quota.retryAt, new Date(1794400000 * 1000).toISOString());
+  assert.match(eventsPrompt([{ type: 'run.ended', runId: quota.id, agent: 'c2', ticketNumber: 7, state: 'failed',
+    errorCode: 'USAGE_LIMIT', retryAt: quota.retryAt, cleanupConfirmed: true }]), /not a code failure; relaunch after 2026/);
+  assert.doesNotMatch(eventsPrompt([{ type: 'run.ended', runId: 'x', agent: 'c', ticketNumber: 7, state: 'failed',
+    errorCode: 'PROVIDER_ERROR', cleanupConfirmed: true }]), /not a code failure/);
 });
 
 test('a blocked report becomes a question; a run left mid-flight by a restart is stopped and cleaned up (#72)', async t => {

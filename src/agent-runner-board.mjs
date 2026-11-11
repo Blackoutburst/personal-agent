@@ -129,7 +129,7 @@ export class BoardReporter {
     if (run.board.execution) {
       const status = run.state === 'succeeded' ? 'completed' : run.state === 'blocked' ? 'blocked'
         : ['stopped', 'cancelled'].includes(run.state) ? 'cancelled' : 'blocked';
-      const reason = !confirmed ? 'cleanup_unconfirmed' : run.errorCode === 'USAGE_LIMIT' ? 'quota_or_rate_limit'
+      const reason = !confirmed ? 'cleanup_unconfirmed' : ['USAGE_LIMIT', 'RATE_LIMITED'].includes(run.errorCode) ? 'quota_or_rate_limit'
         : run.errorCode === 'NOT_SIGNED_IN' ? 'authentication_failed' : FINISH_REASON[run.state] ?? 'execution_failed';
       try {
         await this.#client.call('finish_execution', { execution_id: run.board.execution, expected_revision: run.board.revision,

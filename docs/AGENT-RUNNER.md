@@ -51,8 +51,13 @@ agents cannot see it, because `ProtectHome` hides `/home`.
    - Every step is also posted on the ticket's thread.
 
 Run states: `queued`, `preparing`, `running`, `stopping`, then `succeeded`, `blocked`, `failed` (`errorCode`
-`MAX_TURNS`, `USAGE_LIMIT`, `NOT_SIGNED_IN`, `PROVIDER_ERROR`, `RUNNER_ERROR`), `timeout`, `stopped`, `cancelled` or
-`interrupted`. After a runner restart, a run that was mid-flight has lost its output pipe. The runner stops its unit,
+`MAX_TURNS`, `USAGE_LIMIT`, `RATE_LIMITED`, `NOT_SIGNED_IN`, `PROVIDER_ERROR`, `RUNNER_ERROR`), `timeout`, `stopped`,
+`cancelled` or `interrupted`.
+
+`USAGE_LIMIT` (the subscription quota is used up) and `RATE_LIMITED` (a transient API rate limit or overload, such as
+429 or 529) are not code failures. The run carries `retryAt` when the provider said when the quota resets. The
+`run.ended` event carries `errorCode` and `retryAt`, and C-chan's wake says to pause and relaunch after that time
+instead of treating it as the agent's fault. The Board execution ends with `quota_or_rate_limit`. After a runner restart, a run that was mid-flight has lost its output pipe. The runner stops its unit,
 cleans up and reports it `interrupted`. Committed work stays on the branch, and C-chan may relaunch the run, which
 resumes the branch.
 
@@ -62,7 +67,7 @@ Set in the runner config (`limits`) and capped in code:
 
 | Limit | Default | Hard cap |
 | --- | --- | --- |
-| `maxConcurrent` (runs at once) | 2 | 4 |
+| `maxConcurrent` (runs at once) | 2 (live config: 5) | 8 |
 | `maxTurns` (per run) | 80 | 400 |
 | `maxSeconds` (deadline per run) | 3600 | 14400 |
 | `maxQueued` | 20 | 100 |
@@ -75,7 +80,8 @@ slice: 4 CPUs, 6 GB RAM, 1024 tasks.
 
 C-chan is never woken on a timer for this:
 
-- The runner logs events: `run.queued`, `run.started` and `run.ended` (state, `cleanupConfirmed`).
+- The runner logs events: `run.queued`, `run.started` and `run.ended` (state, `cleanupConfirmed`, `errorCode`,
+  `retryAt`).
 - A model-free Board watch lists the allowed projects every 20 s (`watchSeconds`). It adds `board.ready` (a ticket's
   dependencies are delivered), `board.review`, `board.done`, `board.blocked` and `board.needs_you`.
 - The companion long-polls `GET /events` (`AgentEvents`) and wakes as soon as an event lands. Each batch of `run.ended`

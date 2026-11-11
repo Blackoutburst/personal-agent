@@ -10,6 +10,8 @@
 //   parseLine(line)           -> [{ type: 'session'|'turn'|'tool'|'rate'|'done'|'error', ... }]
 import { parseLine as parseClaudeLine } from './providers/claude.mjs';
 
+const TRANSIENT = /\b(429|529)\b|overloaded|too many requests|rate.?limit/i;
+
 export const SANDBOX_BIN = '/var/lib/cchan-agents/bin';
 
 export const claude = Object.freeze({
@@ -42,6 +44,8 @@ export const claude = Object.freeze({
     }
     for (const event of parseClaudeLine(line)) {
       if (event.type === 'delta' || event.type === 'acting') continue;
+      // A transient API rate limit or overload is its own failure reason, so C-chan retries later (#72).
+      if (event.type === 'error' && event.code === 'PROVIDER_ERROR' && TRANSIENT.test(event.detail ?? '')) event.code = 'RATE_LIMITED';
       events.push(event);
     }
     return events;
