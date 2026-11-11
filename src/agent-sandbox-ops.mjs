@@ -2,6 +2,7 @@
 // service runs as the owner account (it needs sudo for cchan-sandbox-run, which the companion service cannot use).
 import { execFile, spawn as nodeSpawn } from 'node:child_process';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { mergeAccepted, DEFAULT_IDENTITY } from './agent-merge.mjs';
 
 export const WRAPPER = '/usr/local/sbin/cchan-sandbox-run';
@@ -90,16 +91,15 @@ export class SandboxOps {
   }
 
   // The merge step (#85): the reviewed branch is fetched from the sandbox's bare clone, merged into origin/<base>, tested
-  // and pushed to origin (the remote of that clone) with the owner's configured identity and keys. See src/agent-merge.mjs.
-  async merge({ repo, branch, base, expectedHead, ticketNumber, origin = null, identity = DEFAULT_IDENTITY, testCommand, prepareCommand }) {
+  // and pushed to `origin` (config.merge.origin, the GitHub repository; never the bare clone's remote, which the sandbox
+  // user can rewrite) with the owner's configured identity and keys. See src/agent-merge.mjs. The owner's clones go to
+  // its own (private) temp dir; the sandbox user makes the test copy under <root>/merge itself, so nothing has to be
+  // created there for the owner.
+  async merge({ repo, branch, base, expectedHead, ticketNumber, origin = null, identity = DEFAULT_IDENTITY, testCommand, prepareCommand, tmp = tmpdir() }) {
+    if (typeof origin !== 'string' || !origin.trim()) return { status: 'error', output: 'No push target: set config.merge.origin (e.g. https://github.com/Blackoutburst/personal-agent.git).' };
     const dir = join(this.#root, 'repos', repo + '.git');
-    let url = origin;
-    if (!url) {
-      try { url = (await run(this.#exec, 'git', ['-c', `safe.directory=${dir}`, '--git-dir', dir, 'remote', 'get-url', 'origin'], { timeout: 15_000 })).trim(); }
-      catch { return { status: 'error', output: `The sandbox clone of ${repo} has no origin remote.` }; }
-    }
-    return mergeAccepted({ origin: url, source: dir, branch, expectedHead, base, ticketNumber, identity, testCommand, prepareCommand,
-      tmp: join(this.#root, 'merge'), sandbox: (command, { cwd, timeoutMs }) => [this.#sudo, '-n', WRAPPER, '--cwd', cwd,
+    return mergeAccepted({ origin: origin.trim(), source: dir, branch, expectedHead, base, ticketNumber, identity, testCommand, prepareCommand,
+      tmp, sandboxDir: join(this.#root, 'merge'), sandbox: (command, { cwd, timeoutMs }) => [this.#sudo, '-n', WRAPPER, '--cwd', cwd,
         '--max-seconds', String(Math.ceil((timeoutMs ?? 1_800_000) / 1000)), '--', ...command] });
   }
 }

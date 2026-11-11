@@ -44,6 +44,8 @@ function repos(t) {
 }
 const BRANCH = 'agent/coder-1/t85';
 const IDENTITY = { name: 'Blackoutburst', email: 'github@blackoutburst.dev' };
+// A stand-in for the sandbox wrapper: runs the command in cwd (cchan-sandbox-run changes into --cwd as the sandbox user).
+const inCwd = (command, cwd) => ['sh', '-c', 'cd "$1" && shift && exec "$@"', 'sh', cwd, ...command];
 const merge = (r, head, extra = {}) => mergeAccepted({ origin: r.origin, source: r.sandbox, branch: BRANCH, expectedHead: head, ticketNumber: 85,
   identity: IDENTITY, tmp: r.root, ...extra });
 
@@ -132,11 +134,34 @@ test('merge: the test and prepare steps go through the sandbox wrapper, git does
   const r = repos(t);
   const head = r.onBranch(BRANCH, { 'feature.txt': 'feature\n' });
   const seen = [];
-  const sandbox = (command, { cwd, timeoutMs }) => { seen.push({ command, cwd, timeoutMs }); return command; };
-  const result = await merge(r, head, { sandbox, prepareCommand: ['node', '-e', '0'], testTimeoutMs: 90_000 });
-  assert.equal(result.status, 'merged');
-  assert.deepEqual(seen.map(s => s.command), [['node', '-e', '0'], ['node', '--test'], ['chmod', '-R', 'a+rwX', '.']]);
-  assert.ok(seen.slice(0, 2).every(s => /cchan-merge-test-[^/]+\/repo$/.test(s.cwd) && s.timeoutMs === 90_000));
+  const sandboxDir = join(r.root, 'sbroot', 'merge'); mkdirSync(join(r.root, 'sbroot'));
+  const sandbox = (command, { cwd, timeoutMs }) => { seen.push({ command, cwd, timeoutMs }); return inCwd(command, cwd); };
+  const result = await merge(r, head, { sandbox, sandboxDir, prepareCommand: ['node', '-e', '0'], testTimeoutMs: 90_000 });
+  assert.equal(result.status, 'merged', result.output);
+  // The sandbox makes its own copy (from a bundle on stdin), prepare and test run in it, and the sandbox removes it.
+  assert.deepEqual(seen.map(s => s.command[0] === 'sh' ? ['sh', s.command.at(-2), s.command.at(-1)] : s.command),
+    [['sh', sandboxDir, result.mergeCommit], ['node', '-e', '0'], ['node', '--test'], ['rm', '-rf', '--', seen[1].cwd.replace(/\/repo$/, '')]]);
+  assert.equal(seen[0].cwd, join(r.root, 'sbroot'));
+  assert.ok(seen.slice(1, 3).every(s => s.cwd.startsWith(`${sandboxDir}/cchan-merge-test-`) && s.cwd.endsWith('/repo') && s.timeoutMs === 90_000));
+  assert.deepEqual(execFileSync('ls', [sandboxDir]).toString().trim(), '', 'the sandbox removed its copy');
+});
+
+test('merge: the test copy the sandbox makes holds exactly the merge result, and a bad answer from it stops the merge (#85)', async t => {
+  const r = repos(t);
+  const head = r.onBranch(BRANCH, { 'feature.txt': 'feature\n' });
+  const sandboxDir = join(r.root, 'sbroot', 'merge'); mkdirSync(join(r.root, 'sbroot'));
+  const check = ['bash', '-c', 'test "$(git rev-parse HEAD^2)" = "$0" && test "$(cat feature.txt)" = feature && test -z "$(git status --porcelain)"', head];
+  const ok = await merge(r, head, { sandbox: (command, { cwd }) => inCwd(command, cwd), sandboxDir, testCommand: check });
+  assert.equal(ok.status, 'merged', ok.output);
+  const r2 = repos(t);
+  const head2 = r2.onBranch(BRANCH, { 'feature.txt': 'feature\n' });
+  const before = r2.mainOf();
+  // A sandbox step that names a directory outside its merge dir is not trusted as the test copy.
+  const liar = (command, { cwd }) => command[0] === 'sh' ? ['echo', '/home/ubuntu'] : inCwd(command, cwd);
+  const bad = await merge(r2, head2, { sandbox: liar, sandboxDir: join(r2.root, 'merge') });
+  assert.equal(bad.status, 'error'); assert.match(bad.output, /test copy in the sandbox/);
+  assert.equal(r2.mainOf(), before);
+  assert.equal((await merge(r2, head2, { sandbox: liar })).status, 'error', 'a sandbox needs a sandboxDir');
 });
 
 test('merge: the tested code rewriting its .git/config (pushurl, insteadOf, origin url) cannot redirect the push (#85)', async t => {
@@ -159,8 +184,9 @@ test('merge: the tested code rewriting its .git/config (pushurl, insteadOf, orig
     'git -c user.name=x -c user.email=x@x commit -qm injected',
     'pwd'
   ].join('\n')];
-  const sandbox = (command, { cwd }) => { seen.push(cwd); return command; };
-  const result = await merge(r, head, { testCommand: hostile, sandbox });
+  const sandboxDir = join(r.root, 'sbroot', 'merge'); mkdirSync(join(r.root, 'sbroot'));
+  const sandbox = (command, { cwd }) => { if (command === hostile) seen.push(cwd); return inCwd(command, cwd); };
+  const result = await merge(r, head, { testCommand: hostile, sandbox, sandboxDir });
   assert.equal(result.status, 'merged', result.output);
   assert.equal(r.mainOf(), result.mergeCommit, 'the push landed on the real origin');
   assert.equal(git(r.origin, 'rev-parse', `${result.mergeCommit}^1`), before);
@@ -168,10 +194,11 @@ test('merge: the tested code rewriting its .git/config (pushurl, insteadOf, orig
   assert.throws(() => git(r.origin, 'cat-file', '-e', `${result.mergeCommit}:injected.txt`), 'the commit made by the test run was not pushed');
   assert.equal(git(evil, 'for-each-ref').trim(), '', 'nothing reached the redirected URL');
   assert.ok(seen.length > 0 && seen.every(cwd => /cchan-merge-test-/.test(cwd)), 'the test ran in its own copy');
-  assert.deepEqual(execFileSync('ls', [r.root]).toString().split('\n').filter(name => name.startsWith('cchan-merge')), [], 'both copies are removed');
+  assert.deepEqual(execFileSync('ls', [r.root]).toString().split('\n').filter(name => name.startsWith('cchan-merge')), [], 'the owner\'s clones are removed');
+  assert.equal(execFileSync('ls', [sandboxDir]).toString().trim(), '', 'the test copy is removed');
 });
 
-test('SandboxOps.merge wraps the test run in sudo cchan-sandbox-run under the sandbox root (#85)', async t => {
+test('SandboxOps.merge pushes to config.merge.origin and wraps the sandbox steps in sudo cchan-sandbox-run under the sandbox root (#85)', async t => {
   const { SandboxOps, WRAPPER } = await import('../src/agent-sandbox-ops.mjs');
   const r = repos(t);
   const head = r.onBranch(BRANCH, { 'feature.txt': 'feature\n' });
@@ -179,20 +206,32 @@ test('SandboxOps.merge wraps the test run in sudo cchan-sandbox-run under the sa
   // in the --cwd directory, like cchan-sandbox-run would.
   const log = join(r.root, 'sudo.log'), fake = join(r.root, 'fake-sudo');
   writeFileSync(fake, `#!/bin/bash\nprintf '%s\\n' "$*" >> ${log}\nargs=("$@"); cwd=.\nfor ((i=0;i<$#;i++)); do [ "\${args[i]}" = --cwd ] && cwd=\${args[i+1]}; [ "\${args[i]}" = -- ] && { cd "$cwd" && exec "\${args[@]:i+1}"; }; done\nexit 99\n`, { mode: 0o755 });
-  const ops = new SandboxOps({ sudo: fake, root: join(r.root, 'sbroot') });
-  mkdirSync(join(r.root, 'sbroot', 'repos'), { recursive: true });
-  execFileSync('git', ['clone', '--quiet', '--mirror', r.sandbox, join(r.root, 'sbroot', 'repos', 'demo.git')]);
-  const result = await ops.merge({ repo: 'demo', branch: BRANCH, base: 'main', expectedHead: head, ticketNumber: 85, origin: r.origin,
-    identity: IDENTITY, testCommand: ['node', '--test'], prepareCommand: ['node', '-e', '0'] });
+  const sbroot = join(r.root, 'sbroot'), owner = join(r.root, 'owner-tmp');
+  const ops = new SandboxOps({ sudo: fake, root: sbroot });
+  mkdirSync(join(sbroot, 'repos'), { recursive: true });
+  const clone = join(sbroot, 'repos', 'demo.git');
+  execFileSync('git', ['clone', '--quiet', '--mirror', r.sandbox, clone]);
+  // The sandbox user can rewrite its clone's remote: the push must not follow it.
+  const evil = join(r.root, 'evil.git');
+  git(r.root, 'init', '--bare', '--initial-branch=main', evil);
+  git(clone, 'remote', 'set-url', 'origin', evil);
+  const request = { repo: 'demo', branch: BRANCH, base: 'main', expectedHead: head, ticketNumber: 85, identity: IDENTITY, testCommand: ['node', '--test'],
+    prepareCommand: ['node', '-e', '0'], tmp: owner };
+  const none = await ops.merge({ ...request, origin: null });
+  assert.equal(none.status, 'error'); assert.match(none.output, /config\.merge\.origin/);
+  const before = r.mainOf();
+  const result = await ops.merge({ ...request, origin: r.origin });
   assert.equal(result.status, 'merged', result.output);
+  assert.equal(r.mainOf(), result.mergeCommit); assert.notEqual(result.mergeCommit, before);
+  assert.equal(git(evil, 'for-each-ref'), '', 'nothing went to the clone\'s remote');
   const calls = readFileSync(log, 'utf8').trim().split('\n');
-  assert.equal(calls.length, 3, 'prepare, test, then the sandbox opens up its copy for removal');
-  assert.match(calls[2], /-- chmod -R a\+rwX \.$/);
-  for (const line of calls) {
-    assert.ok(line.startsWith(`-n ${WRAPPER} --cwd ${join(r.root, 'sbroot', 'merge')}/`), line);
-    assert.match(line, /--max-seconds \d+ -- (node|chmod) /);
-    assert.match(line, /\/merge\/cchan-merge-test-[^/ ]+\/repo /, 'the sandbox runs in the test copy, not the clone git works in');
-  }
+  assert.equal(calls.length, 4, 'make the copy, prepare, test, remove the copy');
+  assert.ok(calls[0].startsWith(`-n ${WRAPPER} --cwd ${sbroot} --max-seconds `) && / -- sh -c /.test(calls[0]), calls[0]);
+  assert.ok(calls[0].endsWith(` sh ${join(sbroot, 'merge')} ${result.mergeCommit}`), calls[0]);
+  for (const line of calls.slice(1, 3)) assert.match(line, new RegExp(`^-n ${WRAPPER} --cwd ${join(sbroot, 'merge')}/cchan-merge-test-[A-Za-z0-9]{8}/repo --max-seconds \\d+ -- node `));
+  assert.match(calls[3], new RegExp(`^-n ${WRAPPER} --cwd ${sbroot} --max-seconds \\d+ -- rm -rf -- ${join(sbroot, 'merge')}/cchan-merge-test-[A-Za-z0-9]{8}$`));
+  assert.equal(execFileSync('ls', [join(sbroot, 'merge')]).toString().trim(), '', 'the copy is gone');
+  assert.equal(execFileSync('ls', [owner]).toString().trim(), '', 'the owner\'s clones are gone, and were never under the sandbox root');
 });
 
 test('merge: missing dependencies without a prepareCommand are an error, not a test failure (#85)', async t => {
@@ -246,7 +285,8 @@ function setup(t, { runs = [workRun(), reviewRun()], head = HEAD, mergeResult = 
     async beginMerge(run) { calls.board.push(['begin', run.id]); run.board = { merge: true }; return { number: 85, title: 'Runner merge' }; },
     async finish(run) { calls.board.push(['finish', run.state, run.errorCode ?? null]); return { done: run.state === 'succeeded' }; }
   };
-  const runner = new AgentRunner({ file: join(dir, 'runs.json'), ops, reporter, roster, manager, merge: mergeConfig === null ? null : { identity: { name: 'Blackoutburst', email: 'github@blackoutburst.dev' }, ...mergeConfig } });
+  const runner = new AgentRunner({ file: join(dir, 'runs.json'), ops, reporter, roster, manager, merge: mergeConfig === null ? null
+    : { origin: 'https://github.com/Blackoutburst/personal-agent.git', identity: { name: 'Blackoutburst', email: 'github@blackoutburst.dev' }, ...mergeConfig } });
   t.after(() => runner.close());
   const accept = (over = {}) => manager.decide({ kind: 'accept', ticketId: TICKET, reviewRunId: 'rev-1-bbbbbb', reason: 'approved', ...over }, runner.list());
   const launch = (over = {}) => runner.launch({ mode: 'merge', agent: 'merger-1', ticketId: TICKET, repo: 'personal-agent', branch: BRANCH, ...over });
@@ -287,10 +327,14 @@ test('agents_merge gate: an accept backed by a changes_requested review, a non-i
   assert.throws(() => self.accept(), error => error.code === 'NOT_INDEPENDENT');
 });
 
-test('agents_merge gate: needs merge enabled in the runner config and a manager (#85)', t => {
+test('agents_merge gate: needs merge enabled in the runner config, with a push target, and a manager (#85)', t => {
   const s = setup(t, { merge: null });
   s.accept();
   refused(() => s.launch(), 'FORBIDDEN');
+  const noOrigin = setup(t, { merge: { origin: '' } });
+  noOrigin.accept();
+  assert.throws(() => noOrigin.launch(), error => error.code === 'FORBIDDEN' && /config\.merge\.origin/.test(error.message));
+  assert.equal(noOrigin.calls.merge.length, 0);
 });
 
 test('agents_merge gate: the API maps the refusals to 409 and a launch needs no model budget (#85)', async t => {
@@ -316,6 +360,7 @@ test('merge run: approved head, merge, done; per-task agents archived, no Manage
   assert.deepEqual({ branch: s.calls.merge[0].branch, base: s.calls.merge[0].base, expectedHead: s.calls.merge[0].expectedHead, ticketNumber: s.calls.merge[0].ticketNumber },
     { branch: BRANCH, base: 'main', expectedHead: HEAD, ticketNumber: 85 });
   assert.deepEqual(s.calls.merge[0].identity, { name: 'Blackoutburst', email: 'github@blackoutburst.dev' });
+  assert.equal(s.calls.merge[0].origin, 'https://github.com/Blackoutburst/personal-agent.git');
   const run = s.runner.list().find(item => item.mode === 'merge');
   assert.equal(run.mergeResult.mergeCommit, 'c'.repeat(40)); assert.deepEqual(run.cleanup, { unitGone: true, worktreeRemoved: true });
   await new Promise(resolve => setImmediate(resolve));

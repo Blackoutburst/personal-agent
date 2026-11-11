@@ -60,7 +60,7 @@ const roster = new Roster({ file: rosterFile, log, mirror: config.boardRoster ==
 // Manager mode (#76): standing approvals, budget, decisions. Its projects are the runner's (Blackout's) projects.
 const manager = new Manager({ file: managerFile, projects: config.projects, log,
   ...(config.manager?.premiumMaxWeekly ? { premiumMaxWeekly: config.manager.premiumMaxWeekly } : {}) });
-// Merge (#85): config.merge turns the merge step on ({} = defaults: Blackoutburst's configured git identity, `node --test`).
+// Merge (#85): config.merge turns the merge step on; it needs `origin` (the push target, e.g. https://github.com/Blackoutburst/personal-agent.git). Defaults: Blackoutburst's configured git identity, `node --test`.
 const runner = new AgentRunner({ file: stateFile, ops: new SandboxOps(), log, limits: config.limits ?? {}, roster, manager,
   merge: config.merge && typeof config.merge === 'object' ? config.merge : null,
   reporter: new BoardReporter({ client: board, projects: config.projects, ownerId: config.ownerId, log }) });

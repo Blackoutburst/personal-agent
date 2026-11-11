@@ -13,30 +13,52 @@
 // on temp repos) they run directly with a scrubbed environment (a throw-away HOME). Only git itself runs as the owner.
 // They run in a separate, throw-away copy of the merge result, and the push is made from a fresh bare repository that
 // holds only the merged commit, so nothing the tested code writes (a pushurl, hooks, refs) can redirect or alter the push.
+// With a sandbox, the sandbox user makes that copy itself, under `sandboxDir` (inside its own root, which the owner can
+// only read): the merged commit goes in as a git bundle on stdin. The owner never writes into a directory the sandbox
+// controls, and needs no directory there of its own; the owner's clones stay in `tmp` (the runner's private /tmp).
 import { execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, chmodSync, existsSync } from 'node:fs';
+import { createReadStream, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, isAbsolute, resolve as resolvePath } from 'node:path';
+import { basename, dirname, join, isAbsolute, resolve as resolvePath } from 'node:path';
 
 export const DEFAULT_IDENTITY = Object.freeze({ name: 'Blackoutburst', email: 'github@blackoutburst.dev' });
 const TAIL = 8000;
 const MISSING_DEPS = /ERR_MODULE_NOT_FOUND|Cannot find (package|module) '/;
 
 const tail = value => String(value ?? '').slice(-TAIL);
-function run(binary, args, { cwd, env, timeout = 120_000 } = {}) {
+// input: a file fed to the command's stdin. The result keeps stdout on its own too (stdout), for commands that answer.
+function run(binary, args, { cwd, env, timeout = 120_000, input = null } = {}) {
   return new Promise(resolve => {
-    execFile(binary, args, { cwd, env, encoding: 'utf8', timeout, maxBuffer: 32 << 20 }, (error, stdout, stderr) => {
+    const child = execFile(binary, args, { cwd, env, encoding: 'utf8', timeout, maxBuffer: 32 << 20 }, (error, stdout, stderr) => {
       resolve({ ok: !error, code: error ? (typeof error.code === 'number' ? error.code : null) : 0, timedOut: Boolean(error?.killed),
-        output: tail(`${stdout ?? ''}${stderr ? `\n${stderr}` : ''}`).trim() });
+        stdout: String(stdout ?? '').trim(), output: tail(`${stdout ?? ''}${stderr ? `\n${stderr}` : ''}`).trim() });
     });
+    child.stdin.on('error', () => {}); // the command may exit without reading it all; its exit status says what happened
+    if (input) createReadStream(input).on('error', () => child.stdin.end()).pipe(child.stdin);
+    else child.stdin.end();
   });
 }
 
-// sandbox: (command, { cwd, timeoutMs }) => argv, wraps a command to run in the agent sandbox (see SandboxOps.merge).
+// Run by the sandbox user (through `sandbox`): make a fresh test copy under $1 from the bundle on stdin, check out $2,
+// print the copy's directory. Everything it creates belongs to the sandbox user.
+const SANDBOX_COPY = [
+  'set -eu',
+  'mkdir -p "$1"',
+  'd=$(mktemp -d "$1/cchan-merge-test-XXXXXXXX")',
+  'cat > "$d/merged.bundle"',
+  'git clone --quiet --no-checkout "$d/merged.bundle" "$d/repo" >&2',
+  'git -C "$d/repo" checkout --quiet --detach "$2" >&2',
+  'rm -f "$d/merged.bundle"',
+  'printf "%s\\n" "$d"'
+].join('; ');
+
+// sandbox: (command, { cwd, timeoutMs }) => argv, wraps a command to run in the agent sandbox in cwd (see SandboxOps.merge).
 // origin: a Git URL or path. source: the sandbox clone holding the reviewed branch. Returns { status, ... }.
+// sandboxDir: where the sandbox user makes its test copies (required with sandbox; under the sandbox root).
 export async function mergeAccepted({ origin, source, branch, expectedHead, base = 'main', ticketNumber = null,
-  identity = DEFAULT_IDENTITY, testCommand = ['node', '--test'], prepareCommand = null, sandbox = null, attempts = 3, testTimeoutMs = 30 * 60_000,
-  gitTimeoutMs = 120_000, tmp = tmpdir() } = {}) {
+  identity = DEFAULT_IDENTITY, testCommand = ['node', '--test'], prepareCommand = null, sandbox = null, sandboxDir = null, attempts = 3,
+  testTimeoutMs = 30 * 60_000, gitTimeoutMs = 120_000, tmp = tmpdir() } = {}) {
+  if (sandbox && !(typeof sandboxDir === 'string' && isAbsolute(sandboxDir))) return { status: 'error', output: 'sandboxDir: an absolute path is needed with sandbox.' };
   mkdirSync(tmp, { recursive: true });
   const dir = mkdtempSync(join(tmp, 'cchan-merge-'));
   const work = join(dir, 'work'), home = join(dir, 'home');
@@ -48,15 +70,16 @@ export async function mergeAccepted({ origin, source, branch, expectedHead, base
   // A relative path would resolve differently in the push clone; everything else (URLs, absolute paths) is used as given.
   const originUrl = isAbsolute(String(origin ?? '')) || /^[a-z][a-z0-9+.-]*:\/\/|^[^/]+:/i.test(String(origin ?? '')) ? origin : resolvePath(String(origin ?? ''));
   let testDir = null;
-  // Files the sandbox user created may not be removable by the owner until the sandbox opens them up; best effort, a
-  // leftover copy holds nothing but the merge result.
+  const inSandbox = (command, { cwd, timeout, input } = {}) => {
+    const [binary, ...args] = sandbox(command, { cwd, timeoutMs: timeout });
+    // No local cwd: the wrapper changes into cwd as the sandbox user (the owner may not be able to enter it).
+    return run(binary, args, { env: process.env, timeout: timeout + 10_000, input });
+  };
+  // The sandbox's copy is removed by the sandbox (it owns it); the direct one by us. Best effort: a leftover copy holds
+  // nothing but the merge result.
   const cleanupTestDir = async path => {
-    const copy = join(path, 'repo');
-    if (sandbox && existsSync(copy)) {
-      const [binary, ...args] = sandbox(['chmod', '-R', 'a+rwX', '.'], { cwd: copy, timeoutMs: 60_000 });
-      await run(binary, args, { cwd: copy, timeout: 70_000 });
-    }
-    try { rmSync(path, { recursive: true, force: true }); } catch { /* left behind */ }
+    if (sandbox) await inSandbox(['rm', '-rf', '--', path], { cwd: dirname(sandboxDir), timeout: 60_000 });
+    else try { rmSync(path, { recursive: true, force: true }); } catch { /* left behind */ }
   };
   try {
     let step = await git(['clone', '--quiet', '--no-tags', '--branch', base, originUrl, work], { cwd: dir });
@@ -87,21 +110,33 @@ export async function mergeAccepted({ origin, source, branch, expectedHead, base
       const merged = (await git(['rev-parse', 'HEAD'])).output;
 
       // The reviewed code runs in its own copy, never in the clone git works in: whatever it writes there (.git/config,
-      // hooks, refs) stays in that copy, which is thrown away. With a sandbox it is the only directory the sandbox user can
-      // reach (the owner's directory stays 0700): its parent is only traversable, the copy itself is opened up.
-      // --no-hardlinks keeps the owner's object files out of it.
+      // hooks, refs) stays in that copy, which is thrown away. With a sandbox the sandbox user makes the copy in its own
+      // root from a bundle of the merged commit (the owner's directory stays 0700 and is never opened up); without one it
+      // is a --no-hardlinks clone next to ours.
       if (testDir) await cleanupTestDir(testDir);
-      testDir = mkdtempSync(join(tmp, 'cchan-merge-test-'));
-      const copy = join(testDir, 'repo');
-      step = await git(['clone', '--quiet', '--no-hardlinks', '--no-checkout', '--no-tags', work, copy], { cwd: testDir });
-      if (step.ok) step = await git(['checkout', '--quiet', '--detach', merged], { cwd: copy });
+      testDir = null;
+      step = await git(['update-ref', 'refs/heads/cchan-merged', merged]);
       if (!step.ok) return fail('error', `Could not prepare the test copy: ${step.output}`, { head, baseHead: tip });
-      if (sandbox) { chmodSync(testDir, 0o711); await run('chmod', ['-R', 'a+rwX', copy], { timeout: gitTimeoutMs }); }
+      if (sandbox) {
+        const bundle = join(dir, `merged-${attempt}.bundle`);
+        step = await git(['bundle', 'create', '--quiet', bundle, 'refs/heads/cchan-merged']);
+        if (step.ok) step = await inSandbox(['sh', '-c', SANDBOX_COPY, 'sh', sandboxDir, merged], { cwd: dirname(sandboxDir), timeout: gitTimeoutMs, input: bundle });
+        const made = step.ok ? step.stdout.split('\n').at(-1) : '';
+        if (step.ok && !(dirname(made) === sandboxDir && /^cchan-merge-test-[A-Za-z0-9]{8}$/.test(basename(made)))) {
+          step = { ok: false, output: `the sandbox answered ${JSON.stringify(made.slice(0, 200))}` };
+        }
+        if (!step.ok) return fail('error', `Could not prepare the test copy in the sandbox: ${step.output}`, { head, baseHead: tip });
+        testDir = made;
+      } else {
+        testDir = mkdtempSync(join(tmp, 'cchan-merge-test-'));
+        const copy = join(testDir, 'repo');
+        step = await git(['clone', '--quiet', '--no-hardlinks', '--no-checkout', '--no-tags', work, copy], { cwd: testDir });
+        if (step.ok) step = await git(['checkout', '--quiet', '--detach', merged], { cwd: copy });
+        if (!step.ok) return fail('error', `Could not prepare the test copy: ${step.output}`, { head, baseHead: tip });
+      }
+      const copy = join(testDir, 'repo');
       const env = { PATH: process.env.PATH, HOME: home, LANG: 'C.UTF-8', CI: '1' };
-      const exec = (command, timeout) => {
-        const argv = sandbox ? sandbox(command, { cwd: copy, timeoutMs: timeout }) : command;
-        return run(argv[0], argv.slice(1), { cwd: copy, env: sandbox ? process.env : env, timeout });
-      };
+      const exec = (command, timeout) => sandbox ? inSandbox(command, { cwd: copy, timeout }) : run(command[0], command.slice(1), { cwd: copy, env, timeout });
       if (prepareCommand) {
         step = await exec(prepareCommand, testTimeoutMs);
         if (!step.ok) return fail('error', `Preparing the test run failed (${prepareCommand.join(' ')}): ${step.output}`, { head, baseHead: tip });
@@ -120,7 +155,6 @@ export async function mergeAccepted({ origin, source, branch, expectedHead, base
       // push: it only succeeds as a fast-forward of what we just tested against.
       const push = join(dir, `push-${attempt}`);
       step = await git(['init', '--quiet', '--bare', push], { cwd: dir });
-      if (step.ok) step = await git(['update-ref', 'refs/heads/cchan-merged', merged]);
       if (step.ok) step = await git(['fetch', '--quiet', '--no-tags', work, 'refs/heads/cchan-merged:refs/heads/cchan-merged'], { cwd: push });
       if (step.ok && (await git(['rev-parse', 'refs/heads/cchan-merged'], { cwd: push })).output !== merged) step = { ok: false, output: 'the push clone does not hold the merged commit' };
       if (!step.ok) return fail('error', `Could not prepare the push: ${step.output}`, { head, baseHead: tip, mergeCommit: merged });

@@ -141,7 +141,7 @@ export class AgentRunner extends EventEmitter {
 
   // file: JSON state file. ops: sandbox operations (see SandboxOps). reporter: Board hooks (see BoardReporter).
   // roster: C-chan's agent roster (#73); with it, every launch must name an active roster agent and follows its policy.
-  // merge (#85): { identity?, testCommand?, prepareCommand? } turns the merge step on (see src/agent-merge.mjs).
+  // merge (#85): { origin, identity?, testCommand?, prepareCommand? } turns the merge step on (see src/agent-merge.mjs).
   // manager: manager mode (#76); it reads the weekly usage from the runs' rate events and refuses Opus/Fable above budget.
   constructor({ file, ops, reporter, roster = null, manager = null, merge = null, limits = {}, log = () => {}, now = Date.now }) {
     super();
@@ -314,6 +314,7 @@ export class AgentRunner extends EventEmitter {
   // The head is checked again against the branch itself when the merge starts, and once more on the fetched copy.
   #mergeGate({ ticketId, branch }) {
     if (!this.#manager || !this.#merge) throw new AgentRunnerError('FORBIDDEN', 'Merging is not enabled on this runner (config.merge).');
+    if (typeof this.#merge.origin !== 'string' || !this.#merge.origin.trim()) throw new AgentRunnerError('FORBIDDEN', 'Merging has no push target on this runner (config.merge.origin).');
     if (typeof branch !== 'string' || !AGENT_BRANCH.test(branch)) throw new AgentRunnerError('INVALID', 'branch: the reviewed agent branch (agent/<agent>/t<number>)');
     const decision = this.#manager.mergeApproval(ticketId);
     if (!decision) throw new AgentRunnerError('NO_ACCEPT', 'Merging needs your accept: log agents_decide kind accept with the approving reviewRunId first (and no return after it).');

@@ -116,12 +116,16 @@ the run fails with `POLICY`, whatever the agent reported.
   (`--no-ff`, one merge commit), run `node --test` on that result, and only then push the merge commit to `origin` as a
   plain fast-forward (never forced; if `main` moved meanwhile it starts again, up to 3 times). The merge commit uses the
   configured identity (default `Blackoutburst <github@blackoutburst.dev>`), and git uses the keys already set up for the
-  owner on this server; the origin is the remote of the sandbox's bare clone. The suite runs with a scrubbed
-  environment (own `HOME`, no ssh agent).
-- three separate repositories: the owner's clone (merge, `0700`, never touched by reviewed code); a throw-away copy of
-  the merge result (`git clone --no-hardlinks`, its own `cchan-merge-test-*` directory) where the prepare step and the
-  suite run; and a fresh bare repository that receives only the merged commit from the owner's clone and pushes it to
-  the origin URL directly (no remote name). Whatever the tested code writes into its copy (`.git/config` pushurl or
+  owner on this server; the push goes to `config.merge.origin` (the GitHub URL), never to the remote of the sandbox's
+  bare clone, which the sandbox user could rewrite. Without `origin` a merge launch is refused (`FORBIDDEN`). The suite
+  runs as the sandbox user (own `HOME`, no owner keys, no ssh agent).
+- three separate repositories: the owner's clone (merge, `0700`, in the runner's private `/tmp`, never touched by
+  reviewed code); a throw-away copy of the merge result where the prepare step and the suite run; and a fresh bare
+  repository that receives only the merged commit from the owner's clone and pushes it to the origin URL directly (no
+  remote name). The sandbox user makes the test copy itself, in `/var/lib/cchan-agents/merge/cchan-merge-test-*`
+  (inside its own root; it creates `merge/` on first use), from a git bundle of the merged commit passed on stdin, and
+  removes it afterwards. So the owner never writes into a directory the sandbox controls, and no directory has to be
+  set up for it (the runner runs as `ubuntu`, which can only read `/var/lib/cchan-agents`). Whatever the tested code writes into its copy (`.git/config` pushurl or
   `insteadOf`, hooks, refs, extra commits) cannot redirect or change the push.
 - success: the ticket is claimed, set to **done** with the merge commit as evidence, a message is posted, and the
   ticket's per-task agents are archived.
@@ -134,9 +138,10 @@ the run fails with `POLICY`, whatever the agent reported.
 `config.merge` (see `ops/agent-runner/config.example.json`): `identity`, `testCommand` (default `["node","--test"]`),
 `prepareCommand` (runs before the tests; the example config uses `["node","ops/sandbox/install-deps.mjs"]` to link
 `node_modules`; its failure is `MERGE_ERROR`, not a test failure. Without it, a test run that cannot start because
-packages are missing is also `MERGE_ERROR`). Git runs as the owner; the prepare step and the test run go through
-`sudo cchan-sandbox-run` like agent units, in the test copy under `/var/lib/cchan-agents/merge`; `origin` overrides the remote. Releasing the server (restart, rollout) is not part of it
-and stays with the owner.
+packages are missing is also `MERGE_ERROR`), and `origin` (required: the push target, in the example
+`https://github.com/Blackoutburst/personal-agent.git`). Git runs as the owner; making the test copy, the prepare step
+and the test run go through `sudo cchan-sandbox-run` like agent units. Releasing the server (restart, rollout) is not
+part of it and stays with the owner.
 
 **On the Board.** Each roster agent is mirrored as a managed agent profile named `C-chan · <name>`, with role, model,
 skills, the runner's projects and its status. Creating, updating and archiving the agent does the same to the profile.
