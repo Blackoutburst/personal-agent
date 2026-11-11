@@ -261,3 +261,20 @@ test('Board watch reports tickets becoming ready, entering review or done, after
   assert.deepEqual((await watch.poll()).map(event => [event.type, event.ticketNumber]), [['board.ready', 1], ['board.review', 2]]);
   assert.deepEqual(await watch.poll(), []);
 });
+
+test('a launch asking for a hard-limit action is refused and becomes a Needs-you, never a run (#74)', async t => {
+  const { r, reporter, children } = runner(t);
+  const raised = [];
+  reporter.hardLimit = async info => { raised.push(info); };
+  assert.throws(() => launch(r, { instructions: 'Then deploy it to production.', requestId: 'req-1' }), error => error.code === 'HARD_LIMIT');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(raised.length, 1);
+  assert.equal(raised[0].limit.id, 'deployment');
+  assert.equal(raised[0].ticketId, 'ticket-a');
+  assert.equal(children.length, 0);
+  assert.equal(r.list?.().length ?? 0, 0);
+});
+
+test('agent prompts carry the hard limits (#74)', () => {
+  assert.match(agentPrompt({ agent: 'a', repo: 'r', branch: 'b', base: 'main' }, { number: 1, title: 't' }), /Hard limits: you never deploy, spend money/);
+});

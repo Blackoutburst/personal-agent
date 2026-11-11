@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { resolveModel } from './agent-providers.mjs';
+import { hardLimit, AGENT_HARD_LIMITS } from './escalation.mjs';
 
 export const DEFAULT_LIMITS = Object.freeze({ maxConcurrent: 2, maxTurns: 80, maxSeconds: 3600, maxQueued: 20,
   heartbeatSeconds: 60 });
@@ -70,7 +71,8 @@ export function agentPrompt(run, ticket) {
     'OUTCOME: <what you did, in a few sentences>',
     'EVIDENCE: <tests you ran and their results, commits, anything a reviewer needs>',
     'or, if you cannot continue without the owner:',
-    'BLOCKED: <one short, clear question>'
+    'BLOCKED: <one short, clear question>',
+    '', AGENT_HARD_LIMITS
   ].join('\n');
 }
 
@@ -159,6 +161,14 @@ export class AgentRunner extends EventEmitter {
     if (typeof base !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(base) || base.includes('..')) throw new AgentRunnerError('INVALID', 'base: a branch name');
     if (typeof instructions !== 'string' || instructions.length > 8000) throw new AgentRunnerError('INVALID', 'instructions: at most 8000 characters');
     if (requestId !== null && (typeof requestId !== 'string' || !ID.test(requestId))) throw new AgentRunnerError('INVALID', 'requestId');
+    // Hard limits (#74): deployments, spending, deleting, credentials and security always go to the owner. Refused, not queued,
+    // and turned into a Needs-you on the ticket (best effort; a retry with the same requestId is refused again, files once).
+    const limit = hardLimit(instructions);
+    if (limit) {
+      Promise.resolve(this.#reporter.hardLimit?.({ ticketId, agent, limit, instructions, requestId }))
+        .catch(error => this.#log(`hard-limit Needs-you for ${agent} failed: ${error?.code ?? error?.message}`));
+      throw new AgentRunnerError('HARD_LIMIT', `Refused: ${limit.label} is a hard limit. A Needs-you for the owner was raised on the ticket; only the owner can approve it.`);
+    }
     let resolved;
     try { resolved = resolveModel(providerName, alias); } catch (error) { throw new AgentRunnerError(error.code ?? 'INVALID', error.message); }
     const turns = input.maxTurns ?? this.#limits.maxTurns, seconds = input.maxSeconds ?? this.#limits.maxSeconds;

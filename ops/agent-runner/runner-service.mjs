@@ -62,7 +62,7 @@ async function body(request) {
   catch { throw new AgentRunnerError('INVALID', 'Body must be JSON.'); }
 }
 
-const STATUS = { INVALID: 400, NOT_FOUND: 404, BUSY: 409, QUEUE_FULL: 429, PROVIDER_UNAVAILABLE: 409 };
+const STATUS = { INVALID: 400, NOT_FOUND: 404, BUSY: 409, QUEUE_FULL: 429, HARD_LIMIT: 403, PROVIDER_UNAVAILABLE: 409 };
 const server = createServer(async (request, response) => {
   const send = (status, value) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); };
   try {

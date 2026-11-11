@@ -116,6 +116,29 @@ test('each new open request for the owner becomes exactly one private board wake
   assert.equal(events.length, 2);
 });
 
+test('several new requests arrive as ONE batched wake; hard limits are flagged without Board text (#74)', async t => {
+  const list = [open('r1', { question: 'Deploy now?' }), open('r2', { question: 'Which colour?' }), open('r3', { question: 'Delete the backups?' })];
+  const { companion, events } = fixture(t, { requests: () => list });
+  await companion.tick();
+  assert.equal(events.length, 1, 'one wake, one message to the owner');
+  const { prompt, requestId } = events[0][1];
+  assert.match(requestId, /^board-needs-you-[a-f0-9]{32}$/);
+  assert.match(prompt, /3 Board "Needs you" requests/);
+  assert.match(prompt, /1\. request r1 on ticket tr1 \(HARD LIMIT: deployment/);
+  assert.doesNotMatch(prompt, /2\. request r2 on ticket tr2 \(HARD/);
+  assert.match(prompt, /3\. request r3 on ticket tr3 \(HARD LIMIT: deletion/);
+  assert.doesNotMatch(prompt, /Which colour|Deploy now/);
+  assert.match(prompt, /resolve_human_request/);
+  await companion.tick();
+  assert.equal(events.length, 1, 'announced once');
+});
+
+test('a single hard-limit request tells the companion not to answer it', async t => {
+  const { companion, events } = fixture(t, { requests: () => [open('r1', { question: 'Deploy now?' })] });
+  await companion.tick();
+  assert.match(events[0][1].prompt, /hard limit \(deployment\): never answer it yourself/);
+});
+
 test('two configured owners keep Needs-you wakes, public profile updates and requested attachments on their own bridge', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'board-companion-two-owner-')), store = new BootstrapStore(dir, ROOT), events = [];
   const entries = [

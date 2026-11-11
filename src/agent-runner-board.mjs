@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { escalationQuestion } from './escalation.mjs';
 // The runner's Board side (#72, docs/AGENT-RUNNER.md). The runner has its own Board worker identity, paired once by
 // the owner, with the credential kept inside its connect.py bridge (never read here). Sub-agents in the sandbox have
 // no Board access, so this reporter does the Board work for them:
@@ -49,6 +51,14 @@ export class BoardReporter {
   }
 
   #version(run, ticket) { if (Number.isSafeInteger(ticket?.version)) run.board.version = ticket.version; }
+
+  // A launch refused for a hard limit (#74): raise a Needs-you for the owner on the ticket, once per request.
+  async hardLimit({ ticketId, agent, limit, instructions, requestId }) {
+    const key = 'hardlimit-' + createHash('sha256').update(`${ticketId}|${agent}|${requestId ?? instructions}`).digest('hex').slice(0, 40);
+    const question = escalationQuestion(limit, `${agent} was asked to: ${instructions}`);
+    await this.#client.call('request_human_input', { ticket_id: ticketId, owner_id: this.#ownerId, kind: 'question',
+      question, summary: question.slice(0, 240), idempotency_key: key });
+  }
 
   async begin(run) {
     run.board = { claimed: false, execution: null, revision: null, executionError: null };
