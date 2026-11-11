@@ -62,8 +62,18 @@ export class BoardReporter {
   async hardLimit({ ticketId, agent, limit, instructions, requestId }) {
     const key = 'hardlimit-' + createHash('sha256').update(`${ticketId}|${agent}|${requestId ?? instructions}`).digest('hex').slice(0, 40);
     const question = escalationQuestion(limit, `${agent} was asked to: ${instructions}`);
-    await this.#client.call('request_human_input', { ticket_id: ticketId, owner_id: this.#ownerId, kind: 'question',
-      question, summary: question.slice(0, 240), idempotency_key: key });
+    // The Board only takes a Needs-you from the session holding the ticket's claim, so claim it first (the request then
+    // releases the claim and blocks the ticket on the owner). A retry finds the ticket already blocked on this request:
+    // the claim is refused and the request with the same key returns the existing one.
+    const read = await this.#client.call('get_ticket', { ticket_id: ticketId, view: 'full' });
+    const ticket = read?.ticket ?? read;
+    if (!ticket?.id) throw Object.assign(new Error('Ticket not found on the Board.'), { code: 'NOT_FOUND' });
+    if (!this.#projects.has(ticket.project_id)) throw Object.assign(new Error('This ticket is outside the projects C-chan\'s agents may work in.'), { code: 'FORBIDDEN' });
+    let version = ticket.version;
+    try { version = (await this.#client.call('claim_ticket', { ticket_id: ticket.id, expected_version: ticket.version }))?.version ?? version; }
+    catch { /* already blocked on this request (a retry), or claimed by someone else: the request below says which */ }
+    await this.#client.call('request_human_input', { ticket_id: ticket.id, owner_id: this.#ownerId, kind: 'question',
+      question, summary: question.slice(0, 240), idempotency_key: key, ...(Number.isSafeInteger(version) ? { expected_version: version } : {}) });
   }
 
   async begin(run) {

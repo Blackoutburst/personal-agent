@@ -215,6 +215,27 @@ function fakeBoard(handlers = {}) {
   return { calls, async call(name, args) { calls.push([name, args]); const handler = handlers[name]; if (handler instanceof Error) throw handler; return typeof handler === 'function' ? handler(args) : handler ?? {}; } };
 }
 
+// The Board takes a Needs-you only from the claim holder: the hard-limit escalation claims the ticket first.
+test('hard-limit escalation claims the ticket, then asks the owner with the claimed version (#74 fix)', async () => {
+  const client = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'P', status: 'review', version: 5 } }, claim_ticket: { version: 6 } });
+  const reporter = new BoardReporter({ client, projects: ['P'], ownerId: 'o' });
+  await reporter.hardLimit({ ticketId: 'T', agent: 'rev', limit: { id: 'deploy', label: 'deploying' }, instructions: 'deploy it', requestId: null });
+  assert.deepEqual(client.calls.map(([name]) => name), ['get_ticket', 'claim_ticket', 'request_human_input']);
+  const asked = client.calls[2][1];
+  assert.deepEqual([asked.ticket_id, asked.owner_id, asked.expected_version], ['T', 'o', 6]);
+  assert.match(asked.idempotency_key, /^hardlimit-[0-9a-f]{40}$/);
+  // A retry: the ticket is already blocked on this request, the claim is refused, and the same key is sent again.
+  const retry = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'P', status: 'blocked', version: 7 } }, claim_ticket: new Error('blocked') });
+  await new BoardReporter({ client: retry, projects: ['P'], ownerId: 'o' })
+    .hardLimit({ ticketId: 'T', agent: 'rev', limit: { id: 'deploy', label: 'deploying' }, instructions: 'deploy it', requestId: null });
+  assert.equal(retry.calls[2][1].idempotency_key, asked.idempotency_key);
+  // Outside the allowed projects nothing is asked.
+  const outside = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'X', status: 'todo', version: 1 } } });
+  await assert.rejects(new BoardReporter({ client: outside, projects: ['P'], ownerId: 'o' })
+    .hardLimit({ ticketId: 'T', agent: 'rev', limit: { id: 'deploy', label: 'deploying' }, instructions: 'x', requestId: null }), /outside the projects/);
+  assert.deepEqual(outside.calls.map(([name]) => name), ['get_ticket']);
+});
+
 test('Board reporter: claim, Runtime execution with cleanup proof, review with evidence (#72)', async () => {
   const client = fakeBoard({
     get_ticket: { ticket: { id: 'T', project_id: 'P', thread_id: 'TH', number: 7, title: 'Seven', description: 'd', acceptance_criteria: 'a', status: 'todo', version: 3 } },

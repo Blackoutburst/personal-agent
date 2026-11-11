@@ -233,7 +233,7 @@ export class AgentRunner extends EventEmitter {
     const limit = hardLimit(instructions);
     if (limit) {
       Promise.resolve(this.#reporter.hardLimit?.({ ticketId, agent, limit, instructions, requestId }))
-        .catch(error => this.#log(`hard-limit Needs-you for ${agent} failed: ${error?.code ?? error?.message}`));
+        .catch(error => this.#log(`hard-limit Needs-you for ${agent} failed: ${error?.code ? `${error.code}: ${error.message}` : error?.message}`));
       throw new AgentRunnerError('HARD_LIMIT', `Refused: ${limit.label} is a hard limit. A Needs-you for the owner was raised on the ticket; only the owner can approve it.`);
     }
     // The roster (#73): the agent must exist and be active, and its policy decides model, repos, actions and limits.
