@@ -22,7 +22,8 @@ for p in /home/ubuntu /home/ubuntu/.ssh /home/ubuntu/.config /home/ubuntu/.claud
          /opt/blackoutburst-agent-pool /opt/blackoutburst-lead /opt/companion-survival /opt/ibkr-bot /opt/forma \
          /etc/letsencrypt /etc/ssl/private /var/mail /var/spool /var/log /root /run/user/1000 \
          /etc/shadow /etc/sudoers; do deny "$p"; done
-others=$(ls /proc | grep -E '^[0-9]+$' | while read -r pid; do [ "$(stat -c %u /proc/$pid 2>/dev/null)" != "$(id -u)" ] && echo "$pid"; done | wc -l)
+# Processes that exit between the listing and the stat (this check's own ls/grep) have no owner left; skip them.
+others=$(ls /proc | grep -E '^[0-9]+$' | while read -r pid; do owner=$(stat -c %u /proc/$pid 2>/dev/null) || continue; [ -n "$owner" ] && [ "$owner" != "$(id -u)" ] && echo "$pid"; done | wc -l)
 if [ "$others" = 0 ]; then echo "denied    /proc of other users"; else echo "READABLE  /proc: $others foreign processes visible"; fail=1; fi
 allow "write in /var/lib/cchan-agents" touch /var/lib/cchan-agents/home/.verify && rm -f /var/lib/cchan-agents/home/.verify
 allow "no sudo" bash -c '! sudo -n true'
