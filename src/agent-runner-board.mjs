@@ -81,6 +81,19 @@ export class BoardReporter {
       acceptanceCriteria: ticket.acceptance_criteria ?? '' };
   }
 
+  // A review run (#73): read the ticket and check its project, but do not claim it. The ticket stays where it is (usually
+  // in review); the reviewer's report goes on its thread and C-chan decides.
+  async beginReview(run) {
+    run.board = { claimed: false, review: true, execution: null, revision: null, executionError: null };
+    const read = await this.#client.call('get_ticket', { ticket_id: run.ticketId, view: 'full' });
+    const ticket = read?.ticket ?? read;
+    if (!ticket?.id) throw Object.assign(new Error('Ticket not found on the Board.'), { code: 'NOT_FOUND' });
+    if (!this.#projects.has(ticket.project_id)) throw Object.assign(new Error('This ticket is outside the projects C-chan\'s agents may work in.'), { code: 'FORBIDDEN' });
+    run.board.projectId = ticket.project_id; run.board.threadId = ticket.thread_id ?? null; this.#version(run, ticket);
+    return { number: ticket.number, title: ticket.title ?? '', description: ticket.description ?? '',
+      acceptanceCriteria: ticket.acceptance_criteria ?? '' };
+  }
+
   async started(run) {
     try {
       const reserved = await this.#client.call('reserve_execution', { idempotency_key: `${run.id}-reserve`,
@@ -95,8 +108,12 @@ export class BoardReporter {
       run.board.executionError = String(error.code ?? error.message).slice(0, 120);
       this.#log(`Runtime execution not recorded for ${run.id}: ${run.board.executionError}`);
     }
-    await this.#post(run, `${run.agent} started on this ticket (${run.provider}/${run.modelAlias}, at most ${run.maxTurns} turns, `
-      + `${Math.round(run.maxSeconds / 60)} min). Branch ${run.branch}${run.resumed ? ' (resumed)' : ''}. Run ${run.id}.`, 'started');
+    const who = `${run.agent}${run.role ? ` (${run.role}${run.team ? `, team ${run.team}` : ''})` : ''}`;
+    await this.#post(run, run.mode === 'review'
+      ? `${who} started reviewing ${run.reviewBranch}${run.reviewHead ? ` @ ${run.reviewHead.slice(0, 10)}` : ''} (${run.provider}/${run.modelAlias}, `
+        + `at most ${run.maxTurns} turns, ${Math.round(run.maxSeconds / 60)} min). Run ${run.id}.`
+      : `${who} started on this ticket (${run.provider}/${run.modelAlias}, at most ${run.maxTurns} turns, `
+        + `${Math.round(run.maxSeconds / 60)} min). Branch ${run.branch}${run.resumed ? ' (resumed)' : ''}. Run ${run.id}.`, 'started');
   }
 
   async heartbeat(run) {
@@ -124,7 +141,7 @@ export class BoardReporter {
 
   async finish(run) {
     this.#beats.delete(run.id);
-    if (!run.board?.claimed) return;
+    if (!run.board?.claimed && !run.board?.review) return;
     const confirmed = Boolean(run.cleanup?.unitGone && run.cleanup?.worktreeRemoved);
     if (run.board.execution) {
       const status = run.state === 'succeeded' ? 'completed' : run.state === 'blocked' ? 'blocked'
@@ -137,6 +154,7 @@ export class BoardReporter {
       } catch (error) { this.#log(`finish_execution for ${run.id} failed: ${error.code ?? error.message}`); }
     }
     const summary = runSummary(run);
+    if (run.board.review) return this.#finishReview(run, summary);
     if (run.state === 'succeeded') {
       const result = run.result ?? {};
       const outcome = result.kind === 'done' ? result.outcome
@@ -159,6 +177,27 @@ export class BoardReporter {
       const why = run.error ? String(run.error).slice(0, 400) : run.state;
       await this.#ticket(run, { status: 'todo', release_claim: true, progress: `Last run ${run.state}: ${why}`.slice(0, 2000) });
       await this.#post(run, `${run.agent}'s run ended: ${run.state} (${why}). The ticket is released. ${summary}.`, 'ended');
+    }
+  }
+
+  // The reviewer's report goes on the ticket's thread; the ticket itself is not changed (C-chan accepts or returns it).
+  async #finishReview(run, summary) {
+    const result = run.result ?? {};
+    if (run.state === 'succeeded' && result.kind === 'review') {
+      const body = [`Review by ${run.agent} of ${run.reviewBranch}${run.reviewHead ? ` @ ${run.reviewHead.slice(0, 10)}` : ''}: `
+        + `VERDICT ${result.verdict === 'approve' ? 'approve' : 'changes requested'}.`,
+        result.findings ? `Findings:\n${result.findings}` : '', result.evidence ? `Evidence:\n${result.evidence}` : '',
+        `Runner: ${summary}. The ticket was not changed: C-chan accepts or returns it.`].filter(Boolean).join('\n\n');
+      await this.#post(run, body.slice(0, 19000), 'review');
+    } else if (run.state === 'blocked') {
+      try {
+        await this.#client.call('request_human_input', { ticket_id: run.ticketId, owner_id: this.#ownerId, kind: 'question',
+          question: run.result.question, summary: run.result.question.slice(0, 240), idempotency_key: `${run.id}-blocked` });
+      } catch (error) { this.#log(`Needs-you for ${run.id} failed: ${error.code ?? error.message}`); }
+      await this.#post(run, `${run.agent} stopped its review with a question for the owner (Needs-you). ${summary}.`, 'blocked');
+    } else {
+      const why = run.error ? String(run.error).slice(0, 400) : run.state;
+      await this.#post(run, `${run.agent}'s review ended without a verdict: ${run.state} (${why}). ${summary}.`, 'ended');
     }
   }
 
@@ -198,5 +237,56 @@ export class BoardWatch {
     }
     this.#primed = true;
     return events;
+  }
+}
+
+// The roster's copy on the Board (#73): each roster agent is a managed agent profile, so the owner sees C-chan's
+// agents and teams in the Board's agent list. It needs the owner's "manage agent profiles" grant on the runner's own
+// Board profile; until then every sync fails with the Board's refusal, which the roster records and retries.
+// The profiles are unbound (no device, no session, no credential) and hold no permissions: the runner does the Board
+// work for every run with its own identity, and the roster in the runner is what is enforced.
+export class BoardRosterMirror {
+  #client; #projects;
+  constructor({ client, projects }) { this.#client = client; this.#projects = [...projects]; }
+
+  #fields(agent) {
+    const where = agent.kind === 'task' ? `task agent for one ticket (archived when it is done)` : 'standing agent';
+    const description = [`C-chan's ${agent.role} agent: ${where}${agent.team ? `, team ${agent.team}` : ''}. Model ${agent.provider}/${agent.model}; `
+      + `actions ${agent.actions.join(', ')}${agent.repos.length ? `; repos ${agent.repos.join(', ')}` : ''}. Run by C-chan's agent runner `
+      + 'in the sandbox; not paired, it works through the runner\'s Board identity.', agent.description].filter(Boolean).join(' ');
+    const instructions = [agent.instructions, ...agent.skills.map(skill => `Skill: ${skill}`)].filter(Boolean).join('\n\n');
+    return { name: `C-chan · ${agent.name}`.slice(0, 200), description: description.slice(0, 4000), role: agent.role,
+      ...(instructions ? { instructions: instructions.slice(0, 12000) } : {}), preferred_provider: agent.provider,
+      preferred_model: agent.model, project_ids: this.#projects };
+  }
+
+  async #current(profileId) {
+    const value = await this.#client.call('get_managed_agent_profile', { profile_id: profileId, view: 'full' });
+    const profile = value?.profile ?? value;
+    return { version: profile?.version, status: profile?.status };
+  }
+
+  // Returns { profileId, version } for the roster to keep.
+  async sync(agent) {
+    const key = `cchan-roster-${agent.name}-${agent.createdAt}`;
+    let profileId = agent.board?.profileId ?? null, version = agent.board?.version ?? null;
+    const read = value => { const profile = value?.profile ?? value; if (profile?.id) profileId = profile.id; if (Number.isSafeInteger(profile?.version)) version = profile.version; };
+    if (!profileId) {
+      if (agent.status === 'archived') return { profileId: null, version: null };
+      read(await this.#client.call('create_managed_agent_profile', { profile: { ...this.#fields(agent), status: agent.status,
+        policy: { allow_read: false, allow_messages: false, allow_requests: false, actions: [], resources: [], autonomy: 'responses' },
+        idempotency_key: key } }));
+      return { profileId, version };
+    }
+    const now = await this.#current(profileId);
+    version = now.version;
+    if (agent.status === 'archived') {
+      if (now.status !== 'archived') read(await this.#client.call('archive_managed_agent_profile', { profile_id: profileId,
+        expected_version: version, idempotency_key: `${key}-archive-v${agent.version}` }));
+      return { profileId, version };
+    }
+    read(await this.#client.call('update_managed_agent_profile', { profile_id: profileId, expected_version: version,
+      idempotency_key: `${key}-v${agent.version}-${agent.team ?? 'none'}-${agent.status}`, changes: { ...this.#fields(agent), status: agent.status } }));
+    return { profileId, version };
   }
 }

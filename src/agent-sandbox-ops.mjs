@@ -42,6 +42,16 @@ export class SandboxOps {
     return this.#worktree(['remove', '--repo', repo, '--agent', agent, '--ticket', ticket]);
   }
 
+  // Put another agent's branch into a worktree for review (#73): the worktree's own branch is reset to it, as the
+  // sandbox user. Returns the reviewed head.
+  async checkout({ worktree, ref }) {
+    if (typeof worktree !== 'string' || !worktree.startsWith(this.#root + '/worktrees/') || worktree.includes('..')) throw new Error('bad worktree');
+    if (!/^agent\/[a-z0-9][a-z0-9-]{0,39}\/t\d{1,9}$/.test(ref)) throw new Error('bad branch');
+    const git = (...args) => run(this.#exec, this.#sudo, ['-n', WRAPPER, '--cwd', worktree, '--', '/usr/bin/git', ...args], { timeout: 60_000 });
+    await git('reset', '--quiet', '--hard', 'refs/heads/' + ref);
+    return { head: (await git('rev-parse', 'HEAD')).trim() };
+  }
+
   // One headless agent as its own transient unit in cchan-agents.slice. stdin/stdout pass through the wrapper.
   spawn({ unit, cwd, maxSeconds, spec }) {
     if (!UNIT.test(unit)) throw new Error('bad unit name');

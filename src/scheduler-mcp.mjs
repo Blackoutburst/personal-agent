@@ -93,14 +93,38 @@ const TOOLS = [
     inputSchema: schema({ url: string(300, 'https://x.com/<user>/status/<id> or twitter.com link') }) },
   { name: 'watch_x_video', description: 'Watch the video of an X / Twitter post: saves a few key frames in your workspace (open them like pictures) and returns a transcript of any speech, within size and length limits; otherwise only the thumbnail, with a note saying why. Takes up to a couple of minutes.',
     inputSchema: schema({ url: string(300, 'https://x.com/<user>/status/<id> or twitter.com link') }) },
-  { name: 'agents_launch', description: 'Launch one of your agents on a Board ticket (#72). It works the ticket headless in the sandbox, in its own Git worktree of repo, on branch agent/<agent>/t<ticket number>; the runner claims the ticket for it, reports heartbeats and cleanup to the Board, and moves the ticket to review with its outcome and evidence (or raises a Needs-you question, or releases it on failure). model: haiku (small, mechanical), sonnet (most coding), opus (hard or design work), fable (the hardest). Limits on turns, time and concurrent runs apply; extra launches wait in a queue. Reuse requestId for exact retries.',
+  { name: 'agents_launch', description: 'Launch one of your roster agents on a Board ticket (#72, #73). mode work (default): it works the ticket headless in the sandbox, in its own Git worktree of repo, on branch agent/<agent>/t<ticket number>; the runner claims the ticket for it, reports heartbeats and cleanup to the Board, and moves the ticket to review with its outcome and evidence (or raises a Needs-you question, or releases it on failure). mode review: a reviewer agent checks out reviewBranch (default: the last successful branch on this ticket), runs the tests and checks the acceptance criteria, then posts VERDICT approve or changes_requested on the ticket thread without changing the ticket; you decide. The agent runs on its own roster model; model is only needed for a name not in the roster, which then becomes a per-task coder for this ticket. Models: haiku (small, mechanical), sonnet (most coding), opus (hard or design work), fable (the hardest). Limits on turns, time and concurrent runs apply; extra launches wait in a queue. Reuse requestId for exact retries.',
     inputSchema: { type: 'object', properties: { requestId: string(80, 'Stable logical request key'),
-      agent: string(40, 'Agent name: lowercase letters, digits and dashes, e.g. coder-1'), ticketId: string(64, 'Board ticket id (not its number)'),
-      repo: string(40, 'Sandbox repo: personal-agent or agent-board'), model: { type: 'string', enum: ['haiku', 'sonnet', 'opus', 'fable'] },
+      agent: string(40, 'Roster agent name, e.g. coder-1'), ticketId: string(64, 'Board ticket id (not its number)'),
+      repo: string(40, 'Sandbox repo: personal-agent or agent-board'), model: { type: 'string', enum: ['haiku', 'sonnet', 'opus', 'fable'], description: 'Must match the roster agent\'s model; only needed for a new per-task agent' },
+      mode: { type: 'string', enum: ['work', 'review'] }, reviewBranch: string(100, 'For mode review: agent/<agent>/t<number>'),
       instructions: string(8000, 'Optional extra instructions for the agent'), base: string(100, 'Optional base branch, default main'),
-      maxTurns: { type: 'integer', minimum: 1, maximum: 400, description: 'Optional turn limit (capped by the runner)' },
-      maxMinutes: { type: 'integer', minimum: 1, maximum: 240, description: 'Optional deadline in minutes (capped by the runner)' } },
-      required: ['requestId', 'agent', 'ticketId', 'repo', 'model'], additionalProperties: false } },
+      maxTurns: { type: 'integer', minimum: 1, maximum: 400, description: 'Optional turn limit (capped by the agent and the runner)' },
+      maxMinutes: { type: 'integer', minimum: 1, maximum: 240, description: 'Optional deadline in minutes (capped by the agent and the runner)' } },
+      required: ['requestId', 'agent', 'ticketId', 'repo'], additionalProperties: false } },
+  { name: 'agents_roster', description: 'Your agent roster (#73): every agent with its role, model, kind (standing or per-task), allowed actions (work, commit, review), repos, skills, limits, team, status, version and its Board profile; and your teams.',
+    inputSchema: { type: 'object', properties: { includeArchived: { type: 'boolean' } }, additionalProperties: false } },
+  { name: 'agents_save_agent', description: 'Create an agent in your roster, or update one (give expectedVersion from agents_roster to update). role coder (actions work + commit) or reviewer (action review: reviews another agent\'s branch, never edits or commits; this is enforced). kind standing (kept, can join a team) or task (for one ticketId, archived automatically when that ticket is done). model haiku, sonnet, opus or fable; escalate a stuck ticket by giving its agent a bigger model. skills and instructions become part of its prompt. repos limits where it may work ([] = any). status active or paused. It also appears on the Board as a managed agent profile.',
+    inputSchema: { type: 'object', properties: { name: string(40, 'Agent name: lowercase letters, digits and dashes, e.g. coder-1'),
+      expectedVersion: { type: 'integer', minimum: 1, description: 'Only when updating: the version you last read' },
+      role: { type: 'string', enum: ['coder', 'reviewer'] }, kind: { type: 'string', enum: ['standing', 'task'] },
+      ticketId: string(64, 'For a task agent: its Board ticket id'), model: { type: 'string', enum: ['haiku', 'sonnet', 'opus', 'fable'] },
+      actions: { type: 'array', items: { type: 'string', enum: ['work', 'commit', 'review'] }, maxItems: 3 },
+      repos: { type: 'array', items: string(40, 'Sandbox repo'), maxItems: 10 },
+      skills: { type: 'array', items: string(2000, 'A short skill or rule'), maxItems: 8 },
+      instructions: string(4000, 'Standing instructions for this agent'), description: string(500, 'What this agent is for'),
+      maxTurns: { type: 'integer', minimum: 1, maximum: 400 }, maxMinutes: { type: 'integer', minimum: 1, maximum: 240 },
+      status: { type: 'string', enum: ['active', 'paused'] } },
+      required: ['name'], additionalProperties: false } },
+  { name: 'agents_archive_agent', description: 'Archive an agent from your roster (its branches stay in the sandbox clone; its Board profile is archived too). A per-task agent is archived automatically when its ticket is done.',
+    inputSchema: { type: 'object', properties: { name: string(40, 'Agent name'), expectedVersion: { type: 'integer', minimum: 1 } }, required: ['name', 'expectedVersion'], additionalProperties: false } },
+  { name: 'agents_save_team', description: 'Create or update a standing team of roster agents, e.g. three Haiku coders and one Opus reviewer. Create the agents first; an agent is in at most one team. Give expectedVersion to update an existing team.',
+    inputSchema: { type: 'object', properties: { name: string(40, 'Team name, e.g. web-team'), purpose: string(500, 'What the team is for'),
+      members: { type: 'array', items: string(40, 'Agent name'), maxItems: 12 }, expectedVersion: { type: 'integer', minimum: 1 } },
+      required: ['name'], additionalProperties: false } },
+  { name: 'agents_archive_team', description: 'Archive a team. With archiveMembers its agents are archived too; otherwise they stay as standing agents.',
+    inputSchema: { type: 'object', properties: { name: string(40, 'Team name'), expectedVersion: { type: 'integer', minimum: 1 }, archiveMembers: { type: 'boolean' } },
+      required: ['name', 'expectedVersion'], additionalProperties: false } },
   { name: 'agents_list', description: 'List your agent runs (state, ticket, model, turns, branch, cleanup). activeOnly limits it to queued and running ones.',
     inputSchema: { type: 'object', properties: { activeOnly: { type: 'boolean' } }, additionalProperties: false } },
   { name: 'agents_status', description: 'The agent runner: limits, running and queued counts, Board connection, and the projects agents may work in. With runId, one run in detail.',
@@ -120,7 +144,7 @@ function configuration(endpoint, token) {
 const interval = value => Number.isSafeInteger(value) && value >= 6 && value <= 168;
 function toolInput(name, args) {
   if (name === 'agents_launch' && object(args) && stableKey(args.requestId)) {
-    const allowed = ['requestId', 'agent', 'ticketId', 'repo', 'model', 'instructions', 'base', 'maxTurns', 'maxMinutes'];
+    const allowed = ['requestId', 'agent', 'ticketId', 'repo', 'model', 'mode', 'reviewBranch', 'instructions', 'base', 'maxTurns', 'maxMinutes'];
     if (Object.keys(args).some(key => !allowed.includes(key))) return null;
     const { maxMinutes, ...launch } = args;
     if (maxMinutes !== undefined && !(Number.isSafeInteger(maxMinutes) && maxMinutes > 0 && maxMinutes <= 240)) return null;
@@ -133,6 +157,14 @@ function toolInput(name, args) {
     return { action: 'agents', input: typeof args.runId === 'string' ? { op: 'get', runId: args.runId } : { op: 'status' } };
   }
   if (name === 'agents_stop' && exact(args, ['runId']) && typeof args.runId === 'string') return { action: 'agents', input: { op: 'stop', runId: args.runId } };
+  if (name === 'agents_roster' && object(args) && Object.keys(args).every(key => key === 'includeArchived')) {
+    return { action: 'agents', input: { op: 'roster', includeArchived: args.includeArchived === true } };
+  }
+  if (name === 'agents_save_agent' && object(args) && typeof args.name === 'string') return { action: 'agents', input: { op: 'saveAgent', agent: args } };
+  if (name === 'agents_archive_agent' && exact(args, ['name', 'expectedVersion'])) return { action: 'agents', input: { op: 'archiveAgent', ...args } };
+  if (name === 'agents_save_team' && object(args) && typeof args.name === 'string') return { action: 'agents', input: { op: 'saveTeam', team: args } };
+  if (name === 'agents_archive_team' && object(args) && typeof args.name === 'string'
+    && Object.keys(args).every(key => ['name', 'expectedVersion', 'archiveMembers'].includes(key))) return { action: 'agents', input: { op: 'archiveTeam', ...args } };
   if (name === 'create_release_watch' && exact(args, ['requestId', 'condition']) && stableKey(args.requestId) && condition(args.condition)) {
     return { action: 'createWatch', input: { requestId: args.requestId, condition: args.condition } };
   }

@@ -1,4 +1,4 @@
-# C-chan's agent runner (#72)
+# C-chan's agent runner (#72) and roster (#73)
 
 Super agent plan, part 2/7. C-chan launches sub-agents on Board tickets: "agent X on ticket Y with model Z". Each
 run works the ticket headless in the sandbox from #71 ([SANDBOX.md](SANDBOX.md)). The runner enforces the limits,
@@ -10,6 +10,7 @@ reports to the Board and confirms cleanup.
 | --- | --- | --- |
 | Runner service | `ops/agent-runner/runner-service.mjs`, unit `cchan-agent-runner.service` | `ubuntu` (needs `sudo cchan-sandbox-run`) |
 | Run lifecycle, limits | `src/agent-runner.mjs` | in the runner |
+| Agent roster (agents, teams, policy) | `src/agent-roster.mjs`, state `~/personal-agent-data/agent-runner/roster.json` | in the runner |
 | Providers | `src/agent-providers.mjs` | in the runner |
 | Sandbox operations | `src/agent-sandbox-ops.mjs` | in the runner, through `sudo cchan-sandbox-run` |
 | Board reporting and watch | `src/agent-runner-board.mjs` | in the runner, with its own Board worker identity |
@@ -60,6 +61,58 @@ Run states: `queued`, `preparing`, `running`, `stopping`, then `succeeded`, `blo
 instead of treating it as the agent's fault. The Board execution ends with `quota_or_rate_limit`. After a runner restart, a run that was mid-flight has lost its output pipe. The runner stops its unit,
 cleans up and reports it `interrupted`. Committed work stays on the branch, and C-chan may relaunch the run, which
 resumes the branch.
+
+## Roster (#73)
+
+C-chan does not have one static agent. She keeps a roster of the agents she needs, and every launch must name one of
+them. The runner stores the roster and enforces it.
+
+| Field | Meaning |
+| --- | --- |
+| `name` | `coder-1`, `rev-1`, ...; also the branch name `agent/<name>/t<number>` |
+| `role` | `coder` (actions `work` + `commit`) or `reviewer` (action `review`) |
+| `kind` | `standing` (kept; can be in one team) or `task` (one `ticketId`; archived when that ticket is done) |
+| `model` | `haiku`, `sonnet`, `opus` or `fable`. A launch runs on this model. To escalate a stuck ticket, give its agent a bigger model. |
+| `actions` | `work` (claim, then move to review), `commit` (edit and commit), `review` (review another branch) |
+| `repos` | the sandbox repos it may work in (`[]` = any) |
+| `skills`, `instructions` | short rules and standing instructions added to its prompt (hard limits from #74 are refused here too) |
+| `maxTurns`, `maxMinutes` | its own limits, never above the runner's |
+| `status` | `active`, `paused` (launches refused) or `archived` |
+
+Teams group standing agents, for example `web-team` with three Haiku coders and one Opus reviewer. Every agent and
+team has a `version`, and an update must give the version it read.
+
+**Enforced at launch.** The agent must exist and be active. The mode (`work` or `review`) must be one of its actions,
+the repo one of its repos, and a task agent's ticket its own ticket. A `model` passed with the launch must match the
+agent's model. A plain launch with an unknown name and a model still works: it creates a per-task coder for that
+ticket (`createdBy: launch`).
+
+**Enforced after the run.** An agent without `commit` runs with no file-editing tools (`--disallowedTools
+Edit,MultiEdit,Write,NotebookEdit`). Its Bash can still write files, so the runner also checks the branch when the run
+ends. A no-commit work run must leave no commits, and a review run must leave the reviewed head unchanged. Otherwise
+the run fails with `POLICY`, whatever the agent reported.
+
+**Review runs.** `agents_launch` with `mode: review` and a reviewer agent:
+
+- The runner reads the ticket but does not claim it, so the ticket stays in review.
+- It creates the reviewer's worktree and resets its branch to `reviewBranch` (default: the last successful work branch
+  on the ticket). The reset runs as the sandbox user.
+- The reviewer reads the diff, runs the tests and checks each acceptance criterion. It ends with `VERDICT: approve |
+  changes_requested`, `FINDINGS:` and `EVIDENCE:`. Without a verdict, the run fails with `NO_VERDICT`.
+- The report is posted on the ticket's thread, and the ticket is not changed. The `run.ended` event carries `mode` and
+  `verdict`. C-chan accepts the work or returns it (#76), based on that independent report, never on the author's "done".
+
+**On the Board.** Each roster agent is mirrored as a managed agent profile named `C-chan · <name>`, with role, model,
+skills, the runner's projects and its status. Creating, updating and archiving the agent does the same to the profile.
+These profiles are unbound: no device, no session, no credential and no permissions. The runner does every run's Board
+work with its own identity, and the roster in the runner stays the source of truth. The mirror needs the owner's
+**agent profile management** grant on the runner's Board profile (`Home Server · C-chan agents`). Until the owner turns
+it on, each sync is refused. The roster records `board.error`, keeps working and retries every 10 minutes from the
+Board poll.
+
+C-chan's tools: `agents_roster`, `agents_save_agent` (create, or update with `expectedVersion`),
+`agents_archive_agent`, `agents_save_team`, `agents_archive_team`. As with launch and stop, C-chan's own proactive
+wakes cannot use the write tools.
 
 ## Limits
 
@@ -120,9 +173,15 @@ C-chan is never woken on a timer for this:
 | `GET /status` | limits, running/queued counts, Board watch state, projects |
 | `GET /runs[?active=1]` | runs (instructions are not returned) |
 | `GET /runs/<id>` | one run |
-| `POST /runs` | launch (body as above; `maxSeconds` instead of `maxMinutes`) |
+| `POST /runs` | launch (body as above, plus `mode` and `reviewBranch`; `maxSeconds` instead of `maxMinutes`) |
 | `POST /runs/<id>/stop` | stop: the unit and every child process |
 | `GET /events?after=N&wait=S` | events after seq N, waiting up to S ≤ 30 s |
+| `GET /roster[?archived=1]` | agents and teams |
+| `POST /roster/agents` | create an agent |
+| `POST /roster/agents/<name>` | update it (`expectedVersion` + changes) |
+| `POST /roster/agents/<name>/archive` | archive it (`expectedVersion`) |
+| `POST /roster/teams` | create or update a team (`expectedVersion` to update) |
+| `POST /roster/teams/<name>/archive` | archive it (`expectedVersion`, `archiveMembers`) |
 
 ## Setup (once)
 

@@ -10,6 +10,7 @@
 //   parseLine(line)           -> [{ type: 'session'|'turn'|'tool'|'rate'|'done'|'error', ... }]
 import { parseLine as parseClaudeLine } from './providers/claude.mjs';
 
+export const READ_ONLY_DENY = 'Edit,MultiEdit,Write,NotebookEdit';
 const TRANSIENT = /\b(429|529)\b|overloaded|too many requests|rate.?limit/i;
 
 export const SANDBOX_BIN = '/var/lib/cchan-agents/bin';
@@ -26,9 +27,12 @@ export const claude = Object.freeze({
   // The sandbox is the boundary (no credentials, no other users' files, its own unit), so the agent may edit, run
   // tests and commit in its worktree without prompts. No MCP servers: the agent has no Board or app access; the runner
   // reports for it.
-  command({ model, maxTurns, systemPrompt = null }) {
+  // readOnly (#73): an agent without the commit action gets no file-editing tools. Its Bash can still run tests, so the
+  // runner also checks afterwards that the branch did not change.
+  command({ model, maxTurns, systemPrompt = null, readOnly = false }) {
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', model, '--max-turns', String(maxTurns),
       '--permission-mode', 'bypassPermissions', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'];
+    if (readOnly) args.push('--disallowedTools', READ_ONLY_DENY);
     if (systemPrompt) args.push('--append-system-prompt', systemPrompt);
     return { binary: `${SANDBOX_BIN}/claude`, args, env: {} };
   },

@@ -10,6 +10,12 @@
 //   POST /runs                       launch { agent, ticketId, repo, model, provider?, base?, instructions?, maxTurns?, maxSeconds?, requestId? }
 //   POST /runs/<id>/stop             stop a run (its unit and every child process)
 //   GET  /events?after=N[&wait=S]    run and Board events after seq N; waits up to S seconds (max 30) for the next one
+//   GET  /roster[?archived=1]        C-chan's agents and teams (#73)
+//   POST /roster/agents              create an agent { name, role, model, kind?, ticketId?, actions?, repos?, skills?, instructions?, ... }
+//   POST /roster/agents/<name>       update it { expectedVersion, ...changes }
+//   POST /roster/agents/<name>/archive   { expectedVersion }
+//   POST /roster/teams               create or update a team { name, purpose?, members?, expectedVersion? }
+//   POST /roster/teams/<name>/archive    { expectedVersion, archiveMembers? }
 import { createServer } from 'node:http';
 import { chmodSync, existsSync, readFileSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -18,7 +24,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const { AgentRunner, AgentRunnerError } = await import(join(ROOT, 'src', 'agent-runner.mjs'));
 const { SandboxOps } = await import(join(ROOT, 'src', 'agent-sandbox-ops.mjs'));
-const { BoardReporter, BoardWatch } = await import(join(ROOT, 'src', 'agent-runner-board.mjs'));
+const { BoardReporter, BoardWatch, BoardRosterMirror } = await import(join(ROOT, 'src', 'agent-runner-board.mjs'));
+const { Roster, RosterError } = await import(join(ROOT, 'src', 'agent-roster.mjs'));
 const { BoardClient } = await import(join(ROOT, 'src', 'board-client.mjs'));
 
 const HOME = process.env.HOME ?? '/home/ubuntu';
@@ -26,6 +33,7 @@ const CONFIG = process.env.CCHAN_RUNNER_CONFIG ?? join(HOME, '.config', 'cchan-a
 const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
 const socket = config.socket ?? join(HOME, 'personal-agent-data', 'agent-runner', 'runner.sock');
 const stateFile = config.stateFile ?? join(HOME, 'personal-agent-data', 'agent-runner', 'runs.json');
+const rosterFile = config.rosterFile ?? join(HOME, 'personal-agent-data', 'agent-runner', 'roster.json');
 const log = message => process.stdout.write(`${new Date().toISOString()} ${message}\n`);
 
 if (!Array.isArray(config.projects) || !config.projects.length) throw new Error('config.projects: the Board projects agents may work in');
@@ -35,7 +43,8 @@ const board = new BoardClient({ label: 'C-chan agent runner', sessionId: config.
     pythonPath: config.board?.pythonPath ?? '/usr/bin/python3',
     connectPath: config.board?.connectPath ?? join(HOME, '.config', 'blackoutburst-board', 'connect.py') } });
 
-const runner = new AgentRunner({ file: stateFile, ops: new SandboxOps(), log, limits: config.limits ?? {},
+const roster = new Roster({ file: rosterFile, log, mirror: config.boardRoster === false ? null : new BoardRosterMirror({ client: board, projects: config.projects }) });
+const runner = new AgentRunner({ file: stateFile, ops: new SandboxOps(), log, limits: config.limits ?? {}, roster,
   reporter: new BoardReporter({ client: board, projects: config.projects, ownerId: config.ownerId, log }) });
 runner.on('event', event => log(`event ${event.seq} ${event.type} ${event.runId ?? ''} #${event.ticketNumber ?? '?'} ${event.state ?? ''}`));
 
@@ -45,6 +54,7 @@ async function poll() {
   try {
     for (const event of await watch.poll()) runner.note(event);
     boardState = { ok: true, at: Date.now(), error: null };
+    await roster.resync();
   } catch (error) {
     if (boardState.ok !== false) log(`Board watch failed: ${error.code ?? error.message}`);
     boardState = { ok: false, at: Date.now(), error: String(error.code ?? 'ERROR') };
@@ -62,7 +72,9 @@ async function body(request) {
   catch { throw new AgentRunnerError('INVALID', 'Body must be JSON.'); }
 }
 
-const STATUS = { INVALID: 400, NOT_FOUND: 404, BUSY: 409, QUEUE_FULL: 429, HARD_LIMIT: 403, PROVIDER_UNAVAILABLE: 409 };
+const STATUS = { INVALID: 400, NOT_FOUND: 404, BUSY: 409, QUEUE_FULL: 429, HARD_LIMIT: 403, PROVIDER_UNAVAILABLE: 409,
+  FORBIDDEN: 403, PAUSED: 409, CONFLICT: 409, EXISTS: 409, LIMIT: 429 };
+const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const server = createServer(async (request, response) => {
   const send = (status, value) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); };
   try {
@@ -90,11 +102,26 @@ const server = createServer(async (request, response) => {
       const last = runner.events(0).at(-1)?.seq ?? 0;
       return send(200, { events, last });
     }
+    if (parts[0] === 'roster') {
+      if (request.method === 'GET' && parts.length === 1) return send(200, roster.list({ includeArchived: url.searchParams.get('archived') === '1' }));
+      if (request.method === 'POST' && parts[1] === 'agents' && parts.length === 2) return send(201, { agent: roster.create(await body(request)) });
+      if (request.method === 'POST' && parts[1] === 'agents' && NAME.test(parts[2] ?? '') && parts.length === 3) return send(200, { agent: roster.update(parts[2], await body(request)) });
+      if (request.method === 'POST' && parts[1] === 'agents' && NAME.test(parts[2] ?? '') && parts[3] === 'archive' && parts.length === 4) {
+        const { expectedVersion } = await body(request);
+        return send(200, { agent: roster.archive(parts[2], { expectedVersion }) });
+      }
+      if (request.method === 'POST' && parts[1] === 'teams' && parts.length === 2) return send(200, { team: roster.saveTeam(await body(request)) });
+      if (request.method === 'POST' && parts[1] === 'teams' && NAME.test(parts[2] ?? '') && parts[3] === 'archive' && parts.length === 4) {
+        const { expectedVersion, archiveMembers } = await body(request);
+        return send(200, { team: roster.archiveTeam(parts[2], { expectedVersion, archiveMembers: archiveMembers === true }) });
+      }
+    }
     return send(404, { error: { code: 'NOT_FOUND', message: 'Unknown endpoint.' } });
   } catch (error) {
-    const code = error instanceof AgentRunnerError ? error.code : 'RUNNER_ERROR';
-    if (!(error instanceof AgentRunnerError)) log(`request failed: ${error.message}`);
-    return send(STATUS[code] ?? 500, { error: { code, message: error instanceof AgentRunnerError ? error.message : 'The runner failed.' } });
+    const known = error instanceof AgentRunnerError || error instanceof RosterError;
+    const code = known ? error.code : 'RUNNER_ERROR';
+    if (!known) log(`request failed: ${error.message}`);
+    return send(STATUS[code] ?? 500, { error: { code, message: known ? error.message : 'The runner failed.' } });
   }
 });
 
