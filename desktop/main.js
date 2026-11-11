@@ -5,7 +5,7 @@ const { COMPANION_URL, isInternal, isExternalOpenable, afterLogin, isSignedIn, S
 const windowState = require('./src/window-state');
 const { persistentVersion } = require('./src/cookies');
 const { SITE } = require('./src/urls');
-const update = require('./src/update');
+const updater = require('./src/updater');
 const settingsStore = require('./src/settings');
 const { parseArrival, createUnread, toastFor, tooltip } = require('./src/unread');
 const { badgeBitmap } = require('./src/badge');
@@ -14,7 +14,7 @@ const { withDot } = require('./src/dot');
 app.setName('Companion');
 // Persistent default session: cookies from the platform login survive restarts.
 const stateFile = () => path.join(app.getPath('userData'), 'window-state.json');
-let pendingUpdate = null; // set by the daily check; the banner is (re)added after each page load
+let appUpdater = null; // in-app updater (src/updater.js); null when not an installed build
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 const startHidden = process.argv.includes('--hidden');
 let win = null, tray = null, quitting = false, settings = settingsStore.load(path.join(app.getPath('userData'), 'settings.json'));
@@ -54,6 +54,9 @@ function renderUnread(n) {
     else win.setOverlayIcon(null, '');
   }
 }
+// Runs on every start, so the Run entry is rewritten with the path of the exe that is running now. A 0.3.0 portable user who
+// had "Start with Windows" on (same app name -> same registry value name and same settings.json) gets the installed
+// exe's path on the first 0.4.0 start; if it was off, the entry is removed. (#89; not run on Windows)
 function applyAutostart() {
   if (!app.isPackaged) return;
   const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath; // the portable exe, not its temp extraction
@@ -68,6 +71,7 @@ function buildTrayMenu() {
   if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open', click: showWindow },
+    ...(appUpdater && appUpdater.state.phase === 'ready' ? [{ label: `Restart to update (${appUpdater.state.version})`, click: () => appUpdater.handleAction('restart') }] : []),
     { label: 'Start with Windows', type: 'checkbox', checked: settings.autostart, click: (i) => setAutostart(i.checked) },
     { type: 'separator' },
     { label: 'Quit', click: () => { quitting = true; app.quit(); } },
@@ -132,6 +136,8 @@ function createWindow() {
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e, url) => {
+    const action = updater.parseAction(url);
+    if (action) { e.preventDefault(); if (appUpdater) appUpdater.handleAction(action); return; }
     if (!isInternal(url)) { e.preventDefault(); openExternal(url); }
   });
   // After the platform sign-in the site may land on its home or the Board: send the window back to the companion.
@@ -163,15 +169,30 @@ function createWindow() {
     if (isMain && code !== -3) setTimeout(() => win && !win.isDestroyed() && win.loadURL(COMPANION_URL), 5000);
   });
   win.webContents.on('did-finish-load', () => {
-    if (pendingUpdate) win.webContents.executeJavaScript(update.bannerScript(pendingUpdate)).catch(() => {});
+    renderUpdate();
   });
   win.loadURL(COMPANION_URL);
 }
 
-// At start and once a day: ask the server for the offered version (needs the login cookie; signed out = no banner).
-async function checkUpdate() {
-  pendingUpdate = await update.checkForUpdate((url, init) => session.defaultSession.fetch(url, init), app.getVersion());
-  if (pendingUpdate && win && !win.isDestroyed()) win.webContents.executeJavaScript(update.bannerScript(pendingUpdate)).catch(() => {});
+// In-app update (#89): electron-updater against the server feed; the bar in the window shows progress and "Restart to update".
+function renderUpdate() {
+  buildTrayMenu();   // the tray offers Restart to update once a download is ready, even if the bar was dismissed
+  if (!appUpdater || !win || win.isDestroyed()) return;
+  win.webContents.executeJavaScript(updater.bannerScript(updater.view(appUpdater.state))).catch(() => {});
+}
+function startUpdater() {
+  if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_FILE) return;   // dev run or an old portable exe: no self-update
+  const { autoUpdater } = require('electron-updater');
+  autoUpdater.setFeedURL({ provider: 'generic', url: updater.FEED_URL });
+  appUpdater = updater.createUpdater({
+    autoUpdater,
+    // The feed is owner-only: send the window session's login cookies (electron-updater does not use the session itself).
+    getHeaders: async () => ({ Cookie: updater.cookieHeader(await session.defaultSession.cookies.get({ url: SITE })) }),
+    onState: renderUpdate,
+    onRestart: () => { quitting = true; },   // the close handler would otherwise hide the window instead of letting it quit
+    log: (...a) => console.warn(...a),
+  });
+  setTimeout(() => appUpdater.check(), 15000); setInterval(() => appUpdater.check(), 24 * 60 * 60 * 1000);
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -191,7 +212,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.on('companion:arrival', (e, raw) => { if (win && e.sender === win.webContents && typeof raw === 'string' && raw.length < 500) onArrival(raw); });
     createTray();
     createWindow();
-    setTimeout(checkUpdate, 15000); setInterval(checkUpdate, update.DAY_MS);
+    startUpdater();
     applyAutostart();
     if (!globalShortcut.register(settingsStore.SHORTCUT, toggleWindow)) console.warn('global shortcut unavailable');
   });

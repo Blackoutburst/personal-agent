@@ -69,20 +69,6 @@ test('session cookies on the site get an expiry; others and persistent ones do n
   assert.equal(persistentVersion(null, urls.SITE), null);
 });
 
-test('update check: newer server version gives a banner, otherwise nothing (#84)', async () => {
-  const { isNewer, checkForUpdate, bannerScript, VERSION_URL } = require('../desktop/src/update.js');
-  assert.ok(isNewer('0.1.1', '0.1.0') && isNewer('0.10.0', '0.9.9') && isNewer('1.0.0', '0.99.99'));
-  for (const [a, b] of [['0.1.0', '0.1.0'], ['0.0.9', '0.1.0'], ['x', '0.1.0'], [undefined, '0.1.0'], ['0.2.0', 'bad']]) assert.equal(isNewer(a, b), false, `${a} ${b}`);
-  const answer = (status, body) => async url => { assert.equal(url, VERSION_URL); return { ok: status === 200, json: async () => body }; };
-  assert.deepEqual(await checkForUpdate(answer(200, { version: '0.2.0' }), '0.1.0'), { version: '0.2.0' });
-  assert.equal(await checkForUpdate(answer(200, { version: '0.1.0' }), '0.1.0'), null);
-  assert.equal(await checkForUpdate(answer(404, {}), '0.1.0'), null);
-  assert.equal(await checkForUpdate(async () => { throw new Error('offline'); }, '0.1.0'), null);
-  const script = bannerScript({ version: '0.2.0"});alert(1)//' });
-  assert.ok(script.includes(JSON.stringify('0.2.0"});alert(1)//')) && script.includes('/api/desktop/download'));
-  assert.doesNotThrow(() => new Function(script));
-});
-
 // ---- #83: tray, toasts, unread badge, autostart, shortcut ----
 const unreadMod = require('../desktop/src/unread.js');
 const settingsMod = require('../desktop/src/settings.js');
