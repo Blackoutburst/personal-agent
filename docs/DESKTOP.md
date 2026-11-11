@@ -18,13 +18,15 @@ What was tried:
   stub under wine to produce the uninstaller). Needs wine, or a Windows/CI host.
 - **Portable target: works.** Output `desktop/dist/Companion-Portable-<version>-x64.exe`
   (single self-extracting exe, no install, no uninstaller).
-- The system `npm` on the host is broken (missing `semver`), so the script accepts `NPM_CLI`
-  pointing at a working `npm-cli.js` (e.g. from `npm-10.x.tgz` on the registry) and puts a shim on PATH.
+- The system `npm` on the host is broken (missing `semver`). `scripts/build-desktop.sh` therefore
+  checks `npm -v`; if it fails (and `NPM_CLI` is not set) it downloads the pinned `npm-10.9.2.tgz`
+  from the registry into a temp dir, verifies its sha512 integrity against the value pinned in the
+  script (aborts on mismatch), and puts an `npm` shim on PATH (electron-builder calls `npm` itself).
 
 ## Rebuild
 
-    scripts/build-desktop.sh                      # working npm
-    NPM_CLI=/path/to/npm-cli.js scripts/build-desktop.sh   # broken system npm
+    scripts/build-desktop.sh                      # picks system npm, or fetches pinned npm 10.9.2 if it is broken
+    NPM_CLI=/path/to/npm-cli.js scripts/build-desktop.sh   # force a specific npm
 
 Output: `desktop/dist/Companion-Portable-0.1.0-x64.exe` (git-ignored). On Windows with a working
 toolchain, change the target to `nsis` in `desktop/package.json` for a real installer.
