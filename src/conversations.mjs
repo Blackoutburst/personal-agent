@@ -35,7 +35,7 @@ export const wakeToolFilter = kind => name => !WEB_TOOLS.includes(name) && !['mc
   // The companion's own wakes (#54) and contact wakes (#58) never send mail: mail stays with owner chats and Board/mail wakes.
   && !(TALKING_WAKES.includes(kind) && name === 'mcp__scheduler__mail_send')
   // Nor do they launch or stop agents (#72): that follows owner chats and Board wakes (runner events arrive as Board wakes).
-  && !(TALKING_WAKES.includes(kind) && ['mcp__scheduler__agents_launch', 'mcp__scheduler__agents_stop', 'mcp__scheduler__agents_save_agent',
+  && !(TALKING_WAKES.includes(kind) && ['mcp__scheduler__agents_launch', 'mcp__scheduler__agents_merge', 'mcp__scheduler__agents_stop', 'mcp__scheduler__agents_save_agent',
     'mcp__scheduler__agents_archive_agent', 'mcp__scheduler__agents_save_team', 'mcp__scheduler__agents_archive_team',
     'mcp__scheduler__agents_decide'].includes(name))
   // A standing approval (#76) is the owner's yes in chat: no wake of any kind (Board, own, contact, mail...) may record or

@@ -49,6 +49,8 @@ export async function agentsOperation(agents, companionId, input) {
     else if (op === 'get' && typeof rest.runId === 'string' && RUN_ID.test(rest.runId)) answer = await agents.client.call('GET', `/runs/${rest.runId}`);
     else if (op === 'stop' && typeof rest.runId === 'string' && RUN_ID.test(rest.runId)) answer = await agents.client.call('POST', `/runs/${rest.runId}/stop`, {});
     else if (op === 'launch') answer = await agents.client.call('POST', '/runs', rest.launch);
+    // Merge (#85): the runner checks the accept, the approving review and the reviewed head itself.
+    else if (op === 'merge' && object(rest.merge)) answer = await agents.client.call('POST', '/runs', { ...rest.merge, mode: 'merge' });
     // The roster (#73): C-chan's agents and teams.
     else if (op === 'roster') answer = await agents.client.call('GET', rest.includeArchived ? '/roster?archived=1' : '/roster');
     else if (op === 'saveAgent' && object(rest.agent) && name(rest.agent.name)) {
@@ -102,8 +104,9 @@ export function eventsPrompt(events) {
     + ' mode review), or relaunch after a failure if it makes sense. agents_roster lists your agents and teams; agents_list the runs.'
     + ' Manager mode (agents_manager shows the projects your owner approved): inside an approved project you act without asking'
     + ' anyone, as the project\'s manager. You never do ticket work yourself; you dispatch. Accept or return a review only on an'
-    + ' independent reviewer\'s verdict: log it first with agents_decide (kind accept or return, reviewRunId), then do it on the'
-    + ' Board; never on an agent\'s own "done". Unblock, reassign or split stuck tickets yourself; escalate a ticket that keeps'
+    + ' independent reviewer\'s verdict: log it first with agents_decide (kind accept or return, reviewRunId), then do it: an accept is merged with agents_merge'
+    + ' (the runner updates onto main, runs the full suite, pushes, sets the ticket done; refused if the branch moved since the review), a return goes back on the'
+    + ' Board; never on an agent\'s own "done". A Manager line about a refused merge means the ticket went back to todo: relaunch a coder. Unblock, reassign or split stuck tickets yourself; escalate a ticket that keeps'
     + ' failing one model up (sonnet, then opus, then fable; no opus or fable while agents_manager says the weekly budget is'
     + ' used). Log each decision with agents_decide and a one-line reason. A plan-limit stop is not a failure: relaunch after'
     + ' the reset. Only hard limits (deployments, spending, deleting, credentials, security) and changes to the agreed scope or'

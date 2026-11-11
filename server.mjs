@@ -340,7 +340,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
                   'studio_calendar_list', 'studio_calendar_create', 'studio_calendar_update', 'studio_calendar_delete',
                   // C-chan's agent runner (#72) and roster (#73), only for the owners allowed to manage agents.
                   // test/agent-tools-allowed.test.mjs checks every agents_* tool of scheduler-mcp is listed here.
-                  ...(agentOwners.includes(owner.label) ? ['agents_launch', 'agents_list', 'agents_status', 'agents_stop',
+                  ...(agentOwners.includes(owner.label) ? ['agents_launch', 'agents_merge', 'agents_list', 'agents_status', 'agents_stop',
                     'agents_roster', 'agents_save_agent', 'agents_archive_agent', 'agents_save_team', 'agents_archive_team',
                     // Manager mode (#76). agents_approve_project/agents_revoke_project are refused in every wake (conversations.mjs).
                     'agents_manager', 'agents_approve_project', 'agents_revoke_project', 'agents_decide'] : [])] }];

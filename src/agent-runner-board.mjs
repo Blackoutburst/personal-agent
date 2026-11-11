@@ -104,6 +104,20 @@ export class BoardReporter {
       acceptanceCriteria: ticket.acceptance_criteria ?? '' };
   }
 
+  // A merge run (#85): read the ticket and check its project and that it waits for the merge (in review). It is claimed
+  // only at the end, to record the result (done, or back to todo).
+  async beginMerge(run) {
+    run.board = { claimed: false, merge: true, execution: null, revision: null, executionError: null };
+    const read = await this.#client.call('get_ticket', { ticket_id: run.ticketId, view: 'full' });
+    const ticket = read?.ticket ?? read;
+    if (!ticket?.id) throw Object.assign(new Error('Ticket not found on the Board.'), { code: 'NOT_FOUND' });
+    if (!this.#projects.has(ticket.project_id)) throw Object.assign(new Error('This ticket is outside the projects C-chan\'s agents may work in.'), { code: 'FORBIDDEN' });
+    if (ticket.status === 'done') throw Object.assign(new Error('This ticket is already done.'), { code: 'INVALID' });
+    run.board.projectId = ticket.project_id; run.board.threadId = ticket.thread_id ?? null; this.#version(run, ticket);
+    await this.#post(run, `${run.agent} started the merge of ${run.mergeBranch} @ ${run.mergeHead.slice(0, 10)} into ${run.base}: update onto ${run.base}, full test suite, push. Run ${run.id}.`, 'merge-started');
+    return { number: ticket.number, title: ticket.title ?? '' };
+  }
+
   async started(run) {
     try {
       const reserved = await this.#client.call('reserve_execution', { idempotency_key: `${run.id}-reserve`,
@@ -151,6 +165,7 @@ export class BoardReporter {
 
   async finish(run) {
     this.#beats.delete(run.id);
+    if (run.board?.merge) return this.#finishMerge(run);
     if (!run.board?.claimed && !run.board?.review) return;
     const confirmed = Boolean(run.cleanup?.unitGone && run.cleanup?.worktreeRemoved);
     if (run.board.execution) {
@@ -190,6 +205,36 @@ export class BoardReporter {
     }
   }
 
+  // The merge outcome (#85). Merged: done, with the merge commit as evidence. Conflict or failing tests: nothing was merged,
+  // the ticket goes back to todo for a coder with the output. Anything else (moved branch, push refused, interrupted): the
+  // ticket stays in review and the thread says why. Returns { done } so the runner knows whether the Board shows it done.
+  async #finishMerge(run) {
+    const result = run.mergeResult ?? {};
+    const short = value => String(value ?? '').slice(0, 10);
+    const claim = async () => {
+      try { this.#version(run, await this.#client.call('claim_ticket', { ticket_id: run.ticketId, expected_version: run.board.version })); }
+      catch (error) { this.#log(`claim for ${run.id} failed (continuing without): ${error.code ?? error.message}`); }
+    };
+    if (run.state === 'succeeded') {
+      const evidence = `Merge commit ${result.mergeCommit} on ${run.base} (${run.mergeBranch} @ ${short(run.mergeHead)}), `
+        + `${result.status === 'already_merged' ? 'which was already part of main' : 'full test suite passed on the merge result, pushed to origin'}.\nRun ${run.id}.`;
+      await claim();
+      const done = await this.#ticket(run, { status: 'done', outcome: `Merged ${run.mergeBranch} into ${run.base}: ${result.mergeCommit}`, evidence, release_claim: true });
+      await this.#post(run, `${evidence}${done ? '' : '\nThe ticket could not be set to done automatically.'}`, 'merged');
+      return { done };
+    }
+    const why = `${run.errorCode ?? run.state}: ${String(result.output || run.error || '').slice(0, 12000)}`;
+    if (['MERGE_CONFLICT', 'TESTS_FAILED'].includes(run.errorCode)) {
+      await claim();
+      const progress = `${run.errorCode === 'MERGE_CONFLICT' ? 'Merge conflict with' : 'The full test suite fails after merging into'} ${run.base}. Nothing was merged. Fix it on ${run.mergeBranch} and deliver again.`;
+      await this.#ticket(run, { status: 'todo', release_claim: true, progress });
+      await this.#post(run, `${progress}\n\nOutput:\n${why}`.slice(0, 19000), 'merge-refused');
+    } else {
+      await this.#post(run, `The merge of ${run.mergeBranch} did not happen (${why}). Nothing was merged; the ticket stays in review.`.slice(0, 19000), 'merge-failed');
+    }
+    return { done: false };
+  }
+
   // The reviewer's report goes on the ticket's thread; the ticket itself is not changed (C-chan accepts or returns it).
   async #finishReview(run, summary) {
     const result = run.result ?? {};
@@ -215,7 +260,8 @@ export class BoardReporter {
     try {
       const updated = await this.#client.call('update_ticket', { ticket_id: run.ticketId, expected_version: run.board.version, changes });
       this.#version(run, updated);
-    } catch (error) { this.#log(`ticket update for ${run.id} failed: ${error.code ?? error.message}`); }
+      return true;
+    } catch (error) { this.#log(`ticket update for ${run.id} failed: ${error.code ?? error.message}`); return false; }
   }
 }
 

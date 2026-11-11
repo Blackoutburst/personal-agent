@@ -10,6 +10,8 @@
 //   GET  /ops                        agents, pipeline, decisions, usage (read-only, for the Studio Ops app)
 //   GET  /tickets/<id>/messages      a ticket's Board thread (read-only)
 //   POST /runs                       launch { agent, ticketId, repo, model, provider?, base?, instructions?, maxTurns?, maxSeconds?, requestId? }
+//                                    mode merge (#85): { mode: 'merge', agent (a merger), ticketId, repo, branch, requestId? }: refused unless C-chan
+//                                    logged an accept citing an approving review of exactly this branch head; then merge, full suite, push
 //   POST /runs/<id>/stop             stop a run (its unit and every child process)
 //   GET  /events?after=N[&wait=S]    run and Board events after seq N; waits up to S seconds (max 30) for the next one
 //   GET  /roster[?archived=1]        C-chan's agents and teams (#73)
@@ -58,7 +60,9 @@ const roster = new Roster({ file: rosterFile, log, mirror: config.boardRoster ==
 // Manager mode (#76): standing approvals, budget, decisions. Its projects are the runner's (Blackout's) projects.
 const manager = new Manager({ file: managerFile, projects: config.projects, log,
   ...(config.manager?.premiumMaxWeekly ? { premiumMaxWeekly: config.manager.premiumMaxWeekly } : {}) });
+// Merge (#85): config.merge turns the merge step on; it needs `origin` (the push target, e.g. https://github.com/Blackoutburst/personal-agent.git). Defaults: Blackoutburst's configured git identity, `node --test`.
 const runner = new AgentRunner({ file: stateFile, ops: new SandboxOps(), log, limits: config.limits ?? {}, roster, manager,
+  merge: config.merge && typeof config.merge === 'object' ? config.merge : null,
   reporter: new BoardReporter({ client: board, projects: config.projects, ownerId: config.ownerId, log }) });
 runner.on('event', event => log(`event ${event.seq} ${event.type} ${event.runId ?? ''} #${event.ticketNumber ?? '?'} ${event.state ?? event.kind ?? ''}`));
 

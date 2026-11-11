@@ -6,6 +6,7 @@
 //   work    claim a ticket and move it to review with outcome and evidence
 //   commit  edit files and commit on its branch (without it the agent gets no edit tools, and a commit fails the run)
 //   review  review another agent's branch and post a verdict on the ticket's thread (no status change)
+//   merge   (#85) land an accepted, reviewed branch on main: merge, full test suite, push. Runs without a model.
 // Each agent is mirrored on the Board as a managed agent profile when the runner's Board profile has the owner's
 // management grant (see BoardRosterMirror); the roster here stays the source of truth.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -15,9 +16,10 @@ import { hardLimit } from './escalation.mjs';
 
 export const ROLES = Object.freeze({
   coder: Object.freeze(['work', 'commit']),
-  reviewer: Object.freeze(['review'])
+  reviewer: Object.freeze(['review']),
+  merger: Object.freeze(['merge'])
 });
-export const ACTIONS = Object.freeze(['work', 'commit', 'review']);
+export const ACTIONS = Object.freeze(['work', 'commit', 'review', 'merge']);
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/;
 // What the Board copy reflects: a team change alone also needs a new mirror.
@@ -277,8 +279,8 @@ export class Roster {
     const agent = this.#agent(name);
     if (!agent || agent.status === 'archived') throw new RosterError('NOT_FOUND', `No active agent ${name}. Create it with agents_save_agent first.`);
     if (agent.status === 'paused') throw new RosterError('PAUSED', `Agent ${name} is paused.`);
-    if (!['work', 'review'].includes(mode)) invalid('mode: work or review');
-    if (!agent.actions.includes(mode)) throw new RosterError('FORBIDDEN', `Agent ${name} (${agent.role}) may not ${mode === 'work' ? 'work tickets' : 'review'}; its actions: ${agent.actions.join(', ')}.`);
+    if (!['work', 'review', 'merge'].includes(mode)) invalid('mode: work, review or merge');
+    if (!agent.actions.includes(mode)) throw new RosterError('FORBIDDEN', `Agent ${name} (${agent.role}) may not ${mode === 'work' ? 'work tickets' : mode === 'merge' ? 'merge' : 'review'}; its actions: ${agent.actions.join(', ')}.`);
     if (agent.repos.length && !agent.repos.includes(repo)) throw new RosterError('FORBIDDEN', `Agent ${name} may only work in ${agent.repos.join(', ')}.`);
     if (agent.kind === 'task' && agent.ticketId !== ticketId) throw new RosterError('FORBIDDEN', `Agent ${name} is a task agent for another ticket.`);
     if (model !== undefined && model !== null && model !== agent.model) {

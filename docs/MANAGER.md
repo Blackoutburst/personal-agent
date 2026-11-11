@@ -80,6 +80,17 @@ she does it on the Board. The runner refuses the decision unless:
 The decision records the reviewer, the author, the run and the reviewed head. A return goes back to the coder with the
 findings, and its next delivery is reviewed again.
 
+## Merging (#85)
+
+An accept is followed by `agents_merge` (ticket, repo, the reviewed branch, an agent with role `merger`), not by moving
+the ticket on the Board by hand. The runner merges without a model: it refuses unless C-chan's latest decision on the
+ticket is an accept backed by an independent approving review of the latest work, and unless the branch is still at the
+exact reviewed head. It then merges into current `main`, runs the full `node --test` suite and pushes to origin with
+Blackout's configured git identity; the ticket goes to done with the merge commit as evidence and its per-task agents
+are archived. On a conflict or failing tests nothing is merged: the ticket goes back to todo with the output, and the
+Manager line `merge_refused` tells C-chan to relaunch a coder (the next delivery is reviewed and merged again). Details:
+[AGENT-RUNNER.md](AGENT-RUNNER.md#roster) (merge runs). Releasing the server stays with Blackout.
+
 Reviewers can operate the real web app with the verification tool (#78) and attach screenshots and a manifest as
 evidence. Android is not covered by that tool.
 
@@ -147,5 +158,16 @@ Only the owner can grant these on the Board and on the host:
 4. **Release** (a deployment, so the owner's decision): install this branch, then restart the runner
    (`sudo systemctl restart cchan-agent-runner`) and the companion. Optional: set `manager.premiumMaxWeekly` in
    `~/.config/cchan-agent-runner/config.json`.
-5. **Approve a project in chat**, for example: "C-chan, you manage the Personal Agent project: build X." She records
+5. **Merge (#85), one time:** install this branch and restart the runner (this change itself is merged by Blackout or
+   the server agent, not by the runner it changes); add `"merge": {...}` to the runner config, including
+   `"origin": "https://github.com/Blackoutburst/personal-agent.git"` (example in `ops/agent-runner/config.example.json`;
+   without `origin` merges are refused); check that the owner account on the server can push there with its existing
+   credentials, for example (as `ubuntu`, a dry run that changes nothing but needs push access):
+   `R=/var/lib/cchan-agents/repos/personal-agent.git; GIT_TERMINAL_PROMPT=0 git -c safe.directory=$R --git-dir $R push --dry-run https://github.com/Blackoutburst/personal-agent.git refs/remotes/origin/main:refs/heads/main`
+   (read access alone: `git -c safe.directory=$R --git-dir $R ls-remote https://github.com/Blackoutburst/personal-agent.git main`),
+   and watch the real push of the first merge; make sure `node --test` works in a fresh clone in the sandbox (the
+   packages for the suite, e.g. a `prepareCommand` such as `["node","ops/sandbox/install-deps.mjs"]`); create a merger
+   agent (`agents_save_agent`: `role: merger`, any model, it is not used). No directory has to be created: the sandbox
+   user makes `/var/lib/cchan-agents/merge` itself.
+6. **Approve a project in chat**, for example: "C-chan, you manage the Personal Agent project: build X." She records
    it, and from then on works it alone.

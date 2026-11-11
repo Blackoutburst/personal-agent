@@ -296,8 +296,8 @@ test('companion tools reach the roster endpoints (#73)', async () => {
 
 test('roster summary: counts by status and role, active teams, Board mirror state (#81)', async () => {
   const empty = new Roster();
-  assert.deepEqual(empty.summary(), { agents: { active: { total: 0, coder: 0, reviewer: 0 }, paused: { total: 0, coder: 0, reviewer: 0 },
-    archived: { total: 0, coder: 0, reviewer: 0 } }, teams: 0, board: { mirrored: 0, pending: 0, error: null } });
+  assert.deepEqual(empty.summary(), { agents: { active: { total: 0, coder: 0, reviewer: 0, merger: 0 }, paused: { total: 0, coder: 0, reviewer: 0, merger: 0 },
+    archived: { total: 0, coder: 0, reviewer: 0, merger: 0 } }, teams: 0, board: { mirrored: 0, pending: 0, error: null } });
 
   let now = 1000, refuse = true;
   const mirror = { sync: async view => { if (refuse && view.name === 'rev-1') throw Object.assign(new Error('no grant'), { code: 'FORBIDDEN' }); return { profileId: `p-${view.name}`, version: 1 }; } };
@@ -315,9 +315,9 @@ test('roster summary: counts by status and role, active teams, Board mirror stat
   await new Promise(r => setTimeout(r, 20));
 
   const summary = roster.summary();
-  assert.deepEqual(summary.agents.active, { total: 2, coder: 1, reviewer: 1 });
-  assert.deepEqual(summary.agents.paused, { total: 1, coder: 1, reviewer: 0 });
-  assert.deepEqual(summary.agents.archived, { total: 1, coder: 1, reviewer: 0 });
+  assert.deepEqual(summary.agents.active, { total: 2, coder: 1, reviewer: 1, merger: 0 });
+  assert.deepEqual(summary.agents.paused, { total: 1, coder: 1, reviewer: 0, merger: 0 });
+  assert.deepEqual(summary.agents.archived, { total: 1, coder: 1, reviewer: 0, merger: 0 });
   assert.equal(summary.teams, 1);
   assert.equal(summary.board.error, 'FORBIDDEN: no grant');
   assert.deepEqual(summary.board, { mirrored: 3, pending: 1, error: 'FORBIDDEN: no grant' });
