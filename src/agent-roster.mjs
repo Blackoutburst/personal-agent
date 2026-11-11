@@ -148,17 +148,17 @@ export class Roster {
       teams: this.#state.teams.filter(keep).map(team => ({ ...team, members: [...team.members] })) };
   }
 
-  // At-a-glance counts for the runner's /status. Archived agents are not mirrored, so they count in neither mirrored nor
-  // pending. error: the most recent Board mirror error of any agent, or null.
+  // At-a-glance counts for the runner's /status. Archiving is mirrored to the Board too (and retried by resync()), so
+  // archived agents count in mirrored/pending/error like the others. error: the latest Board mirror error, or null.
   summary() {
     const agents = { active: { total: 0 }, paused: { total: 0 }, archived: { total: 0 } };
     for (const role of Object.keys(ROLES)) for (const group of Object.values(agents)) group[role] = 0;
     let mirrored = 0, pending = 0, latest = null;
     for (const agent of this.#state.agents) {
-      const group = agents[agent.status] ?? agents.active;
+      const group = Object.hasOwn(agents, agent.status) ? agents[agent.status] : null;
+      if (!group) continue;
       group.total++;
       if (Object.hasOwn(group, agent.role)) group[agent.role]++;
-      if (agent.status === 'archived') continue;
       const board = agent.board ?? {};
       if (board.syncedKey === mirrorKey(this.#view(agent)) && !board.error) mirrored++; else pending++;
       if (board.error && (!latest || (board.triedAt ?? 0) >= (latest.triedAt ?? 0))) latest = board;

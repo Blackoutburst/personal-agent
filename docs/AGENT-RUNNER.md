@@ -112,8 +112,9 @@ Board poll.
 
 `GET /status` carries a `roster` summary (`Roster.summary()`): `agents` (`active`, `paused`, `archived`, each with a
 `total` and a count per role, `coder` and `reviewer`), `teams` (number of active teams) and `board` (`mirrored`
-agents, `pending` ones not yet mirrored, and the latest mirror `error` or `null`). Archived agents count in neither
-`mirrored` nor `pending`.
+agents, `pending` ones not yet mirrored, and the latest mirror `error` or `null`). Archiving is mirrored to the Board
+too, so archived agents count in `mirrored`, `pending` and `error` like the others. Agents with an unknown status are
+not counted.
 
 C-chan's tools: `agents_roster`, `agents_save_agent` (create, or update with `expectedVersion`),
 `agents_archive_agent`, `agents_save_team`, `agents_archive_team`. As with launch and stop, C-chan's own proactive

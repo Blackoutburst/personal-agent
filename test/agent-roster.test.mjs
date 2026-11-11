@@ -320,11 +320,31 @@ test('roster summary: counts by status and role, active teams, Board mirror stat
   assert.deepEqual(summary.agents.archived, { total: 1, coder: 1, reviewer: 0 });
   assert.equal(summary.teams, 1);
   assert.equal(summary.board.error, 'FORBIDDEN: no grant');
-  assert.equal(summary.board.mirrored + summary.board.pending, 3, 'archived agents count in neither');
-  assert.ok(summary.board.pending >= 1);
+  assert.deepEqual(summary.board, { mirrored: 3, pending: 1, error: 'FORBIDDEN: no grant' });
 
   refuse = false; now += 60_000;
   await roster.resync({ minIntervalMs: 0 });
   await roster.resync({ minIntervalMs: 0 });
-  assert.deepEqual(roster.summary().board, { mirrored: 3, pending: 0, error: null });
+  assert.deepEqual(roster.summary().board, { mirrored: 4, pending: 0, error: null });
+});
+
+test('roster summary: a failed archive mirror shows its error and counts as pending (#81)', async () => {
+  let now = 1000, fail = false;
+  const mirror = { sync: async view => { if (fail && view.status === 'archived') throw Object.assign(new Error('boom'), { code: 'DOWN' }); return { profileId: 'p', version: 1 }; } };
+  const roster = new Roster({ mirror, now: () => now });
+  roster.create({ name: 'gone', model: 'haiku' });
+  await roster.resync({ minIntervalMs: 0 });
+  assert.deepEqual(roster.summary().board, { mirrored: 1, pending: 0, error: null });
+  fail = true; now += 1000;
+  roster.archive('gone', { expectedVersion: 1 });
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(roster.summary().board, { mirrored: 0, pending: 1, error: 'DOWN: boom' });
+  fail = false; now += 60_000;
+  await roster.resync({ minIntervalMs: 0 });
+  assert.deepEqual(roster.summary().board, { mirrored: 1, pending: 0, error: null });
+});
+
+test('roster summary: unknown statuses are not counted as active (#81)', () => {
+  const roster = new Roster({ state: { agents: [{ name: 'x', role: 'coder', status: 'weird', version: 1 }], teams: [] } });
+  assert.equal(roster.summary().agents.active.total, 0);
 });
