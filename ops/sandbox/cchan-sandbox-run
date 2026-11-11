@@ -1,0 +1,29 @@
+#!/bin/bash
+# Run one command inside C-chan's agent sandbox (#71, docs/SANDBOX.md), as cchan-agents with the systemd hardening
+# in /usr/local/lib/cchan-sandbox/properties, in its own transient unit inside cchan-agents.slice.
+# Root only (systemd-run on the system manager). Usage:
+#   cchan-sandbox-run [--cwd DIR] [--max-seconds N] [--unit NAME] -- command [args...]
+# The command's stdin/stdout/stderr are passed through; the exit status is the command's.
+set -euo pipefail
+PROPS=/usr/local/lib/cchan-sandbox/properties
+ROOT=/var/lib/cchan-agents
+cwd=$ROOT/home max=3600 unit=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --cwd) cwd=$2; shift 2 ;;
+    --max-seconds) max=$2; shift 2 ;;
+    --unit) unit=(--unit "$2"); shift 2 ;;
+    --) shift; break ;;
+    *) echo "cchan-sandbox-run: unknown option $1" >&2; exit 64 ;;
+  esac
+done
+[ $# -gt 0 ] || { echo "cchan-sandbox-run: no command" >&2; exit 64; }
+case $cwd in "$ROOT"|"$ROOT"/*) ;; *) echo "cchan-sandbox-run: --cwd must be under $ROOT" >&2; exit 64 ;; esac
+[[ $max =~ ^[0-9]+$ ]] || { echo "cchan-sandbox-run: bad --max-seconds" >&2; exit 64; }
+props=()
+while IFS= read -r line; do
+  case $line in ''|'#'*) continue ;; esac
+  props+=(-p "$line")
+done < "$PROPS"
+exec systemd-run --quiet --wait --pipe --collect --service-type=exec "${unit[@]}" \
+  "${props[@]}" -p "WorkingDirectory=$cwd" -p "RuntimeMaxSec=$max" -- "$@"

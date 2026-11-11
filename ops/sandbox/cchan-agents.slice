@@ -1,0 +1,10 @@
+# Resource ceiling shared by everything C-chan's agents run (#71). The server is small (8 cores, 16 GB RAM, GTX 1060);
+# the companion, Board and game servers keep the rest.
+[Unit]
+Description=C-chan agent sandbox
+
+[Slice]
+CPUQuota=400%
+MemoryHigh=5G
+MemoryMax=6G
+TasksMax=1024

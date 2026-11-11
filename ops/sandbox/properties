@@ -1,0 +1,28 @@
+# systemd properties for every process in C-chan's agent sandbox (#71, docs/SANDBOX.md).
+# Read by cchan-sandbox-run (one systemd-run -p per line); the agent runner (#72) uses the same list.
+User=cchan-agents
+Group=cchan-agents
+Slice=cchan-agents.slice
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+TemporaryFileSystem=/var/lib:ro /opt:ro /srv:ro /mnt:ro /media:ro
+BindPaths=/var/lib/cchan-agents
+InaccessiblePaths=-/var/log -/var/mail -/var/spool -/var/backups -/var/cache -/etc/letsencrypt -/etc/ssl/private -/run/user -/root
+Environment=HOME=/var/lib/cchan-agents/home PATH=/var/lib/cchan-agents/bin:/usr/local/bin:/usr/bin:/bin CLAUDE_CONFIG_DIR=/var/lib/cchan-agents/claude DISABLE_AUTOUPDATER=1 GIT_TERMINAL_PROMPT=0
