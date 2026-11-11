@@ -4,6 +4,7 @@ import { execFile, spawn as nodeSpawn } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mergeAccepted, DEFAULT_IDENTITY } from './agent-merge.mjs';
+import { releaseDesktop } from './desktop-release.mjs';
 
 export const WRAPPER = '/usr/local/sbin/cchan-sandbox-run';
 export const SANDBOX_NODE = '/var/lib/cchan-agents/bin/node';
@@ -101,5 +102,12 @@ export class SandboxOps {
     return mergeAccepted({ origin: origin.trim(), source: dir, branch, expectedHead, base, ticketNumber, identity, testCommand, prepareCommand,
       tmp, sandboxDir: join(this.#root, 'merge'), sandbox: (command, { cwd, timeoutMs }) => [this.#sudo, '-n', WRAPPER, '--cwd', cwd,
         '--max-seconds', String(Math.ceil((timeoutMs ?? 1_800_000) / 1000)), '--', ...command] });
+  }
+
+  // The desktop release after a merge (#90): owner-side, like the push, from a fresh clone of `origin` at exactly the
+  // merge commit; never from the sandbox's clone. See src/desktop-release.mjs.
+  async releaseDesktop({ origin, commit, base, dataDir, buildCommand, publishCommand, home, buildTimeoutMs, publishTimeoutMs, tmp = tmpdir() }) {
+    if (typeof origin !== 'string' || !origin.trim()) return { status: 'error', commit, output: 'No origin: set config.merge.origin.' };
+    return releaseDesktop({ origin: origin.trim(), commit, base, dataDir, buildCommand, publishCommand, home, buildTimeoutMs, publishTimeoutMs, tmp });
   }
 }

@@ -235,6 +235,20 @@ export class BoardReporter {
     return { done: false };
   }
 
+  // The desktop release after a merge (#90): version and installer sha256, or the error, on the ticket's thread. A merge
+  // that does not change the desktop version posts nothing.
+  async release(run) {
+    const r = run.release ?? {};
+    if (!run.board?.merge || ['no_bump', 'no_desktop'].includes(r.reason)) return;
+    const at = `from ${run.base} @ ${String(r.commit).slice(0, 10)}`;
+    const body = r.status === 'published'
+      ? `Desktop ${r.version} published ${at} (was ${r.served ?? 'none'}). Installer ${r.file} sha256 ${r.sha256}. Installed apps update through the in-app updater. Run ${run.id}.`
+      : r.status === 'skipped'
+        ? `Desktop release skipped ${at}: ${String(r.output).slice(0, 500)} Nothing was published. Run ${run.id}.`
+        : `Desktop release ${r.version ?? ''} ${at} failed (${r.status}). ${r.status === 'build_failed' ? 'Nothing was published' : `The server still serves ${r.served ?? 'the previous version'}`}; main is unchanged. Run ${run.id}.\n\nOutput:\n${String(r.output).slice(-12000)}`;
+    await this.#post(run, body.slice(0, 19000), `release-${r.status}`);
+  }
+
   // The reviewer's report goes on the ticket's thread; the ticket itself is not changed (C-chan accepts or returns it).
   async #finishReview(run, summary) {
     const result = run.result ?? {};
