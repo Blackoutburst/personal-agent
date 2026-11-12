@@ -59,7 +59,7 @@ need our own helper process, our own checksum and relaunch logic, all untestable
 2. `scripts/build-desktop.sh` builds the three files above.
 3. `scripts/publish-desktop.sh` (Blackout's step) copies the installer, blockmap and `latest.yml` into
    `<COMPANION_DATA_DIR>/downloads/` (default `~/personal-agent-data`) and writes `desktop.json` last:
-   `{"version":"0.4.0","file":"Companion-Setup-0.4.1-x64.exe"}`. It refuses to publish if `latest.yml` is for another
+   `{"version":"0.4.1","file":"Companion-Setup-0.4.1-x64.exe"}`. It refuses to publish if `latest.yml` is for another
    version. That folder lives outside the checkout, so `ops/release.mjs` leaves it alone and the service serves the new
    build at once. Nothing is committed to git.
 

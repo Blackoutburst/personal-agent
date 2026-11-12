@@ -3,7 +3,7 @@ import { basename, dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 
 // The Windows desktop app download (docs/DESKTOP.md). <dataDir>/downloads/desktop.json names the current build:
-// {"version":"0.4.0","file":"Companion-Setup-0.4.0-x64.exe"} (the NSIS installer). Owner-only; 404 when no valid build is published.
+// {"version":"x.y.z","file":"Companion-Setup-x.y.z-x64.exe"} (the NSIS installer). Owner-only; 404 when no valid build is published.
 // The same folder is the electron-updater feed (#89): /api/desktop/update/latest.yml, <file> and <file>.blockmap, same owner check.
 const FILE = /^[A-Za-z0-9._-]{1,80}\.exe$/;
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+$/;

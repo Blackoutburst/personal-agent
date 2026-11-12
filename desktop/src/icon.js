@@ -11,4 +11,22 @@ function dottedBitmap(img) {
   const buffer = withDot(raw, side);
   return { buffer, width: side, height: side };
 }
-module.exports = { dottedBitmap };
+
+// The cached icon factory main.js uses (nativeImage is injected so tests can run this exact code against a stand-in that
+// enforces createFromBitmap's contract). Any failure in the dotted path keeps the plain icon and logs (#93).
+function makeAppIcon({ nativeImage, iconPath, log = console.error }) {
+  const cache = new Map();
+  return function appIcon(unreadLook, size) {
+    const key = `${unreadLook}:${size}`;
+    if (!cache.has(key)) {
+      let img = nativeImage.createFromPath(iconPath).resize({ width: size, height: size, quality: 'best' });
+      if (unreadLook) {
+        try { const b = dottedBitmap(img); img = nativeImage.createFromBitmap(b.buffer, { width: b.width, height: b.height }); }
+        catch (e) { log('unread icon failed, using the plain icon:', e); }
+      }
+      cache.set(key, img);
+    }
+    return cache.get(key);
+  };
+}
+module.exports = { dottedBitmap, makeAppIcon };

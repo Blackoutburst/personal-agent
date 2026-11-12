@@ -9,7 +9,7 @@ const updater = require('./src/updater');
 const settingsStore = require('./src/settings');
 const { parseArrival, createUnread, toastFor, tooltip } = require('./src/unread');
 const { badgeBitmap } = require('./src/badge');
-const { dottedBitmap } = require('./src/icon');
+const { makeAppIcon } = require('./src/icon');
 
 app.setName('Companion');
 // Persistent default session: cookies from the platform login survive restarts.
@@ -35,20 +35,7 @@ function openChat(hash) {
 }
 function looking() { return !!win && win.isVisible() && !win.isMinimized() && win.isFocused(); }
 // The companion icon, plain or with the web favicon's unread dot (src/dot.js); built once per size.
-const iconCache = new Map();
-function appIcon(unreadLook, size) {
-  const key = `${unreadLook}:${size}`;
-  if (!iconCache.has(key)) {
-    let img = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
-    img = img.resize({ width: size, height: size, quality: 'best' });
-    if (unreadLook) {
-      try { const b = dottedBitmap(img); img = nativeImage.createFromBitmap(b.buffer, { width: b.width, height: b.height }); }
-      catch (e) { console.error('unread icon failed, using the plain icon:', e); } // never take the main process down (#93)
-    }
-    iconCache.set(key, img);
-  }
-  return iconCache.get(key);
-}
+const appIcon = makeAppIcon({ nativeImage, iconPath: path.join(__dirname, 'build', 'icon.png') });
 function renderUnread(n) {
   try {
     if (tray) { tray.setToolTip(tooltip(n)); tray.setImage(appIcon(n > 0, 32)); }
