@@ -144,6 +144,14 @@ main { flex: 1; min-height: 0; display: flex; }
 .bubble.user { align-self: flex-end; background: var(--body); color: var(--on-body); border-bottom-right-radius: 8px; }
 .messages li + li.user, .messages li + li.companion { margin-top: 0; }
 .messages li.user + li.companion, .messages li.companion + li.user { margin-top: 10px; }
+.message-text { white-space: normal; }
+.message-text p { margin: 0; }
+.message-text > * + * { margin-top: 6px; }
+.message-text code { font: 0.9em ui-monospace, SFMono-Regular, Consolas, monospace; padding: 1px 5px; border-radius: 6px; background: rgba(0,0,0,.08); }
+.message-text pre { margin: 6px 0 0; padding: 8px 10px; border-radius: 10px; background: rgba(0,0,0,.08); overflow-x: auto; white-space: pre; }
+.message-text pre code { padding: 0; background: none; font-size: 13.5px; }
+.message-text blockquote { margin: 4px 0 0; padding-left: 10px; border-left: 3px solid currentColor; opacity: .85; }
+.message-text ul, .message-text ol { margin: 4px 0 0; padding-left: 20px; }
 .bubble a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
 .day { align-self: center; font-size: 12px; color: var(--soft); background: var(--glass); padding: 3px 12px; border-radius: 999px; margin: 12px 0 6px; }
 @keyframes pop { from { transform: translateY(6px) scale(.98); opacity: 0; } to { transform: none; opacity: 1; } }
