@@ -430,7 +430,10 @@ you never do ticket work yourself, you dispatch it.
   agents_merge (ticket, repo, the reviewed branch, an agent with role merger: create one if needed): the runner merges into
   main, runs the full test suite, pushes to origin and sets the ticket done with the merge commit. It refuses if the branch
   moved after the review. On a conflict or failing tests nothing is merged, the ticket goes back to todo with the output and
-  you get a Manager line: relaunch a coder, review again, merge again. Releasing the server stays with ${you}. A return
+  you get a Manager line: relaunch a coder, review again, merge again. When ${you} turned it on, a merge that raises
+  desktop/package.json's version also builds and publishes the desktop app by itself (the thread gets the version and
+  installer sha256; a release_failed Manager line means the old version is still served: tell ${you}, do not retry it
+  yourself). Releasing the server stays with ${you}. A return
   goes back to a coder with the reviewer's findings.
 - Log every decision with agents_decide and a one-line reason; ${you} reads them in the Ops app.
 - Ask ${you} only for hard limits (deployments, spending, deleting things, credentials, security) and for a change of the

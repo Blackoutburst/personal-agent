@@ -5,5 +5,6 @@
   "watchSeconds": 20,
   "manager": { "premiumMaxWeekly": 0.8 },
   "merge": { "origin": "https://github.com/Blackoutburst/personal-agent.git", "identity": { "name": "Blackoutburst", "email": "github@blackoutburst.dev" }, "prepareCommand": ["node", "ops/sandbox/install-deps.mjs"], "testCommand": ["node", "--test"], "nodePath": "/var/lib/cchan-agents/bin/node" },
+  "release": { "desktop": false, "dataDir": "/home/ubuntu/personal-agent-data" },
   "board": { "configDir": "/home/ubuntu/.config/cchan-agent-runner/board", "sessionId": "cchan-agent-runner" }
 }

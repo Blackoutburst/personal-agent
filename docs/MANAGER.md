@@ -91,6 +91,34 @@ are archived. On a conflict or failing tests nothing is merged: the ticket goes 
 Manager line `merge_refused` tells C-chan to relaunch a coder (the next delivery is reviewed and merged again). Details:
 [AGENT-RUNNER.md](AGENT-RUNNER.md#roster) (merge runs). Releasing the server stays with Blackout.
 
+## Desktop release after a merge (#90)
+
+With `"release": { "desktop": true }` in the runner config, a merge that goes through (full suite passed, main pushed)
+and raises `desktop/package.json`'s version also releases the Windows desktop app, so nobody runs the scripts by hand.
+The runner does it itself, without a model and owner-side (the same account as the push, never in the agent sandbox),
+in `src/desktop-release.mjs`:
+
+1. a fresh clone of `config.merge.origin`, checked out at exactly the merge commit, which must be on `origin/main`
+   (never an agent branch, never the sandbox's clone);
+2. the gate: the version on the merge commit must be higher than on its first parent (the main it was merged into) and
+   higher than the version the server serves (`<dataDir>/downloads/desktop.json`). No bump, a lower or equal version, or
+   a server that already serves it: nothing is built or published. An `already_merged` result releases nothing either;
+3. `bash scripts/build-desktop.sh` in that clone (environment: only `PATH`, `HOME` = `release.home` or a throw-away dir,
+   `LANG`, `CI`, `NPM_CLI` if set), then `bash scripts/publish-desktop.sh` with `COMPANION_DATA_DIR=<dataDir>`;
+4. a check that `desktop.json` now names the new version and that the served installer has the built installer's sha256.
+
+The ticket thread gets "Desktop X published … Installer … sha256 …", or the failure with its output. A failed build
+publishes nothing. A failed publish or check puts `latest.yml` and `desktop.json` back as they were and removes the
+installer files it added, so the previously published version is still served. Either way the Manager line
+`release_failed` is raised; main is never rolled back. A runner restart in the middle of a release raises the same line
+(then check that `desktop.json` and `latest.yml` name the same version). Releases run one at a time. Installed apps
+pick the new version up through the in-app updater (#89, [DESKTOP.md](DESKTOP.md)). Server releases (restarting the
+companion) are not part of this.
+
+The build runs the merged commit's code (the build script, `npm install` with its install scripts, electron-builder) as
+the owner account, as it did when Blackout ran it by hand; that is the trust Blackout gives an accepted, reviewed merge
+by turning this on.
+
 Reviewers can operate the real web app with the verification tool (#78) and attach screenshots and a manifest as
 evidence. Android is not covered by that tool.
 
@@ -169,5 +197,15 @@ Only the owner can grant these on the Board and on the host:
    packages for the suite, e.g. a `prepareCommand` such as `["node","ops/sandbox/install-deps.mjs"]`); create a merger
    agent (`agents_save_agent`: `role: merger`, any model, it is not used). No directory has to be created: the sandbox
    user makes `/var/lib/cchan-agents/merge` itself. The merge steps run on `/var/lib/cchan-agents/bin/node` by default (`config.merge.nodePath` overrides; `null` means the default). The runner's own node under `/opt` is not used: the sandbox hides `/opt`, so the binary must live under the bound `/var/lib/cchan-agents` and be executable by the sandbox user, and a node older than `engines.node` is refused with a readable `merge_failed` reason (#92).
-6. **Approve a project in chat**, for example: "C-chan, you manage the Personal Agent project: build X." She records
+6. **Desktop release (#90), one time, optional:** install this branch and restart the runner. Check that the owner
+   account can build by hand once (`scripts/build-desktop.sh` from a clean clone: npm or network for the pinned npm,
+   Electron downloads) and that `~/personal-agent-data/downloads` is where the companion serves the app from. Then add to
+   `~/.config/cchan-agent-runner/config.json`:
+   `"release": { "desktop": true }`; optional keys: `"dataDir"` (default `~/personal-agent-data`, the companion's
+   `COMPANION_DATA_DIR`), `"home"` (a persistent HOME for the build so npm and Electron downloads are cached, e.g.
+   `"/home/ubuntu/.cache/cchan-desktop-release"`), `"buildTimeoutMs"` (default one hour), `"publishTimeoutMs"`,
+   `"buildCommand"` / `"publishCommand"` (argv arrays run in the clone, defaults the two scripts). Restart the runner.
+   **Turning it off:** remove the key or set `"desktop": false` and restart the runner; merges then go on as before and
+   publish nothing. Requires merging to be on (step 5).
+7. **Approve a project in chat**, for example: "C-chan, you manage the Personal Agent project: build X." She records
    it, and from then on works it alone.

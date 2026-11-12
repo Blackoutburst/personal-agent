@@ -63,6 +63,8 @@ const manager = new Manager({ file: managerFile, projects: config.projects, log,
 // Merge (#85): config.merge turns the merge step on; it needs `origin` (the push target, e.g. https://github.com/Blackoutburst/personal-agent.git). Defaults: Blackoutburst's configured git identity, `node --test`.
 const runner = new AgentRunner({ file: stateFile, ops: new SandboxOps(), log, limits: config.limits ?? {}, roster, manager,
   merge: config.merge && typeof config.merge === 'object' ? config.merge : null,
+  // Desktop release after a merge (#90, docs/MANAGER.md): off unless config.release.desktop is true.
+  release: config.release?.desktop === true ? { dataDir: join(HOME, 'personal-agent-data'), ...config.release } : null,
   reporter: new BoardReporter({ client: board, projects: config.projects, ownerId: config.ownerId, log }) });
 runner.on('event', event => log(`event ${event.seq} ${event.type} ${event.runId ?? ''} #${event.ticketNumber ?? '?'} ${event.state ?? event.kind ?? ''}`));
 
