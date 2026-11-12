@@ -183,6 +183,8 @@ function startUpdater() {
     // The feed is owner-only: send the window session's login cookies (electron-updater does not use the session itself).
     getHeaders: async () => ({ Cookie: updater.cookieHeader(await session.defaultSession.cookies.get({ url: SITE })) }),
     onState: renderUpdate,
+    dismissed: settings.updateDismissed,
+    onDismiss: (v) => { settings = { ...settings, updateDismissed: v }; try { settingsStore.save(settingsFile(), settings); } catch {} },
     onRestart: () => { quitting = true; },   // the close handler would otherwise hide the window instead of letting it quit
     log: (...a) => console.warn(...a),
   });

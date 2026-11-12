@@ -75,15 +75,19 @@ Clients:
   browser (not phones, tablets or the app itself) and only when a build is published (`public/desktop-card.mjs`).
 - App (`desktop/src/updater.js`, wired in `main.js`): 15 s after start and every 24 h it checks the feed. The feed needs the
   login, and electron-updater does not use the window's session, so the window session's cookies for the site are sent as
-  a `Cookie` header. A newer version downloads by itself; a bar at the bottom of the window shows
-  "Downloading update x.y.z: n%" with a progress bar, then "Update x.y.z is ready. **Restart to update**" which calls
+  a `Cookie` header. Nothing downloads by itself (#97, `autoDownload = false`): a found version shows a card in the
+  window's bottom-right corner, "Update x.y.z is available" with a **Download** button. A click starts the download
+  (progress bar and "n%"), then "Update x.y.z is ready" with **Restart to update**, which calls
   `quitAndInstall(false, true)`: the app quits, the installer runs with its window visible (`isSilent=false`, a short progress window
   of the per-user installer, no admin prompt) and starts the new version when it finishes. Until you click it, nothing is replaced; the old version keeps running.
-  The bar's × (`companion-update://dismiss`, the reducer's `dismiss` action) hides the bar for that version, also across the daily
-  re-checks and page reloads, until the app is restarted; a newer version or an error shows the bar again. A dismissed ready
-  update stays ready: the tray menu then offers "Restart to update (x.y.z)".
-  The bar's links are `companion-update://restart|retry|dismiss`, intercepted in `will-navigate` (nothing is exposed to the page).
-- Errors: a failed download (offline, 401/403, 404, checksum mismatch) shows a plain message and "Try again" on the bar; the
+  The card is injected into the page and styled only with the app's theme variables (`--card --ink --line --radius --glow`,
+  errors `--danger/--danger-bg`) and the accent pair `--body`/`--on-body` (same as `.button.primary`), so light/dark and a
+  changed accent colour apply; no native dialog. Its × (`companion-update://dismiss`) hides the card for that version; the
+  version is saved in `settings.json` (`updateDismissed`), so it stays hidden across restarts until a newer version or an error.
+  A dismissed ready update stays ready: the tray menu then offers "Restart to update (x.y.z)".
+  Actions are `companion-update://download|restart|retry|dismiss`, intercepted in `will-navigate` (nothing is exposed to the page).
+  (Not a preload `contextBridge`: the existing link interception from #89 was kept, so the page gets no new API.)
+- Errors: a failed download (offline, 401/403, 404, checksum mismatch) shows a plain message and "Try again" (downloads again) on the card; the
   installed version is untouched. A failed *background check* (offline at startup) is silent; the next check is in 24 h.
 - Only installed builds update themselves (`app.isPackaged`, not `PORTABLE_EXECUTABLE_FILE`).
 
@@ -192,3 +196,9 @@ Not verified in a live Electron window on Windows (no signing-in possible here);
   that `quitAndInstall` relaunches 0.5.0, and the wine-free uninstaller extraction (the installer was not executed, so its
   uninstaller is untested). The first real test is: install 0.4.0, publish a higher version, wait for the check.
   The 0.4.0 installer is unsigned: SmartScreen warns on first run.
+
+- #97 update flow: **not run on real Windows and not in a live Electron window.** Ran: the reducer and electron-updater wiring
+  against a fake autoUpdater (no download without a click, progress, restart, error/retry, saved dismissal), the card's script in a
+  DOM stand-in, and headless-Chromium screenshots (the #78 browser, not the verify steps, which have no script step) of the card in each
+  state, light/dark and with a changed accent, on `public/companion.css`. Unverified: the card inside the real app page and
+  that electron-updater's `downloadUpdate()` after a user-click behaves as in its docs. Version 0.5.0.
