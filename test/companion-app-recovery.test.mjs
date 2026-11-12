@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { idleDelay } from '../public/idle.mjs';
 import { splitBubbles } from '../public/bubbles.mjs';
+import { formatMessageTime, burstEnds } from '../public/message-time.mjs';
 import { renderMarkdown } from '../public/group-ui.mjs';
 
 // Execute the actual application body, replacing only imported dependencies.
@@ -72,7 +73,7 @@ function fixture({ hash = '#chat', failures = 0, firstUse = false, runtime: prof
     renderCharacter: () => '<svg></svg>', CHARACTERS: [{ id: 'pip', label: 'Pip', hint: 'Synthetic' }], COLORS: { peach: { body: '#a', shade: '#b', light: '#c' } }, OUTFITS: [], HAS_OUTFITS: () => false,
     createRemindersUI: feature, createCalendarUI: feature, createStudioUI: feature, createMemoryUI: feature, createPersonalityUI: feature, createContactUI: feature, createOwnerProfileUI: feature, createWeatherUI: feature, createWebPushUI: feature, showDesktopCard: async () => false, renderMarkdown, createGroupUI: () => ({ clear() {}, refresh: async () => {}, open: async () => {}, close() {} }), createBoardUI: options => { boardOptions.push(options); return { clear() {}, refresh: async () => { boardCalls.push('refresh'); }, show: async () => { boardCalls.push('show'); }, hide() {},
       markRead: async id => { boardCalls.push('read:' + id); }, archive: async (id, done) => { boardCalls.push(`archive:${id}:${done}`); return true; },
-      topic: id => id === BOARD_THREAD ? { threadId: id, label: '#15 · Fix login', archived: false } : null }; }, createPushPresence: () => ({ update() {} }), idleDelay, splitBubbles, createActivity: () => ({ touch() {}, quietMs: () => 0, visible: () => true, focused: () => true, onWake() {} }), createMotion: () => ({ wake() {}, rest() {}, update() {} }), createActiveClient: () => ({ update() {} }), createUnreadMark: () => ({ arrived() {}, check() {}, clear() {}, title: base => base }), createVoiceRecorder: () => ({ start() {}, cancel() {}, send() {}, recording: () => false, supported: () => false }), voiceView: () => new Element(), registerServiceWorker: () => {}, renderPeerCard: () => new Element(),
+      topic: id => id === BOARD_THREAD ? { threadId: id, label: '#15 · Fix login', archived: false } : null }; }, createPushPresence: () => ({ update() {} }), idleDelay, splitBubbles, formatMessageTime, burstEnds, createActivity: () => ({ touch() {}, quietMs: () => 0, visible: () => true, focused: () => true, onWake() {} }), createMotion: () => ({ wake() {}, rest() {}, update() {} }), createActiveClient: () => ({ update() {} }), createUnreadMark: () => ({ arrived() {}, check() {}, clear() {}, title: base => base }), createVoiceRecorder: () => ({ start() {}, cancel() {}, send() {}, recording: () => false, supported: () => false }), voiceView: () => new Element(), registerServiceWorker: () => {}, renderPeerCard: () => new Element(),
     fetch: async (url, options = {}) => { if (url === 'android.json') return response({}, 404); const input = JSON.parse(options.body); requests.push(input); const queue = queues.get(input.action), next = queue?.shift();
       if (next) return await next;
       if (input.action === 'setProfile') setupSaved = true;

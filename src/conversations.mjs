@@ -507,11 +507,11 @@ export class Conversations {
   }
 
   #message(row) {
-    if(row.role==='peer') return {id:row.id,threadId:row.thread_id,role:'peer',text:row.text,peer:JSON.parse(row.peer_json)};
+    if(row.role==='peer') return {id:row.id,threadId:row.thread_id,role:'peer',text:row.text,at:row.created_at,peer:JSON.parse(row.peer_json)};
     const attachments = this.#files?.list(row.id) ?? [];
     // #57: replies stored before stray tags were stripped are cleaned when shown.
     const text = row.role === 'assistant' ? stripFeelingTags(row.text).text : row.text;
-    return { id: row.id, threadId: row.thread_id, role: row.role, text, ...(row.request_id ? { requestId: row.request_id } : {}),
+    return { id: row.id, threadId: row.thread_id, role: row.role, text, at: row.created_at, ...(row.request_id ? { requestId: row.request_id } : {}),
       ...(row.feeling ? { feeling: row.feeling } : {}), ...(attachments.length ? { attachments } : {}) };
   }
 

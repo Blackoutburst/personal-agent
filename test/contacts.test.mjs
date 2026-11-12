@@ -44,7 +44,7 @@ test('exact owner-turn send atomically creates two attributed immutable cards wi
   assert.equal(own.length,1);assert.equal(other.length,1);assert.equal(own[0].text,text);assert.equal(other[0].text,text);
   assert.equal(own[0].role,'peer');assert.equal(own[0].peer.direction,'sent');assert.equal(own[0].peer.name,'Mochi');
   assert.equal(other[0].peer.direction,'received');assert.equal(other[0].peer.name,'Pip');assert.equal(other[0].peer.ownerLabel,'Owner A');
-  for(const row of [...own,...other])assert.deepEqual(Object.keys(row).sort(),['id','threadId','role','text','peer'].sort());
+  for(const row of [...own,...other])assert.deepEqual(Object.keys(row).sort(),['id','threadId','role','text','at','peer'].sort());
   assert.equal(f.calls(),0);assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM conv_turns').get().n,0);assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM conv_wakes').get().n,0);
   await assert.rejects(f.conv.handle(f.c,{action:'snapshot',threadId:turn.threadId}),{code:'NOT_FOUND'});
 });

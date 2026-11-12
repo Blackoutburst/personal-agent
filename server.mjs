@@ -79,6 +79,7 @@ const STATIC = new Map([
   ['/desktop-card.mjs', ['desktop-card.mjs', 'text/javascript; charset=utf-8']],
   ['/unread-mark.mjs', ['unread-mark.mjs', 'text/javascript; charset=utf-8']],
   ['/bubbles.mjs', ['bubbles.mjs', 'text/javascript; charset=utf-8']],
+  ['/message-time.mjs', ['message-time.mjs', 'text/javascript; charset=utf-8']],
   ['/voice-ui.mjs', ['voice-ui.mjs', 'text/javascript; charset=utf-8']],
   // The character handbook zip (Look page; built by ops/build-character-kit.py from character-kit/).
   ['/character-kit.zip', ['character-kit.zip', 'application/zip']],
