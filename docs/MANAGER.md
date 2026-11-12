@@ -196,7 +196,7 @@ Only the owner can grant these on the Board and on the host:
    and watch the real push of the first merge; make sure `node --test` works in a fresh clone in the sandbox (the
    packages for the suite, e.g. a `prepareCommand` such as `["node","ops/sandbox/install-deps.mjs"]`); create a merger
    agent (`agents_save_agent`: `role: merger`, any model, it is not used). No directory has to be created: the sandbox
-   user makes `/var/lib/cchan-agents/merge` itself.
+   user makes `/var/lib/cchan-agents/merge` itself. The merge steps run on `/var/lib/cchan-agents/bin/node` by default (`config.merge.nodePath` overrides; `null` means the default). The runner's own node under `/opt` is not used: the sandbox hides `/opt`, so the binary must live under the bound `/var/lib/cchan-agents` and be executable by the sandbox user, and a node older than `engines.node` is refused with a readable `merge_failed` reason (#92).
 6. **Desktop release (#90), one time, optional:** install this branch and restart the runner. Check that the owner
    account can build by hand once (`scripts/build-desktop.sh` from a clean clone: npm or network for the pinned npm,
    Electron downloads) and that `~/personal-agent-data/downloads` is where the companion serves the app from. Then add to

@@ -96,10 +96,14 @@ export class SandboxOps {
   // user can rewrite) with the owner's configured identity and keys. See src/agent-merge.mjs. The owner's clones go to
   // its own (private) temp dir; the sandbox user makes the test copy under <root>/merge itself, so nothing has to be
   // created there for the owner.
-  async merge({ repo, branch, base, expectedHead, ticketNumber, origin = null, identity = DEFAULT_IDENTITY, testCommand, prepareCommand, tmp = tmpdir() }) {
+  async merge({ repo, branch, base, expectedHead, ticketNumber, origin = null, identity = DEFAULT_IDENTITY, testCommand, prepareCommand, nodePath = null, tmp = tmpdir() }) {
+    // The node that runs the merge steps must be visible inside the sandbox: ops/sandbox/properties hides /opt, so the
+    // runner's own process.execPath (under /opt) is not usable there. Default to the root-owned <root>/bin/node, which is
+    // also first on the sandbox PATH. A null/empty config value must not fall back to a bare `node` (#92).
+    if (typeof nodePath !== 'string' || !nodePath.trim()) nodePath = join(this.#root, 'bin', 'node');
     if (typeof origin !== 'string' || !origin.trim()) return { status: 'error', output: 'No push target: set config.merge.origin (e.g. https://github.com/Blackoutburst/personal-agent.git).' };
     const dir = join(this.#root, 'repos', repo + '.git');
-    return mergeAccepted({ origin: origin.trim(), source: dir, branch, expectedHead, base, ticketNumber, identity, testCommand, prepareCommand,
+    return mergeAccepted({ origin: origin.trim(), source: dir, branch, expectedHead, base, ticketNumber, identity, testCommand, prepareCommand, nodePath,
       tmp, sandboxDir: join(this.#root, 'merge'), sandbox: (command, { cwd, timeoutMs }) => [this.#sudo, '-n', WRAPPER, '--cwd', cwd,
         '--max-seconds', String(Math.ceil((timeoutMs ?? 1_800_000) / 1000)), '--', ...command] });
   }
