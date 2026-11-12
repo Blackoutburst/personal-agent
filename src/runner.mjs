@@ -140,7 +140,11 @@ export class CompanionRunner {
           || images.some(path => typeof path !== 'string' || !path || path.length > 4096 || /[\x00-\x1f]/.test(path))) throw new TypeError('Invalid turn input');
       toolPolicy = releaseCheck ? narrowToolPolicy({ tools: WEB_TOOLS, board: null })
         : narrowToolPolicy({ tools: owner.tools, board: owner.board }, allowedTools, [...configured, ...appServers], toolFilter);
-      toolPolicy = bindBoardSession(toolPolicy, owner.label, boardConversationKey);
+      // #94: on unattended turns the Board bridge checks every write's project against the standing approvals, asking
+      // the app with this turn's unattended scheduler token. Without that token it refuses every Board write.
+      const scheduler = unattended === true ? configured.find(server => server?.name === 'scheduler') : null;
+      toolPolicy = bindBoardSession(toolPolicy, owner.label, boardConversationKey, unattended === true ? { gate: {
+        url: scheduler?.env?.COMPANION_SCHEDULER_URL ?? null, token: scheduler?.env?.COMPANION_SCHEDULER_TOKEN ?? null } } : {});
       if (owner.provider === 'codex' && toolPolicy.tools.length
           && (toolPolicy.tools.length !== WEB_TOOLS.length || !WEB_TOOLS.every(tool => toolPolicy.tools.includes(tool)))) {
         throw new TypeError('Codex web tools must be selected together');

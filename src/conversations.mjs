@@ -32,7 +32,9 @@ const CONTACT_WAKE = 'contact', TALKING_WAKES = [...OWN_WAKES, CONTACT_WAKE];
 // #94: Manager mode runs unattended. On the companion's own wakes (MANAGER_WAKES) of an owner with at least one active
 // standing approval (manager: true), the manager tools (MANAGER_TOOLS) and the configured Board tools pass. These turns
 // use an unattended scheduler token (server.mjs), so the runner accepts their agent calls only for tickets of approved
-// projects (src/agent-runner-api.mjs). Contact wakes, mail, the Studio calendar and approvals stay as before.
+// projects (src/agent-runner-api.mjs), and their Board bridge lets a Board write through only when its target project,
+// resolved on the Board, is approved (src/board-write-gate.mjs). The approvals > 0 check here only decides whether the
+// tools are offered. Contact wakes, mail, the Studio calendar and approvals stay as before.
 export const MANAGER_WAKES = Object.freeze(['proactive', 'followup', 'heartbeat']);
 const MANAGER_TOOLS = ['mcp__scheduler__agents_launch', 'mcp__scheduler__agents_merge', 'mcp__scheduler__agents_stop', 'mcp__scheduler__agents_decide'];
 export const wakeToolFilter = (kind, { manager = false } = {}) => {

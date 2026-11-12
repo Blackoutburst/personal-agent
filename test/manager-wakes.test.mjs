@@ -206,12 +206,16 @@ test('wake prompt text: own wakes may act in approved projects; personal ask-fir
   const section = managerSection('Blackout');
   assert.match(section, /your own wakes \(check-ins, heartbeats, follow-ups\) may act/);
   assert.match(section, /release\s+claims and write to the Board there without waiting/);
-  assert.match(managed, /The one exception is Manager mode/);
-  assert.match(managed, /Exception: in Manager mode, when you have it, your own wakes and check-ins may\s+write to the Board for a project/);
-  // The old blanket rule now names its exception wherever it appears.
-  for (const rule of ['no Board writes, mail or spending from them; suggest and wait for Blackout.', 'never write to the Board during them.']) {
-    const at = managed.indexOf(rule);
-    assert.ok(at >= 0, rule); assert.match(managed.slice(at, at + 400), /Manager mode/);
+  assert.match(managed, /Board writes from\s+them follow Manager mode/);
+  assert.match(managed, /in Manager mode, when you have it, they may write to the Board for a project\s+Blackout approved there/);
+  assert.match(section, /the app refuses agent launches, merges,\s+stops, decisions and Board writes outside approved projects/);
+  // The old blanket rules are gone; "no Board writes" only appears scoped to unapproved projects.
+  for (const rule of ['no Board writes, mail or spending from them', 'never write to the Board during them', 'for Board writes the rule is yours to keep']) {
+    assert.equal(managed.includes(rule), false, rule);
   }
+  for (const at of [...managed.matchAll(/no Board writes/g)].map(match => match.index)) {
+    assert.match(managed.slice(Math.max(0, at - 200), at + 50), /outside approved projects/);
+  }
+  assert.match(managed, /never a yes for mail or spending/);
   assert.match(managed, /Mail, Blackout's calendar and your contacts' rules stay as above/);
 });

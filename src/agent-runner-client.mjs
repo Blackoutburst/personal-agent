@@ -74,6 +74,14 @@ export async function agentsOperation(agents, companionId, input, { unattended =
     else if (op === 'revokeProject' && typeof rest.projectId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(rest.projectId)) {
       answer = await agents.client.call('POST', `/manager/approvals/${rest.projectId}/revoke`, {});
     }
+    // #94 Board write gate (src/board-write-gate.mjs, asked by the Board bridge of an unattended turn, not a model tool):
+    // whether this project has an active standing approval on the runner. Answers only { projectId, approved }.
+    else if (op === 'boardGate' && typeof rest.projectId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(rest.projectId)) {
+      const view = await agents.client.call('GET', '/manager', null, { timeoutMs: 5000 });
+      const approvals = view.status === 200 && Array.isArray(view.body?.approvals) ? view.body.approvals : [];
+      return { status: 200, body: { projectId: rest.projectId,
+        approved: approvals.some(item => item?.projectId === rest.projectId && item.status === 'active') } };
+    }
     else if (op === 'decide' && object(rest.decision)) answer = await agents.client.call('POST', '/manager/decisions', mark(rest.decision));
     else return failure(400, 'INVALID', 'Invalid agents request.');
     if (op === 'list' && Array.isArray(answer.body.runs)) answer.body.runs = answer.body.runs.slice(-30);
