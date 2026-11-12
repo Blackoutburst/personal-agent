@@ -21,6 +21,7 @@ What was tried:
   version (26.18.0); the script refuses any other version, refuses if `NsisTarget.js` no longer has that branch, and fails the
   build if the pure-JS uninstaller extraction was not actually used (it never falls back to wine). Result: a real NSIS per-user installer built on Linux with no wine. Not run on Windows (see below).
 - Portable target (#84-#88) worked too, and is retired by #89.
+- `scripts/build-desktop.sh` installs with `npm ci` (not `npm install`, which can rewrite `desktop/package-lock.json` and dirty the checkout); a build leaves `git status` clean.
 - The system `npm` on the host is broken (missing `semver`). `scripts/build-desktop.sh` therefore
   checks `npm -v`; if it fails (and `NPM_CLI` is not set) it downloads the pinned `npm-10.9.2.tgz`
   from the registry into a temp dir, verifies its sha512 integrity against the value pinned in the
