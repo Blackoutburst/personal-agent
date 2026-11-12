@@ -108,10 +108,15 @@ export class SandboxOps {
         '--max-seconds', String(Math.ceil((timeoutMs ?? 1_800_000) / 1000)), '--', ...command] });
   }
 
-  // The desktop release after a merge (#90): owner-side, like the push, from a fresh clone of `origin` at exactly the
-  // merge commit; never from the sandbox's clone. See src/desktop-release.mjs.
-  async releaseDesktop({ origin, commit, base, dataDir, buildCommand, publishCommand, home, buildTimeoutMs, publishTimeoutMs, tmp = tmpdir() }) {
+  // The desktop release after a merge (#90, #91): the owner clones `origin` (never the sandbox's clone) and reads the
+  // gate from the merge commit; the build runs in the agent sandbox, through the same wrapper as the merge's tests, in a
+  // copy the sandbox user makes under <root>/release; the runner then publishes with its own code. No merged code runs as
+  // the owner. See src/desktop-release.mjs. (`publishCommand` from older configs is ignored: the merged publish script is
+  // never run.)
+  async releaseDesktop({ origin, commit, base, dataDir, buildCommand, buildTimeoutMs, tmp = tmpdir() }) {
     if (typeof origin !== 'string' || !origin.trim()) return { status: 'error', commit, output: 'No origin: set config.merge.origin.' };
-    return releaseDesktop({ origin: origin.trim(), commit, base, dataDir, buildCommand, publishCommand, home, buildTimeoutMs, publishTimeoutMs, tmp });
+    return releaseDesktop({ origin: origin.trim(), commit, base, dataDir, buildCommand, buildTimeoutMs, tmp,
+      sandboxDir: join(this.#root, 'release'), sandbox: (command, { cwd, timeoutMs }) => [this.#sudo, '-n', WRAPPER, '--cwd', cwd,
+        '--max-seconds', String(Math.ceil((timeoutMs ?? 3_600_000) / 1000)), '--', ...command] });
   }
 }

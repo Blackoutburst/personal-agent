@@ -143,8 +143,9 @@ export class AgentRunner extends EventEmitter {
   // file: JSON state file. ops: sandbox operations (see SandboxOps). reporter: Board hooks (see BoardReporter).
   // roster: C-chan's agent roster (#73); with it, every launch must name an active roster agent and follows its policy.
   // merge (#85): { origin, identity?, testCommand?, prepareCommand? } turns the merge step on (see src/agent-merge.mjs).
-  // release (#90): { desktop: true, dataDir, buildCommand?, publishCommand?, home? } releases the desktop app after a merge
-  // that raises desktop/package.json's version (see src/desktop-release.mjs). Anything but desktop: true leaves it off.
+  // release (#90, #91): { desktop: true, dataDir, buildCommand?, buildTimeoutMs? } releases the desktop app after a merge
+  // that raises desktop/package.json's version: built in the sandbox, published by runner code (src/desktop-release.mjs).
+  // Anything but desktop: true leaves it off.
   // manager: manager mode (#76); it reads the weekly usage from the runs' rate events and refuses Opus/Fable above budget.
   constructor({ file, ops, reporter, roster = null, manager = null, merge = null, release = null, limits = {}, log = () => {}, now = Date.now }) {
     super();
@@ -577,7 +578,8 @@ export class AgentRunner extends EventEmitter {
     } catch (error) { result = { status: 'error', output: error.message }; }
     const status = ['published', 'skipped', 'build_failed', 'publish_failed'].includes(result?.status) ? result.status : 'error';
     const kept = { status, reason: result?.reason ?? null, commit, version: result?.version ?? null, previous: result?.previous ?? null,
-      served: result?.served ?? null, sha256: result?.sha256 ?? null, file: result?.file ?? null, output: text(result?.output, 8000),
+      served: result?.served ?? null, sha256: result?.sha256 ?? null, sha512: result?.sha512 ?? null, file: result?.file ?? null,
+      notes: Array.isArray(result?.notes) ? result.notes.map(note => text(note, 500)).slice(0, 5) : [], output: text(result?.output, 8000),
       startedAt, endedAt: this.#now() };
     this.#set(run, { release: kept }, 'release.ended', { release: status, version: kept.version });
     try { await this.#reporter.release?.(run); } catch (error) { this.#log(`board release post for ${run.id} failed: ${error.code ?? error.message}`); }
@@ -586,11 +588,11 @@ export class AgentRunner extends EventEmitter {
 
   #releaseLine(run) {
     const n = run.ticketNumber ? `#${run.ticketNumber}` : `ticket ${run.ticketId}`, r = run.release ?? {};
-    const what = r.status === 'interrupted' ? 'was cut off by a runner restart; check that downloads/desktop.json and latest.yml name the same version'
+    const what = r.status === 'interrupted' ? 'was cut off by a runner restart; the feed switches latest.yml and desktop.json together, so check which version downloads/desktop.json names'
       : `failed (${r.status})${r.status === 'build_failed' ? '; nothing was published' : '; the previously published version is still served'}`;
     this.note({ type: 'manager.attention', kind: 'release_failed', key: `release:${run.id}`, ticketId: run.ticketId, ticketNumber: run.ticketNumber,
       agent: run.agent, suggestion: `${n}: the desktop release${r.version ? ` of ${r.version}` : ''} from ${String(r.commit).slice(0, 10)} ${what}. `
-        + `Main is merged and unchanged. The output is on the ticket thread; fix the cause, then run scripts/build-desktop.sh and scripts/publish-desktop.sh from that commit, or merge a fix with a new version.` });
+        + `Main is merged and unchanged. The output is on the ticket thread; fix the cause and merge a fix with a new version (or build and publish that commit by hand).` });
   }
 
   // After a merge run (#85): archive the ticket's per-task agents once it is done; raise a Manager line for anything else.
