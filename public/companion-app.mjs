@@ -14,7 +14,7 @@ import { createActiveClient } from './active-client.mjs';
 import { splitBubbles } from './bubbles.mjs';
 import { createVoiceRecorder, voiceView } from './voice-ui.mjs';
 import { createBoardUI } from './board-ui.mjs';
-import { createGroupUI } from './group-ui.mjs';
+import { createGroupUI, renderMarkdown } from './group-ui.mjs';
 import { idleDelay, createActivity, createMotion } from './idle.mjs';
 import { createUnreadMark } from './unread-mark.mjs';
 import { showDesktopCard } from './desktop-card.mjs';
@@ -114,33 +114,9 @@ function draw(element, look, mood, feeling = null) {
     outfit: outfitOf(look), feeling });
   if (element.dataset.markup !== markup) { element.innerHTML = markup; element.dataset.markup = markup; }
 }
-// Text with clickable links and simple **bold** / *italic*, built from text nodes only.
-function textWithLinks(container, text) {
-  container.replaceChildren();
-  for (const part of text.split(/(\*\*[^*\n]+\*\*|(?<![\w*])\*[^*\n]+\*(?![\w*]))/)) {
-    if (/^\*\*[^*\n]+\*\*$/.test(part)) { const strong = document.createElement('strong'); linkify(strong, part.slice(2, -2)); container.append(strong); }
-    else if (/^\*[^*\n]+\*$/.test(part)) { const em = document.createElement('em'); linkify(em, part.slice(1, -1)); container.append(em); }
-    else linkify(container, part);
-  }
-}
-// [label](https://…) shows the label; bare http(s) URLs show themselves. Anything else stays text.
-function linkify(container, text) {
-  let offset = 0;
-  for (const match of text.matchAll(/\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)<>"']+)\)|https?:\/\/[^\s<>"']+/gi)) {
-    const labelled = match[1] !== undefined;
-    const candidate = labelled ? match[2] : match[0].replace(/[.,;!?)]+$/, '');
-    container.append(document.createTextNode(text.slice(offset, match.index)));
-    let url = null;
-    try { url = new URL(candidate); } catch { /* stays text */ }
-    if (url && ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
-      const link = document.createElement('a');
-      link.href = url.href; link.textContent = labelled ? match[1] : candidate; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.referrerPolicy = 'no-referrer';
-      container.append(link, document.createTextNode(labelled ? '' : match[0].slice(candidate.length)));
-    } else container.append(document.createTextNode(match[0]));
-    offset = match.index + match[0].length;
-  }
-  container.append(document.createTextNode(text.slice(offset)));
-}
+// Chat text as markdown (inline code, code blocks, **bold**, *italic*, quotes, lists, links), built from text nodes only (#95:
+// 1:1 chat used a reduced bold/italic/links-only copy, so `code` showed its backticks everywhere, not only on the desktop).
+function textWithLinks(container, text) { container.replaceChildren(...renderMarkdown(document, text)); }
 
 // ---------- Views ----------
 
