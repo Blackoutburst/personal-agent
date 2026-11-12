@@ -1,0 +1,10 @@
+#!/bin/sh
+# /usr/local/lib/cchan-deploy/systemctl-deploy (#100): COMPANION_SYSTEMCTL for ops/release.mjs when the runner deploys.
+# The release tool sends only "stop|start personal-agent-account.service"; those map to the two fixed verbs of the
+# root-owned cchan-deploy (sudoers allows nothing else). Anything else is refused.
+[ "$#" -eq 2 ] && [ "$2" = personal-agent-account.service ] || exit 64
+case "$1" in
+  stop)  exec /usr/bin/sudo -n /usr/local/sbin/cchan-deploy stop-companion ;;
+  start) exec /usr/bin/sudo -n /usr/local/sbin/cchan-deploy start-companion ;;
+  *) exit 64 ;;
+esac

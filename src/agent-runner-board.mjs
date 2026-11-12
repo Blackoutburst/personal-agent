@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { escalationQuestion } from './escalation.mjs';
+import { COMPANION_UNIT as COMPANION } from './server-deploy.mjs';
 // The runner's Board side (#72, docs/AGENT-RUNNER.md). The runner has its own Board worker identity, paired once by
 // the owner, with the credential kept inside its connect.py bridge (never read here). Sub-agents in the sandbox have
 // no Board access, so this reporter does the Board work for them:
@@ -268,6 +269,33 @@ export class BoardReporter {
         ? `Desktop release skipped ${at}: ${String(r.output).slice(0, 500)} Nothing was published. Run ${run.id}.`
         : `Desktop release ${r.version ?? ''} ${at} failed (${r.status}). ${r.status === 'build_failed' ? 'Nothing was published' : `The server still serves ${r.served ?? 'the previous version'}`}; main is unchanged. Run ${run.id}.\n\nOutput:\n${String(r.output).slice(-12000)}`;
     await this.#post(run, body.slice(0, 19000), `release-${r.status}`);
+  }
+
+  // The server deploy after a merge (#100): commit, units restarted and the health result, or the failure with its output,
+  // on the ticket's thread. A merge that changes nothing on the server posts nothing.
+  async deploy(run) {
+    const r = run.deploy ?? {};
+    if (!run.board?.merge || r.status === 'skipped') return;
+    const c = String(r.commit).slice(0, 10), units = (r.units ?? []).join(', ');
+    const waited = r.idle && r.idle.waitedMs >= 1000 ? ` Waited ${Math.round(r.idle.waitedMs / 1000)}s for an idle companion${r.idle.ok ? '' : ' (bound reached)'}.` : '';
+    const reinstall = r.plan?.reinstall ? ' ops/deploy/ changed: re-run `sudo sh ops/deploy/install.sh` from this commit.' : '';
+    const output = r.output ? `\n\nOutput:\n${String(r.output).slice(-12000)}` : '';
+    let body, key = `deploy-${r.status}`;
+    if (r.status === 'runner_restarting') {
+      body = `Deployed ${c} to the server: ${COMPANION} restarted, health check passed.${waited} Restarting the runner now (the guard checks it stays up, or rolls back). Run ${run.id}.`;
+    } else if (r.status === 'deployed') {
+      key = `deploy-deployed-${r.runner ?? 'companion'}`;
+      body = r.runner && r.runner !== 'healthy'
+        ? `Deployed ${c}: ${COMPANION} is healthy, but the runner ${r.runner === 'restart_failed' ? 'could not be restarted (it still runs the previous code)' : 'restart was not confirmed'}.${waited} Run ${run.id}.${output}`
+        : `Deployed ${c} to the server. Restarted: ${units}. Health check passed${r.runner === 'healthy' ? ' (companion /api/status; runner up and stable)' : ' (companion /api/status)'}.${waited}${reinstall} Run ${run.id}.`;
+    } else if (r.status === 'rolled_back') {
+      body = `Deploy of ${c} failed its health check and was rolled back to ${String(r.previous ?? 'the previous release').slice(0, 10)}; main is unchanged.${reinstall} Run ${run.id}.${output}`;
+    } else if (r.status === 'recovery_failed') {
+      body = `Deploy of ${c} failed and the automatic rollback failed too: check the server now. Run ${run.id}.${output}`;
+    } else {
+      body = `Deploy of ${c} did not run (${r.errorCode ?? r.status}); the previous release is still live. Run ${run.id}.${output}`;
+    }
+    await this.#post(run, body.slice(0, 19000), key);
   }
 
   // The reviewer's report goes on the ticket's thread; the ticket itself is not changed (C-chan accepts or returns it).

@@ -89,7 +89,8 @@ exact reviewed head. It then merges into current `main`, runs the full `node --t
 Blackout's configured git identity; the ticket goes to done with the merge commit as evidence and its per-task agents
 are archived. On a conflict or failing tests nothing is merged: the ticket goes back to todo with the output, and the
 Manager line `merge_refused` tells C-chan to relaunch a coder (the next delivery is reviewed and merged again). Details:
-[AGENT-RUNNER.md](AGENT-RUNNER.md#roster) (merge runs). Releasing the server stays with Blackout.
+[AGENT-RUNNER.md](AGENT-RUNNER.md#roster) (merge runs). Deploying the server after a merge is automatic only when
+Blackout turned it on (#100, below); otherwise it stays with him.
 
 ## Desktop release after a merge (#90)
 
@@ -112,12 +113,83 @@ publishes nothing. A failed publish or check puts `latest.yml` and `desktop.json
 installer files it added, so the previously published version is still served. Either way the Manager line
 `release_failed` is raised; main is never rolled back. A runner restart in the middle of a release raises the same line
 (then check that `desktop.json` and `latest.yml` name the same version). Releases run one at a time. Installed apps
-pick the new version up through the in-app updater (#89, [DESKTOP.md](DESKTOP.md)). Server releases (restarting the
-companion) are not part of this.
+pick the new version up through the in-app updater (#89, [DESKTOP.md](DESKTOP.md)). Server deploys are the next
+section (#100).
 
 The build runs the merged commit's code (the build script, `npm install` with its install scripts, electron-builder) as
 the owner account, as it did when Blackout ran it by hand; that is the trust Blackout gives an accepted, reviewed merge
 by turning this on.
+
+## Server deploy after a merge (#100)
+
+With `"deploy": { "server": true }` in the runner config, a merge that goes through (full suite passed, main pushed)
+is also deployed to the server and the affected services are restarted, so nothing waits on main for a manual release.
+Off by default. The runner does it without a model, owner-side, after the desktop release (one job at a time), in
+`src/server-deploy.mjs`, with the existing release tool (`ops/release.mjs`, [OPERATIONS.md](OPERATIONS.md)) and the
+existing layout (`~/personal-agent/releases/<sha>`, `current`, `previous`, backups):
+
+1. **Fetch.** `config.merge.origin`'s `main` into a runner-owned bare mirror (`deploy.repo`, default
+   `~/.cache/cchan-agent-runner/deploy.git`); the merge commit must be on it. An `already_merged` result deploys nothing.
+2. **What changed** between the deployed release (`current`) and the merge commit:
+   - only `docs/`, `test/`, `desktop/`, `android/`, `scripts/`, `character-kit/`, `ops/verify/`, top-level `*.md`:
+     nothing is deployed and nothing is said;
+   - anything else: the companion (`personal-agent-account.service`) is restarted, since switching `current` changes
+     the code it loads;
+   - files the runner loads (`ops/agent-runner/runner-service.mjs` and everything it imports, followed through the
+     imports at the merge commit) or `package*.json`: the runner (`cchan-agent-runner.service`) is restarted too, last.
+   - `ops/deploy/` changed: the report says Blackout should re-run the install command (the installed copies are fixed).
+3. **Idle.** Before the companion is stopped, the runner waits until no owner turn is running or queued: the companion
+   writes `{busy, pid}` to `<dataDir>/companion-activity.json` on every turn start/end. Bounded by `deploy.idleWaitMs`
+   (default 5 minutes); after that it goes ahead, and a reply still running is marked INTERRUPTED as with a manual release.
+4. **Release.** `node <the runner's own ops/release.mjs> release <commit>` with `COMPANION_RELEASE_REPO` = the mirror
+   and `COMPANION_SYSTEMCTL=/usr/local/lib/cchan-deploy/systemctl-deploy`: archive, private backup while stopped, switch
+   `current`/`previous`, start, health check on `/api/status`. On a failed health check the tool itself selects the
+   previous release again and checks it: the result is `rolled_back`. A tool refusal (`LOCKED`, `SOURCE`, …) keeps the
+   previous release (`failed`); `RECOVERY` means the rollback failed too (`recovery_failed`, the server may be down).
+5. **Runner restart** (only when runner code changed). The runner starts no queued run and waits until active agent
+   runs ended (`deploy.runnerWaitMs`, default 30 minutes; after that they are interrupted as on any runner restart and
+   reported as usual). It writes the hand-over (`<runner data>/deploy.json`: commit, previous release, run), posts
+   "restarting the runner" on the ticket, and runs `sudo -n cchan-deploy guard-runner`. That starts the guard
+   (`ops/deploy/runner-guard.mjs`, root-installed copy) in its own transient systemd unit as `ubuntu`, so it survives
+   the runner being stopped. The guard runs `sudo -n cchan-deploy restart-runner` (a `systemctl --no-block restart`
+   job), then waits for the new runner to acknowledge (`deploy-ack.json`: its commit and pid, written once it listens),
+   for the unit to be active with that pid, and for it to stay so for a settle time. Healthy: `deployed`. Not: it rolls
+   back with the previous release's own `release.mjs rollback` (switches `current` back, restarts and health-checks the
+   companion) and restarts the runner again, which now runs the previous code: `rolled_back`.
+6. **Report.** The runner that is running at the end (the new one, the restored one, or the old one if the restart was
+   refused) reads the guard's result, posts on the ticket thread and raises one Manager line per deploy: `deployed`
+   (commit, units restarted, health check passed: C-chan tells Blackout it is live) or `deploy_failed` (rolled back,
+   rollback failed, runner not restarted, not run, or cut off by a restart). Main is never rolled back; fix forward.
+
+**Privilege.** The runner gets no general sudo. Root runs only `/usr/local/sbin/cchan-deploy` (`ops/deploy/cchan-deploy`),
+a root-owned script with four verbs and no other argument: `stop-companion`, `start-companion` (systemctl stop/start
+`personal-agent-account.service`), `restart-runner` (`systemctl --no-block restart cchan-agent-runner.service`) and
+`guard-runner` (`systemd-run` of the root-installed guard with `--uid=ubuntu`). Fixed unit names, fixed absolute paths, a
+fixed PATH; sudo resets the environment. The sudoers rule (`ops/deploy/cchan-deploy.sudoers`) lists exactly those four
+command lines. Nothing from a release directory or the merged commit runs as root: the release tool, the archive
+checkout and the rollback run as `ubuntu`, as when Blackout released by hand.
+
+**One-time install (Blackout)**, from a reviewed checkout of a main that contains #100:
+
+```sh
+sudo sh ops/deploy/install.sh
+```
+
+It checks the sudoers file with `visudo -cf`, then installs `/usr/local/sbin/cchan-deploy` (0755),
+`/usr/local/lib/cchan-deploy/systemctl-deploy` and `runner-guard.mjs`, and `/etc/sudoers.d/cchan-deploy` (0440), all
+root-owned. Then release that main by hand once as before (so `current` contains #100 and the companion writes its
+activity file), restart the runner, and add to `~/.config/cchan-agent-runner/config.json`:
+`"deploy": { "server": true }`; optional keys: `"releaseRoot"` (default `~/personal-agent`), `"dataDir"` (default
+`~/personal-agent-data`), `"repo"` (the mirror), `"idleWaitMs"`, `"runnerWaitMs"`, `"healthUrl"` (default the tool's
+`http://127.0.0.1:4318/api/status`). Restart the runner. Check once by hand that `sudo -n /usr/local/sbin/cchan-deploy
+stop-companion` works as `ubuntu` without a password prompt (then `start-companion`). **Turning it off:** remove the
+key or set `"server": false` and restart the runner; merges then go on as before and deploy nothing. Uninstall: delete
+the four installed paths. Requires merging to be on.
+
+Not run live: the whole flow is tested with temp repos, the real release tool against a fake systemctl and a loopback
+health server, the root script in a non-root test mode with fake systemctl/systemd-run, and the guard and the runner's
+self-restart across real processes with a fake sudo/systemd. No real sudo, systemd unit, sudoers file or server
+release was exercised.
 
 Reviewers can operate the real web app with the verification tool (#78) and attach screenshots and a manifest as
 evidence. Android is not covered by that tool.
@@ -213,5 +285,8 @@ Only the owner can grant these on the Board and on the host:
    `"buildCommand"` / `"publishCommand"` (argv arrays run in the clone, defaults the two scripts). Restart the runner.
    **Turning it off:** remove the key or set `"desktop": false` and restart the runner; merges then go on as before and
    publish nothing. Requires merging to be on (step 5).
-7. **Approve a project in chat**, for example: "C-chan, you manage the Personal Agent project: build X." She records
+7. **Server deploy (#100), one time, optional:** `sudo sh ops/deploy/install.sh` from a reviewed checkout, release
+   that main by hand once, restart the runner, then `"deploy": { "server": true }` in the runner config and restart it
+   again. Details and how to turn it off: [Server deploy after a merge](#server-deploy-after-a-merge-100).
+8. **Approve a project in chat**, for example: "C-chan, you manage the Personal Agent project: build X." She records
    it, and from then on works it alone.

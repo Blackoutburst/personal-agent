@@ -1,0 +1,34 @@
+#!/bin/sh
+# /usr/local/sbin/cchan-deploy (#100, docs/MANAGER.md "Server deploy after a merge"). Installed root:root 0755 by
+# ops/deploy/install.sh; /etc/sudoers.d/cchan-deploy lets the owner account (the runner) run exactly these four command
+# lines as root, nothing else:
+#   stop-companion    systemctl stop personal-agent-account.service    (the release tool's COMPANION_SYSTEMCTL)
+#   start-companion   systemctl start personal-agent-account.service
+#   restart-runner    systemctl --no-block restart cchan-agent-runner.service  (a systemd job: survives the caller's exit)
+#   guard-runner      the runner guard in its own transient unit, as ubuntu (not root), from the root-installed copy
+#                     /usr/local/lib/cchan-deploy/runner-guard.mjs, so it outlives the runner it restarts
+# Fixed unit names, fixed paths, one argument, no environment from the caller: sudo resets it and PATH is set here.
+# Nothing from a release directory or the merged commit is executed by this script as root.
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+SYSTEMCTL=/usr/bin/systemctl
+SYSTEMD_RUN=/usr/bin/systemd-run
+# Tests only: a non-root caller may point at fake binaries. As root (through sudo) the paths above are always used.
+if [ "$(id -u)" != 0 ] && [ -n "${CCHAN_DEPLOY_TEST_BIN:-}" ]; then
+  SYSTEMCTL="$CCHAN_DEPLOY_TEST_BIN/systemctl"
+  SYSTEMD_RUN="$CCHAN_DEPLOY_TEST_BIN/systemd-run"
+fi
+[ "$#" -eq 1 ] || { echo "usage: cchan-deploy stop-companion|start-companion|restart-runner|guard-runner" >&2; exit 64; }
+case "$1" in
+  stop-companion)  exec "$SYSTEMCTL" stop personal-agent-account.service ;;
+  start-companion) exec "$SYSTEMCTL" start personal-agent-account.service ;;
+  restart-runner)  exec "$SYSTEMCTL" --no-block restart cchan-agent-runner.service ;;
+  guard-runner)
+    exec "$SYSTEMD_RUN" --unit=cchan-deploy-guard --collect --no-block --quiet \
+      --uid=ubuntu --gid=ubuntu --working-directory=/home/ubuntu \
+      --property=UMask=0077 --property=PrivateTmp=true --property=RuntimeMaxSec=1800 \
+      --setenv=HOME=/home/ubuntu --setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin \
+      /opt/blackoutburst-platform-runtime/node-v24.22.1 /usr/local/lib/cchan-deploy/runner-guard.mjs ;;
+  *) echo "cchan-deploy: unknown action" >&2; exit 64 ;;
+esac
