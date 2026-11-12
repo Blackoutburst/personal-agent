@@ -34,7 +34,7 @@ still applies.
 Enforced in code:
 
 - **Only from an owner chat.** `agents_approve_project` and `agents_revoke_project` are refused in every wake (Board,
-  own, contact, mail, ...) by `wakeToolFilter` in `src/conversations.mjs`. So Board text, an agent or a wake can never
+  own, contact, mail, ...) by `wakeToolFilter` in `src/conversations.mjs`, and on the unattended token (#94). So Board text, an agent or a wake can never
   give C-chan autonomy.
 - **Only Blackout's projects.** An approval must name one of the runner's `config.projects`, which are Blackout's
   projects. Any other project is refused with `FORBIDDEN`, so TheScreamer's projects stay his.
@@ -44,6 +44,38 @@ Enforced in code:
 Not enforced in code: the Board writes C-chan makes with her own Board tools. Those go through her paired companion
 profile, which this app cannot gate per project. Her instructions carry the rule, and the Board's own permissions on
 her profile are the outer limit.
+
+## Own wakes in approved projects (#94)
+
+Owner direction, 12 Nov 2026: manager mode runs unattended, without waiting for Blackout on routine steps. Before #94,
+C-chan's own wakes (`proactive`, `heartbeat`, `followup`) had no Board write tools, and proactive/follow-up wakes had no
+agent tools, so finished work waited until Blackout wrote in chat.
+
+Now, on those wakes, while the runner holds at least one active standing approval:
+
+- **Tools** (`wakeToolFilter(kind, { manager })` in `src/conversations.mjs`): `agents_launch`, `agents_merge`,
+  `agents_stop`, `agents_decide`, and every Board tool in the owner's `board.allowedTools` (for example `create_ticket`,
+  `update_ticket`, `release_managed_agent_claim`). The approval check is `GET /status` on the runner
+  (`manager.approvals > 0` and `manager.unattendedGate: true`, `managerWake` in `server.mjs`), made at the start of
+  each own wake. Any failure counts as no approval, and so does a runner that predates #94 (it would not check the
+  project), so the runner must be restarted on this code before own wakes act.
+- **Per project, enforced in code for the agent tools.** These turns run with a second scheduler token for the companion
+  (`unattended`, from `CompanionRunner.turn({ unattended: true })` → `mcpServersFor(owner, { unattended: true })`).
+  Calls on it carry `unattended: true` to the runner, which takes a launch, merge, stop or decision only when the
+  ticket (as seen by its Board watch, never as claimed by the request) is in a project with an active approval
+  (`NOT_APPROVED` otherwise; a `plan` decision may name the approved project instead). Hard limits, the roster,
+  the budget and the review and merge checks still run after that. `agents_approve_project` and
+  `agents_revoke_project` are refused on that token as well (`OWNER_CHAT_ONLY`).
+- **Board writes per project are not enforced in code**, as before for Board wakes and owner chats: Board tools go
+  straight from C-chan's provider to the Board. Her instructions say to write only to approved projects' tickets on
+  her own wakes, and the Board's permissions on her companion profile are the outer limit.
+- **Unchanged:** contact wakes (another companion writing) get none of this. Mail, the personal and Studio calendars,
+  companion contacts, web tools, repo creation and approvals follow the same rules on every wake kind as before.
+  Without any approval, own wakes are exactly as before, except that heartbeat wakes' agent launches, merges, stops
+  and decisions now also need an approved project (they used the owner-chat token before).
+- **Board wakes** (runner events, Needs-you, mentions) keep using the owner token and their existing tools.
+
+Tests: `test/manager-wakes.test.mjs`.
 
 ## Running unattended
 

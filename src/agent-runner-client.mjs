@@ -38,19 +38,24 @@ const RUN_ID = /^[a-z0-9][a-z0-9-]{0,60}$/;
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const name = value => typeof value === 'string' && NAME.test(value);
 // The tool path: input { op, ... } from scheduler-mcp. allowed(companionId) says who may manage agents.
-export async function agentsOperation(agents, companionId, input) {
+// unattended (#94): the call comes from the companion's own wake (its unattended scheduler token). Launches, merges, stops
+// and decisions then carry unattended: true, and the runner takes them only for tickets of approved projects. Standing
+// approvals are never recorded or withdrawn from such a turn.
+export async function agentsOperation(agents, companionId, input, { unattended = false } = {}) {
   if (!agents?.client || !agents.allowed(companionId)) return failure(403, 'AGENTS_UNAVAILABLE', 'Agent launching is not enabled for this companion.');
   if (!object(input)) return failure(400, 'INVALID', 'Invalid agents request.');
   const { op, ...rest } = input;
+  if (unattended && ['approveProject', 'revokeProject'].includes(op)) return failure(403, 'OWNER_CHAT_ONLY', 'Only your owner\'s words in chat approve or withdraw a project.');
+  const mark = body => unattended ? { ...(object(body) ? body : {}), unattended: true } : body;
   try {
     let answer;
     if (op === 'status') answer = await agents.client.call('GET', '/status');
     else if (op === 'list') answer = await agents.client.call('GET', rest.active ? '/runs?active=1' : '/runs');
     else if (op === 'get' && typeof rest.runId === 'string' && RUN_ID.test(rest.runId)) answer = await agents.client.call('GET', `/runs/${rest.runId}`);
-    else if (op === 'stop' && typeof rest.runId === 'string' && RUN_ID.test(rest.runId)) answer = await agents.client.call('POST', `/runs/${rest.runId}/stop`, {});
-    else if (op === 'launch') answer = await agents.client.call('POST', '/runs', rest.launch);
+    else if (op === 'stop' && typeof rest.runId === 'string' && RUN_ID.test(rest.runId)) answer = await agents.client.call('POST', `/runs/${rest.runId}/stop`, mark({}));
+    else if (op === 'launch') answer = await agents.client.call('POST', '/runs', unattended ? mark(rest.launch) : rest.launch);
     // Merge (#85): the runner checks the accept, the approving review and the reviewed head itself.
-    else if (op === 'merge' && object(rest.merge)) answer = await agents.client.call('POST', '/runs', { ...rest.merge, mode: 'merge' });
+    else if (op === 'merge' && object(rest.merge)) answer = await agents.client.call('POST', '/runs', mark({ ...rest.merge, mode: 'merge' }));
     // The roster (#73): C-chan's agents and teams.
     else if (op === 'roster') answer = await agents.client.call('GET', rest.includeArchived ? '/roster?archived=1' : '/roster');
     else if (op === 'saveAgent' && object(rest.agent) && name(rest.agent.name)) {
@@ -69,7 +74,7 @@ export async function agentsOperation(agents, companionId, input) {
     else if (op === 'revokeProject' && typeof rest.projectId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(rest.projectId)) {
       answer = await agents.client.call('POST', `/manager/approvals/${rest.projectId}/revoke`, {});
     }
-    else if (op === 'decide' && object(rest.decision)) answer = await agents.client.call('POST', '/manager/decisions', rest.decision);
+    else if (op === 'decide' && object(rest.decision)) answer = await agents.client.call('POST', '/manager/decisions', mark(rest.decision));
     else return failure(400, 'INVALID', 'Invalid agents request.');
     if (op === 'list' && Array.isArray(answer.body.runs)) answer.body.runs = answer.body.runs.slice(-30);
     return { status: answer.status, body: answer.body };

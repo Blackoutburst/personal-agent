@@ -43,7 +43,8 @@ const CHOICES = 'Then choose one:\n'
   + 'have something to say; it works at any hour, their answer wakes you later, and your owner\'s private memories '
   + 'and data stay out unless your owner asked. This can go with any other choice.\n'
   + '- Nothing, when a message really does not fit right now.\n'
-  + 'Your ask-first rules still apply: no Board writes, mail or spending without your owner\'s yes in chat.';
+  + 'Your ask-first rules still apply: no Board writes, mail or spending without your owner\'s yes in chat. '
+  + 'In Manager mode (when you have it), Board and agent work inside a project your owner approved is the exception: move it forward yourself.';
 function streakText(silent) {
   if (!silent) return '';
   return ` Your last ${silent === 1 ? 'own wake' : silent + ' own wakes'} ended without a message to your owner`

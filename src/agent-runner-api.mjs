@@ -8,7 +8,7 @@ import { buildOps } from './agent-ops.mjs';
 
 export const STATUS = { INVALID: 400, NOT_FOUND: 404, BUSY: 409, QUEUE_FULL: 429, HARD_LIMIT: 403, PROVIDER_UNAVAILABLE: 409,
   FORBIDDEN: 403, PAUSED: 409, CONFLICT: 409, EXISTS: 409, LIMIT: 429, BUDGET: 409, NO_REVIEW: 409, NOT_INDEPENDENT: 409,
-  STALE_REVIEW: 409, VERDICT_MISMATCH: 409, NO_ACCEPT: 409, ALREADY_MERGED: 409 };
+  STALE_REVIEW: 409, VERDICT_MISMATCH: 409, NO_ACCEPT: 409, ALREADY_MERGED: 409, NOT_APPROVED: 403 };
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const PROJECT = /^[A-Za-z0-9_-]{1,100}$/;
 
@@ -19,6 +19,26 @@ export function createRunnerApi({ runner, roster, manager = null, opsBoard = nul
   runner.on('event', () => { for (const wake of waiters) wake(); waiters.clear(); });
   const ok = (status, body) => ({ status, body });
   const missing = () => ok(404, { error: { code: 'NOT_FOUND', message: 'Unknown endpoint.' } });
+  // #94: a launch, merge, stop or decision from C-chan's own wake (unattended: true, set by the companion for its
+  // unattended tool token) is taken only inside a project with an active standing approval. The ticket's project comes
+  // from the Board watch's snapshot, never from the request; an unknown ticket is refused. Everything else (roster,
+  // budget, hard limits, review checks) still applies after this.
+  const unattended = body => {
+    if (body?.unattended === undefined) return { body, gate: null };
+    const { unattended: flag, ...rest } = body;
+    return { body: rest, gate: flag === true };
+  };
+  const requireApproved = ({ ticketId = null, projectId = null }) => {
+    let project = projectId;
+    if (ticketId !== null) {
+      const ticket = (tickets() ?? []).find(item => item.id === ticketId);
+      if (!ticket || (projectId !== null && ticket.projectId !== projectId)) project = null;
+      else project = ticket.projectId;
+    }
+    if (!manager || typeof project !== 'string' || !manager.approved(project)) {
+      throw new ManagerError('NOT_APPROVED', 'On your own wakes you may act only on tickets of a project your owner approved (agents_manager). Suggest it to your owner instead.');
+    }
+  };
 
   async function route(method, url, body) {
     const parts = url.pathname.split('/').filter(Boolean);
@@ -26,7 +46,9 @@ export function createRunnerApi({ runner, roster, manager = null, opsBoard = nul
       const runs = runner.list();
       return ok(200, { limits: runner.limits, running: runs.filter(run => ['preparing', 'running', 'stopping'].includes(run.state)).length,
         queued: runs.filter(run => run.state === 'queued').length, board: boardState(), projects, roster: roster.summary(),
-        ...(manager ? { manager: { approvals: manager.approvals().length, usage: manager.usage() } } : {}) });
+        // unattendedGate (#94): this runner checks unattended calls against the approvals; the companion gives its own
+        // wakes the manager tools only when it says so (an older runner would not check).
+        ...(manager ? { manager: { approvals: manager.approvals().length, usage: manager.usage(), unattendedGate: true } } : {}) });
     }
     if (method === 'GET' && parts[0] === 'runs' && parts.length === 1) return ok(200, { runs: runner.list({ active: url.searchParams.get('active') === '1' }) });
     if (method === 'GET' && parts[0] === 'runs' && parts.length === 2) {
@@ -46,8 +68,15 @@ export function createRunnerApi({ runner, roster, manager = null, opsBoard = nul
       try { history = await opsBoard?.messages(parts[1]); } catch { return ok(502, { error: { code: 'BOARD_UNAVAILABLE', message: 'The Board is not reachable.' } }); }
       return history ? ok(200, history) : ok(404, { error: { code: 'NOT_FOUND', message: 'No such ticket.' } });
     }
-    if (method === 'POST' && url.pathname === '/runs') return ok(202, { run: runner.launch(body) });
-    if (method === 'POST' && parts[0] === 'runs' && parts[2] === 'stop' && parts.length === 3) return ok(200, { run: runner.stop(parts[1]) });
+    if (method === 'POST' && url.pathname === '/runs') {
+      const launch = unattended(body);
+      if (launch.gate !== null) requireApproved({ ticketId: typeof launch.body.ticketId === 'string' ? launch.body.ticketId : '' });
+      return ok(202, { run: runner.launch(launch.body) });
+    }
+    if (method === 'POST' && parts[0] === 'runs' && parts[2] === 'stop' && parts.length === 3) {
+      if (unattended(body).gate !== null) requireApproved({ ticketId: runner.get(parts[1])?.ticketId ?? '' });
+      return ok(200, { run: runner.stop(parts[1]) });
+    }
     if (method === 'GET' && url.pathname === '/events') {
       const after = Number(url.searchParams.get('after') ?? 0), wait = Math.min(30, Number(url.searchParams.get('wait') ?? 0));
       let events = runner.events(Number.isFinite(after) ? after : 0);
@@ -78,7 +107,12 @@ export function createRunnerApi({ runner, roster, manager = null, opsBoard = nul
       if (method === 'POST' && parts[1] === 'approvals' && PROJECT.test(parts[2] ?? '') && parts[3] === 'revoke' && parts.length === 4) {
         return ok(200, { approval: manager.revoke({ projectId: parts[2] }) });
       }
-      if (method === 'POST' && parts[1] === 'decisions' && parts.length === 2) return ok(201, { decision: manager.decide(body, runner.list()) });
+      if (method === 'POST' && parts[1] === 'decisions' && parts.length === 2) {
+        const decision = unattended(body);
+        if (decision.gate !== null) requireApproved({ ticketId: typeof decision.body.ticketId === 'string' ? decision.body.ticketId : null,
+          projectId: typeof decision.body.projectId === 'string' ? decision.body.projectId : null });
+        return ok(201, { decision: manager.decide(decision.body, runner.list()) });
+      }
     }
     return missing();
   }

@@ -13,9 +13,9 @@ const exact = (value, keys) => value && typeof value === 'object' && !Array.isAr
 // Shared by the freshly authenticated owner UI and the application-owned tool broker.
 // Only the browser path may change quiet hours or opt in to proactive heartbeats.
 // Calendar actions (#44) travel the same two paths.
-export async function schedulerOperation(scheduler, companionId, payload, { allowSettings = false, calendar = null, github = null, x = null, mail = null, studioCalendar = null, agents = null } = {}) {
+export async function schedulerOperation(scheduler, companionId, payload, { allowSettings = false, calendar = null, github = null, x = null, mail = null, studioCalendar = null, agents = null, unattended = false } = {}) {
   // C-chan's agent runner (#72): companion tool path only, for the owners allowed to manage agents.
-  if (!allowSettings && exact(payload, ['action', 'input']) && payload.action === 'agents') return agentsOperation(agents, companionId, payload.input);
+  if (!allowSettings && exact(payload, ['action', 'input']) && payload.action === 'agents') return agentsOperation(agents, companionId, payload.input, { unattended: unattended === true });
   // GitHub tools (#45) exist only on the companion's tool path; the owner manages the link in Me › Connectors.
   if (!allowSettings && exact(payload, ['action', 'input']) && payload.action === 'github') return githubOperation(github, companionId, payload.input);
   // X post reading (#46) likewise exists only for the companion's tools.
