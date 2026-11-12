@@ -137,15 +137,18 @@ export function reviewPrompt(run, ticket) {
 }
 
 export class AgentRunner extends EventEmitter {
-  #file; #ops; #reporter; #roster; #manager; #merge; #limits; #log; #now; #state; #children = new Map(); #timers = new Map(); #pumping = false;
+  #file; #ops; #reporter; #roster; #manager; #merge; #release; #releasing = Promise.resolve(); #limits; #log; #now; #state; #children = new Map(); #timers = new Map(); #pumping = false;
 
   // file: JSON state file. ops: sandbox operations (see SandboxOps). reporter: Board hooks (see BoardReporter).
   // roster: C-chan's agent roster (#73); with it, every launch must name an active roster agent and follows its policy.
   // merge (#85): { origin, identity?, testCommand?, prepareCommand? } turns the merge step on (see src/agent-merge.mjs).
+  // release (#90): { desktop: true, dataDir, buildCommand?, publishCommand?, home? } releases the desktop app after a merge
+  // that raises desktop/package.json's version (see src/desktop-release.mjs). Anything but desktop: true leaves it off.
   // manager: manager mode (#76); it reads the weekly usage from the runs' rate events and refuses Opus/Fable above budget.
-  constructor({ file, ops, reporter, roster = null, manager = null, merge = null, limits = {}, log = () => {}, now = Date.now }) {
+  constructor({ file, ops, reporter, roster = null, manager = null, merge = null, release = null, limits = {}, log = () => {}, now = Date.now }) {
     super();
     this.#file = file; this.#ops = ops; this.#reporter = reporter; this.#roster = roster; this.#manager = manager; this.#merge = merge; this.#limits = normalizeLimits(limits);
+    this.#release = release && typeof release === 'object' && release.desktop === true ? release : null;
     this.#log = log; this.#now = now;
     this.#state = this.#load();
   }
@@ -354,6 +357,11 @@ export class AgentRunner extends EventEmitter {
       run.stopReason = 'runner_error';
       await this.#finish(run, { state: 'interrupted', error: 'The runner restarted during this run.' });
     }
+    // A desktop release (#90) the restart cut off: say so, the owner checks what is served.
+    for (const run of this.#state.runs.filter(item => item.release?.status === 'running')) {
+      this.#set(run, { release: { ...run.release, status: 'interrupted', endedAt: this.#now(), output: 'The runner restarted during the release.' } }, 'release.ended');
+      this.#releaseLine(run);
+    }
     this.#pump();
   }
 
@@ -517,7 +525,44 @@ export class AgentRunner extends EventEmitter {
     catch (error) { this.#log(`board finish for ${run.id} failed: ${error.code ?? error.message}`); }
     if (run.mode === 'merge') this.#mergeFollowUp(run, boardResult);
     this.#pump();
+    if (run.mode === 'merge' && run.state === 'succeeded' && run.mergeResult?.status === 'merged' && run.mergeResult.mergeCommit && this.#release) {
+      await this.#releaseAfterMerge(run);
+    }
     return this.public(run);
+  }
+
+  // The desktop release (#90), after a merge that went through: only for a fresh merge (not already_merged), from the
+  // exact merge commit, one release at a time. No model. The ticket thread gets the version and the installer's sha256
+  // (or the error); a failure raises a Manager line. Main is never touched here.
+  #releaseAfterMerge(run) {
+    const job = this.#releasing.then(() => this.#releaseDesktop(run));
+    this.#releasing = job.catch(() => {});
+    return job;
+  }
+
+  async #releaseDesktop(run) {
+    const startedAt = this.#now(), commit = run.mergeResult.mergeCommit;
+    this.#set(run, { release: { status: 'running', commit, startedAt } });
+    let result;
+    try {
+      result = await this.#ops.releaseDesktop({ ...this.#release, origin: this.#merge?.origin ?? null, commit, base: run.base });
+    } catch (error) { result = { status: 'error', output: error.message }; }
+    const status = ['published', 'skipped', 'build_failed', 'publish_failed'].includes(result?.status) ? result.status : 'error';
+    const kept = { status, reason: result?.reason ?? null, commit, version: result?.version ?? null, previous: result?.previous ?? null,
+      served: result?.served ?? null, sha256: result?.sha256 ?? null, file: result?.file ?? null, output: text(result?.output, 8000),
+      startedAt, endedAt: this.#now() };
+    this.#set(run, { release: kept }, 'release.ended', { release: status, version: kept.version });
+    try { await this.#reporter.release?.(run); } catch (error) { this.#log(`board release post for ${run.id} failed: ${error.code ?? error.message}`); }
+    if (!['published', 'skipped'].includes(status)) this.#releaseLine(run);
+  }
+
+  #releaseLine(run) {
+    const n = run.ticketNumber ? `#${run.ticketNumber}` : `ticket ${run.ticketId}`, r = run.release ?? {};
+    const what = r.status === 'interrupted' ? 'was cut off by a runner restart; check that downloads/desktop.json and latest.yml name the same version'
+      : `failed (${r.status})${r.status === 'build_failed' ? '; nothing was published' : '; the previously published version is still served'}`;
+    this.note({ type: 'manager.attention', kind: 'release_failed', key: `release:${run.id}`, ticketId: run.ticketId, ticketNumber: run.ticketNumber,
+      agent: run.agent, suggestion: `${n}: the desktop release${r.version ? ` of ${r.version}` : ''} from ${String(r.commit).slice(0, 10)} ${what}. `
+        + `Main is merged and unchanged. The output is on the ticket thread; fix the cause, then run scripts/build-desktop.sh and scripts/publish-desktop.sh from that commit, or merge a fix with a new version.` });
   }
 
   // After a merge run (#85): archive the ticket's per-task agents once it is done; raise a Manager line for anything else.

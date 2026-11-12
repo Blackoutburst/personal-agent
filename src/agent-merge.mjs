@@ -27,7 +27,7 @@ const MISSING_DEPS = /ERR_MODULE_NOT_FOUND|Cannot find (package|module) '/;
 
 const tail = value => String(value ?? '').slice(-TAIL);
 // input: a file fed to the command's stdin. The result keeps stdout on its own too (stdout), for commands that answer.
-function run(binary, args, { cwd, env, timeout = 120_000, input = null } = {}) {
+export function run(binary, args, { cwd, env, timeout = 120_000, input = null } = {}) {
   return new Promise(resolve => {
     const child = execFile(binary, args, { cwd, env, encoding: 'utf8', timeout, maxBuffer: 32 << 20 }, (error, stdout, stderr) => {
       resolve({ ok: !error, code: error ? (typeof error.code === 'number' ? error.code : null) : 0, timedOut: Boolean(error?.killed),
