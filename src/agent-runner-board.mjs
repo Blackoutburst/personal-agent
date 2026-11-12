@@ -76,6 +76,27 @@ export class BoardReporter {
       question, summary: question.slice(0, 240), idempotency_key: key, ...(Number.isSafeInteger(version) ? { expected_version: version } : {}) });
   }
 
+  // An owner approval for a hard-limit launch: a Needs-you raised for the same limit on the ticket (the runner's own
+  // escalationQuestion text), answered "yes", and resolved by the owner in person: the Board's activity must show a
+  // human resolver with the owner's id (answers C-chan gives as companion do not count). used: request ids already spent.
+  // Returns { requestId } or null.
+  async ownerApproval({ ticketId, limit, used = [] }) {
+    const read = await this.#client.call('get_ticket', { ticket_id: ticketId, view: 'full' });
+    const ticket = read?.ticket ?? read;
+    if (!ticket?.id || !this.#projects.has(ticket.project_id) || !limit?.label) return null;
+    const prefix = `Needs your decision (${limit.label} is a hard limit;`;
+    const candidates = (Array.isArray(ticket.human_requests) ? ticket.human_requests : []).filter(request => request?.status === 'resolved'
+      && typeof request.id === 'string' && !used.includes(request.id) && typeof request.question === 'string'
+      && request.question.startsWith(prefix) && /^\s*yes\b/i.test(String(request.answer ?? '')));
+    if (!candidates.length) return null;
+    const listed = await this.#client.call('list_activity', { ticket_id: ticket.id, limit: 200, view: 'full' });
+    const events = Array.isArray(listed) ? listed : Array.isArray(listed?.result) ? listed.result : Array.isArray(listed?.items) ? listed.items : [];
+    const byOwner = new Set(events.filter(event => event?.event === 'human_input_resolved' && event.actor?.kind === 'human'
+      && event.actor?.owner_id === this.#ownerId && event.ticket_id === ticket.id).map(event => event.detail?.request_id));
+    const found = candidates.find(request => byOwner.has(request.id));
+    return found ? { requestId: found.id } : null;
+  }
+
   async begin(run) {
     run.board = { claimed: false, execution: null, revision: null, executionError: null };
     const read = await this.#client.call('get_ticket', { ticket_id: run.ticketId, view: 'full' });

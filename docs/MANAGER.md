@@ -141,6 +141,12 @@ They are unchanged from #74 and always go to Blackout, even inside an approved p
 deleting things, credentials, security. A launch whose instructions hit one is refused (`HARD_LIMIT`) and becomes a
 Needs-you on the ticket. An approval never covers them.
 
+When Blackout answers that Needs-you "yes" himself, the next launch on that ticket hitting the same limit goes through:
+the runner checks the Board for a Needs-you it raised for that limit on the ticket, answered "yes", whose resolver in
+the Board's activity is Blackout as a human (an answer C-chan gives as companion never counts). Each such answer admits
+exactly one run and is then spent (kept in the runner's state); a later launch needs a new answer. A "no", an open
+request, or a Board read that fails all keep the refusal.
+
 ## Decision log
 
 `agents_decide` kinds: `plan`, `dispatch`, `unblock`, `reassign`, `split`, `escalate_model`, `accept`, `return`,

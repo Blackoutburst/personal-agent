@@ -19,6 +19,7 @@ export const DEFAULT_LIMITS = Object.freeze({ maxConcurrent: 2, maxTurns: 80, ma
 const CAPS = Object.freeze({ maxConcurrent: 8, maxTurns: 400, maxSeconds: 4 * 3600, maxQueued: 100 });
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/;
+const OWNER_APPROVAL = Symbol('ownerApproval'); // set only by launchWithApproval, never from JSON input
 const ACTIVE = new Set(['queued', 'preparing', 'running', 'stopping']);
 const AGENT_BRANCH = /^agent\/[a-z0-9][a-z0-9-]{0,39}\/t\d{1,9}$/;
 const MAX_EVENTS = 500;
@@ -159,9 +160,10 @@ export class AgentRunner extends EventEmitter {
     if (this.#file && existsSync(this.#file)) {
       const value = JSON.parse(readFileSync(this.#file, 'utf8'));
       return { runs: Array.isArray(value.runs) ? value.runs : [], events: Array.isArray(value.events) ? value.events : [],
-        seq: Number.isSafeInteger(value.seq) ? value.seq : 0 };
+        seq: Number.isSafeInteger(value.seq) ? value.seq : 0,
+        approvals: Array.isArray(value.approvals) ? value.approvals.filter(id => typeof id === 'string').slice(-500) : [] };
     }
-    return { runs: [], events: [], seq: 0 };
+    return { runs: [], events: [], seq: 0, approvals: [] };
   }
 
   #save() {
@@ -221,6 +223,23 @@ export class AgentRunner extends EventEmitter {
     return value;
   }
 
+  // The API's launch: like launch(), but a hard-limit launch goes through once per owner approval. The approval is a
+  // Needs-you this runner raised on the same ticket for the same limit, answered "yes" by the owner in person (the
+  // Board's activity names a human resolver; C-chan's companion answers never count). Each approval admits one run.
+  async launchWithApproval(input = {}) {
+    const instructions = typeof input?.instructions === 'string' ? input.instructions : '';
+    const ticketId = input?.ticketId;
+    const limit = hardLimit(instructions);
+    const retry = input?.requestId && this.#state.runs.some(run => run.requestId === input.requestId);
+    if (limit && !retry && typeof ticketId === 'string' && ID.test(ticketId) && typeof this.#reporter.ownerApproval === 'function') {
+      let approval = null;
+      try { approval = await this.#reporter.ownerApproval({ ticketId, limit, used: [...this.#state.approvals] }); }
+      catch (error) { this.#log(`owner approval check for ${ticketId} failed: ${error?.code ? `${error.code}: ${error.message}` : error?.message}`); }
+      if (typeof approval?.requestId === 'string') return this.launch({ ...input, [OWNER_APPROVAL]: { requestId: approval.requestId, ticketId, limitId: limit.id } });
+    }
+    return this.launch(input);
+  }
+
   // Launch request: { agent, ticketId, repo, model, provider='claude', base='main', instructions, maxTurns, maxSeconds,
   // requestId }. A repeated requestId returns the run it already started.
   launch(input = {}) {
@@ -246,7 +265,10 @@ export class AgentRunner extends EventEmitter {
     // Hard limits (#74): deployments, spending, deleting, credentials and security always go to the owner. Refused, not queued,
     // and turned into a Needs-you on the ticket (best effort; a retry with the same requestId is refused again, files once).
     const limit = hardLimit(instructions);
-    if (limit) {
+    const approval = input[OWNER_APPROVAL];
+    const approved = Boolean(limit && approval && approval.ticketId === ticketId && approval.limitId === limit.id
+      && !this.#state.approvals.includes(approval.requestId));
+    if (limit && !approved) {
       Promise.resolve(this.#reporter.hardLimit?.({ ticketId, agent, limit, instructions, requestId }))
         .catch(error => this.#log(`hard-limit Needs-you for ${agent} failed: ${error?.code ? `${error.code}: ${error.message}` : error?.message}`));
       throw new AgentRunnerError('HARD_LIMIT', `Refused: ${limit.label} is a hard limit. A Needs-you for the owner was raised on the ticket; only the owner can approve it.`);
@@ -306,6 +328,12 @@ export class AgentRunner extends EventEmitter {
       mode, reviewBranch, reviewHead: null, mergeBranch, mergeHead, mergeResult: null, role: policy?.role ?? null, team: policy?.team ?? null,
       canCommit: policy ? policy.canCommit : mode === 'work', skills: policy?.skills ?? [], agentInstructions: policy?.instructions ?? '',
       rosterVersion: policy?.version ?? null };
+    if (approved) {
+      // The owner's "yes" is spent on this run; the next hard-limit launch needs a new one.
+      this.#state.approvals.push(approval.requestId);
+      run.ownerApproval = approval.requestId;
+      this.#log(`hard limit ${limit.id} on ${ticketId}: owner approval ${approval.requestId} admits run ${run.id}`);
+    }
     this.#state.runs.push(run);
     this.#event('run.queued', run);
     queueMicrotask(() => this.#pump());

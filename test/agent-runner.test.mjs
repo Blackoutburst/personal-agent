@@ -309,6 +309,64 @@ test('a launch asking for a hard-limit action is refused and becomes a Needs-you
   assert.equal(r.list?.().length ?? 0, 0);
 });
 
+test('an owner approval admits exactly one hard-limit launch on its ticket; none, or a spent one, still refuses', async t => {
+  const { r, reporter } = runner(t);
+  const raised = [], asked = [];
+  reporter.hardLimit = async info => { raised.push(info); };
+  let answer = { requestId: 'req-yes-1' };
+  reporter.ownerApproval = async info => { asked.push(info); return answer; };
+  const input = { agent: 'coder', ticketId: 'ticket-a', repo: 'personal-agent', model: 'sonnet', instructions: 'Then deploy it to production.' };
+  const run = await r.launchWithApproval({ ...input, requestId: 'req-a' });
+  assert.equal(run.state, 'queued');
+  assert.equal(asked[0].limit.id, 'deployment');
+  assert.deepEqual(asked[0].used, []);
+  assert.equal(raised.length, 0);
+  await r.stop(run.id);
+  // The same approval again (the Board still lists it): spent, so refused and a new Needs-you is raised.
+  await assert.rejects(r.launchWithApproval({ ...input, requestId: 'req-b' }), error => error.code === 'HARD_LIMIT');
+  assert.deepEqual(asked[1].used, ['req-yes-1']);
+  // No approval at all: refused.
+  answer = null;
+  await assert.rejects(r.launchWithApproval({ ...input, requestId: 'req-c' }), error => error.code === 'HARD_LIMIT');
+  // An approval check that fails: refused, never admitted.
+  reporter.ownerApproval = async () => { throw new Error('Board down'); };
+  await assert.rejects(r.launchWithApproval({ ...input, requestId: 'req-d' }), error => error.code === 'HARD_LIMIT');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(raised.length, 3);
+  // A plain launch() never consults approvals, and JSON input cannot carry one.
+  reporter.ownerApproval = async () => ({ requestId: 'req-yes-2' });
+  assert.throws(() => r.launch({ ...input, requestId: 'req-e', ownerApproval: { requestId: 'req-yes-2', ticketId: 'ticket-a', limitId: 'deployment' } }), error => error.code === 'HARD_LIMIT');
+});
+
+test('Board reporter: only a "yes" the owner gave in person, to the runner\'s question for that limit, is an approval', async () => {
+  const q = label => `Needs your decision (${label} is a hard limit; C-chan and her agents never do this alone): coder was asked to: deploy`;
+  const requests = [
+    { id: 'by-companion', status: 'resolved', answer: 'yes, go ahead (Blackout said yes in chat)', question: q('deployment') },
+    { id: 'said-no', status: 'resolved', answer: 'no, do not', question: q('deployment') },
+    { id: 'other-limit', status: 'resolved', answer: 'yes, go ahead', question: q('security') },
+    { id: 'open', status: 'open', answer: null, question: q('deployment') },
+    { id: 'spent', status: 'resolved', answer: 'yes, go ahead', question: q('deployment') },
+    { id: 'good', status: 'resolved', answer: 'yes, go ahead', question: q('deployment') }
+  ];
+  const human = id => ({ event: 'human_input_resolved', ticket_id: 'T', actor: { kind: 'human', owner_id: 'o' }, detail: { request_id: id } });
+  const activity = { result: [
+    { event: 'human_input_resolved', ticket_id: 'T', actor: { kind: 'agent', companion_for: 'o', owner_id: 'o' }, detail: { request_id: 'by-companion' } },
+    human('said-no'), human('other-limit'), human('spent'), human('good')] };
+  const client = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'P', human_requests: requests } }, list_activity: activity });
+  const reporter = new BoardReporter({ client, projects: ['P'], ownerId: 'o' });
+  const limit = { id: 'deployment', label: 'deployment' };
+  assert.deepEqual(await reporter.ownerApproval({ ticketId: 'T', limit, used: ['spent'] }), { requestId: 'good' });
+  assert.equal(await reporter.ownerApproval({ ticketId: 'T', limit, used: ['spent', 'good'] }), null);
+  // A different human owner does not count.
+  const other = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'P', human_requests: requests } },
+    list_activity: [{ ...human('good'), actor: { kind: 'human', owner_id: 'someone-else' } }] });
+  assert.equal(await new BoardReporter({ client: other, projects: ['P'], ownerId: 'o' }).ownerApproval({ ticketId: 'T', limit }), null);
+  // Outside the allowed projects: nothing is read beyond the ticket.
+  const outside = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'X', human_requests: requests } }, list_activity: activity });
+  assert.equal(await new BoardReporter({ client: outside, projects: ['P'], ownerId: 'o' }).ownerApproval({ ticketId: 'T', limit }), null);
+  assert.deepEqual(outside.calls.map(([name]) => name), ['get_ticket']);
+});
+
 test('agent prompts carry the hard limits (#74)', () => {
   assert.match(agentPrompt({ agent: 'a', repo: 'r', branch: 'b', base: 'main' }, { number: 1, title: 't' }), /Hard limits: you never deploy, spend money/);
 });

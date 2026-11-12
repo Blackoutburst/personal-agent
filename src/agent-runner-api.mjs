@@ -46,7 +46,7 @@ export function createRunnerApi({ runner, roster, manager = null, opsBoard = nul
       try { history = await opsBoard?.messages(parts[1]); } catch { return ok(502, { error: { code: 'BOARD_UNAVAILABLE', message: 'The Board is not reachable.' } }); }
       return history ? ok(200, history) : ok(404, { error: { code: 'NOT_FOUND', message: 'No such ticket.' } });
     }
-    if (method === 'POST' && url.pathname === '/runs') return ok(202, { run: runner.launch(body) });
+    if (method === 'POST' && url.pathname === '/runs') return ok(202, { run: await runner.launchWithApproval(body) });
     if (method === 'POST' && parts[0] === 'runs' && parts[2] === 'stop' && parts.length === 3) return ok(200, { run: runner.stop(parts[1]) });
     if (method === 'GET' && url.pathname === '/events') {
       const after = Number(url.searchParams.get('after') ?? 0), wait = Math.min(30, Number(url.searchParams.get('wait') ?? 0));
