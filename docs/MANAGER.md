@@ -168,6 +168,6 @@ Only the owner can grant these on the Board and on the host:
    and watch the real push of the first merge; make sure `node --test` works in a fresh clone in the sandbox (the
    packages for the suite, e.g. a `prepareCommand` such as `["node","ops/sandbox/install-deps.mjs"]`); create a merger
    agent (`agents_save_agent`: `role: merger`, any model, it is not used). No directory has to be created: the sandbox
-   user makes `/var/lib/cchan-agents/merge` itself. The merge steps run on the runner's own node (`config.merge.nodePath` overrides); that binary must be executable by the sandbox user (not under a private home), and a node older than `engines.node` is refused with a readable `merge_failed` reason (#92).
+   user makes `/var/lib/cchan-agents/merge` itself. The merge steps run on `/var/lib/cchan-agents/bin/node` by default (`config.merge.nodePath` overrides; `null` means the default). The runner's own node under `/opt` is not used: the sandbox hides `/opt`, so the binary must live under the bound `/var/lib/cchan-agents` and be executable by the sandbox user, and a node older than `engines.node` is refused with a readable `merge_failed` reason (#92).
 6. **Approve a project in chat**, for example: "C-chan, you manage the Personal Agent project: build X." She records
    it, and from then on works it alone.

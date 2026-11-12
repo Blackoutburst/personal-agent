@@ -67,7 +67,7 @@ async function checkNode(exec) {
   const have = found.slice(1).split('.').map(Number), need = [min[1], min[2] ?? 0, min[3] ?? 0].map(Number);
   for (let i = 0; i < 3; i++) {
     if (have[i] > need[i]) return null;
-    if (have[i] < need[i]) return `The node for the merge steps is too old: found ${found}, the repository needs ${range} (package.json engines). Point config.merge.nodePath at a newer node (default: the runner's own, ${process.execPath}).`;
+    if (have[i] < need[i]) return `The node for the merge steps is too old: found ${found}, the repository needs ${range} (package.json engines). Point config.merge.nodePath at a newer node (default: <sandbox root>/bin/node).`;
   }
   return null;
 }

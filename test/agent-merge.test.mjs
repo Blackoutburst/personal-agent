@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mergeAccepted } from '../src/agent-merge.mjs';
@@ -209,6 +209,7 @@ test('SandboxOps.merge pushes to config.merge.origin and wraps the sandbox steps
   const sbroot = join(r.root, 'sbroot'), owner = join(r.root, 'owner-tmp');
   const ops = new SandboxOps({ sudo: fake, root: sbroot });
   mkdirSync(join(sbroot, 'repos'), { recursive: true });
+  mkdirSync(join(sbroot, 'bin')); symlinkSync(process.execPath, join(sbroot, 'bin', 'node')); // stands in for the root-owned /var/lib/cchan-agents/bin/node
   const clone = join(sbroot, 'repos', 'demo.git');
   execFileSync('git', ['clone', '--quiet', '--mirror', r.sandbox, clone]);
   // The sandbox user can rewrite its clone's remote: the push must not follow it.
@@ -217,10 +218,10 @@ test('SandboxOps.merge pushes to config.merge.origin and wraps the sandbox steps
   git(clone, 'remote', 'set-url', 'origin', evil);
   const request = { repo: 'demo', branch: BRANCH, base: 'main', expectedHead: head, ticketNumber: 85, identity: IDENTITY, testCommand: ['node', '--test'],
     prepareCommand: ['node', '-e', '0'], tmp: owner };
-  const none = await ops.merge({ ...request, origin: null });
+  const none = await ops.merge({ ...request, origin: null, nodePath: null });
   assert.equal(none.status, 'error'); assert.match(none.output, /config\.merge\.origin/);
   const before = r.mainOf();
-  const result = await ops.merge({ ...request, origin: r.origin });
+  const result = await ops.merge({ ...request, origin: r.origin, nodePath: null }); // null (from config) falls back to the default, never to bare `node`
   assert.equal(result.status, 'merged', result.output);
   assert.equal(r.mainOf(), result.mergeCommit); assert.notEqual(result.mergeCommit, before);
   assert.equal(git(evil, 'for-each-ref'), '', 'nothing went to the clone\'s remote');
@@ -228,7 +229,7 @@ test('SandboxOps.merge pushes to config.merge.origin and wraps the sandbox steps
   assert.equal(calls.length, 5, 'make the copy, check node, prepare, test, remove the copy');
   assert.ok(calls[0].startsWith(`-n ${WRAPPER} --cwd ${sbroot} --max-seconds `) && / -- sh -c /.test(calls[0]), calls[0]);
   assert.ok(calls[0].endsWith(` sh ${join(sbroot, 'merge')} ${result.mergeCommit}`), calls[0]);
-  for (const line of calls.slice(1, 4)) assert.match(line, new RegExp(`^-n ${WRAPPER} --cwd ${join(sbroot, 'merge')}/cchan-merge-test-[A-Za-z0-9]{8}/repo --max-seconds \\d+ -- ${process.execPath} `));
+  for (const line of calls.slice(1, 4)) assert.match(line, new RegExp(`^-n ${WRAPPER} --cwd ${join(sbroot, 'merge')}/cchan-merge-test-[A-Za-z0-9]{8}/repo --max-seconds \\d+ -- ${join(sbroot, 'bin', 'node')} `));
   assert.match(calls[4], new RegExp(`^-n ${WRAPPER} --cwd ${sbroot} --max-seconds \\d+ -- rm -rf -- ${join(sbroot, 'merge')}/cchan-merge-test-[A-Za-z0-9]{8}$`));
   assert.equal(execFileSync('ls', [join(sbroot, 'merge')]).toString().trim(), '', 'the copy is gone');
   assert.equal(execFileSync('ls', [owner]).toString().trim(), '', 'the owner\'s clones are gone, and were never under the sandbox root');
@@ -482,4 +483,17 @@ test('merge: with nodePath the prepare and test steps run on that node, not the 
   const head2 = r2.onBranch(BRANCH, { 'x.txt': 'x\n' });
   const bad = await merge(r2, head2, { sandbox: withPath(bin), sandboxDir: join(r.root, 'sbroot', 'merge'), nodePath: '/nonexistent/node' });
   assert.equal(bad.status, 'error'); assert.match(bad.output, /could not be run.*config\.merge\.nodePath/s);
+});
+
+test('SandboxOps.merge default node is visible inside the sandbox: /opt is hidden, the default is under a bound path (#92)', async () => {
+  const { SANDBOX_ROOT } = await import('../src/agent-sandbox-ops.mjs');
+  const props = readFileSync(new URL('../ops/sandbox/properties', import.meta.url), 'utf8');
+  const value = key => props.split('\n').find(l => l.startsWith(key + '='))?.slice(key.length + 1).split(/\s+/).filter(Boolean) ?? [];
+  const hidden = value('TemporaryFileSystem').map(x => x.split(':')[0]), bound = value('BindPaths');
+  const under = (path, dir) => path === dir || path.startsWith(dir + '/');
+  assert.ok(hidden.includes('/opt'), 'the sandbox hides /opt, which is why the runner\'s process.execPath cannot be the default');
+  const node = join(SANDBOX_ROOT, 'bin', 'node');
+  assert.ok(bound.some(b => under(node, b)), 'the default node is under a BindPaths entry, re-exposed after the hidden /var/lib');
+  assert.ok(!hidden.some(h => under(h, '/opt') && under(node, h)), 'and not under /opt');
+  assert.ok(props.includes('PATH=/var/lib/cchan-agents/bin:'), 'the same dir is first on the sandbox PATH');
 });
