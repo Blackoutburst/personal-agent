@@ -6,7 +6,8 @@ const DEFAULTS = Object.freeze({ autostart: false });
 
 function normalize(raw) {
   const v = raw && typeof raw === 'object' ? raw : {};
-  return { autostart: v.autostart === true };
+  const d = typeof v.updateDismissed === 'string' && /^[0-9A-Za-z.+-]{1,40}$/.test(v.updateDismissed) ? v.updateDismissed : null;   // version whose update notice was dismissed (#97)
+  return { autostart: v.autostart === true, ...(d ? { updateDismissed: d } : {}) };
 }
 function load(file) {
   try { return normalize(JSON.parse(fs.readFileSync(file, 'utf8'))); } catch { return { ...DEFAULTS }; }
