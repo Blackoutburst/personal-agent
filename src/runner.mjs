@@ -42,8 +42,11 @@ function collect(child) {
 // One turn at a time per owner; turns of different owners run concurrently.
 export class CompanionRunner {
   constructor({ store, owners, runtimeDir, binaries = {}, timeoutMs = 10 * 60_000, spawnImpl = spawn, statusTtlMs = 30_000,
-    mcpServersFor = () => [] }) {
+    mcpServersFor = () => [], onActivity = null }) {
     if (typeof mcpServersFor !== 'function') throw new TypeError('mcpServersFor must be a synchronous function');
+    // onActivity(busy): the number of owners with a running or queued turn, on every change (#100: the runner's deploy
+    // waits for 0 before restarting the companion).
+    this.onActivity = typeof onActivity === 'function' ? onActivity : null;
     this.store = store; this.owners = owners; this.runtimeDir = runtimeDir; this.binaries = binaries;
     this.mcpServersFor = mcpServersFor;
     this.timeoutMs = timeoutMs; this.spawn = spawnImpl; this.statusTtlMs = statusTtlMs;
@@ -125,6 +128,8 @@ export class CompanionRunner {
     return this.#enqueue(this.owners.find(owner => owner.label === label) ?? null, options);
   }
 
+  #activity() { try { this.onActivity?.(this.queues.size); } catch { /* reporting activity never breaks a turn */ } }
+
   #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal, group = null, boardConversationKey } = {}, releaseCheck = false) {
     if (!owner) return Promise.reject(new RunnerError('NO_RUNTIME'));
     let toolPolicy, cwd = null;
@@ -150,7 +155,8 @@ export class CompanionRunner {
     const previous = this.queues.get(owner.label) ?? Promise.resolve();
     const current = previous.catch(() => {}).then(() => this.#turn(owner, { prompt, resume, systemPrompt, toolPolicy, images: [...images], onEvent, signal, releaseCheck, cwd }));
     this.queues.set(owner.label, current);
-    current.finally(() => { if (this.queues.get(owner.label) === current) this.queues.delete(owner.label); }).catch(() => {});
+    this.#activity();
+    current.finally(() => { if (this.queues.get(owner.label) === current) { this.queues.delete(owner.label); this.#activity(); } }).catch(() => {});
     return current;
   }
 

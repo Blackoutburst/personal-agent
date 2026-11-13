@@ -26,8 +26,8 @@
 //   POST /manager/decisions          { kind, ticketId|projectId, reason, reviewRunId? (accept/return), model?, agent?, requestId? }
 // Routing lives in src/agent-runner-api.mjs.
 import { createServer } from 'node:http';
-import { chmodSync, existsSync, readFileSync, rmSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, mkdirSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -65,6 +65,11 @@ const runner = new AgentRunner({ file: stateFile, ops: new SandboxOps(), log, li
   merge: config.merge && typeof config.merge === 'object' ? config.merge : null,
   // Desktop release after a merge (#90, docs/MANAGER.md): off unless config.release.desktop is true.
   release: config.release?.desktop === true ? { dataDir: join(HOME, 'personal-agent-data'), ...config.release } : null,
+  // Server deploy after a merge (#100, docs/MANAGER.md): off unless config.deploy.server is true. selfCommit: the release
+  // this process runs from (~/personal-agent/releases/<sha>), which the guard waits for after a runner restart.
+  deploy: config.deploy?.server === true ? { releaseRoot: join(HOME, 'personal-agent'), dataDir: join(HOME, 'personal-agent-data'),
+    repo: join(HOME, '.cache', 'cchan-agent-runner', 'deploy.git'), releaseTool: join(ROOT, 'ops', 'release.mjs'),
+    stateFile: join(dirname(stateFile), 'deploy.json'), ...config.deploy, selfCommit: /^[0-9a-f]{40}$/.test(basename(realpathSync(ROOT))) ? basename(realpathSync(ROOT)) : null } : null,
   reporter: new BoardReporter({ client: board, projects: config.projects, ownerId: config.ownerId, log }) });
 runner.on('event', event => log(`event ${event.seq} ${event.type} ${event.runId ?? ''} #${event.ticketNumber ?? '?'} ${event.state ?? event.kind ?? ''}`));
 

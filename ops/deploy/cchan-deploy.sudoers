@@ -1,0 +1,7 @@
+# /etc/sudoers.d/cchan-deploy (#100): the runner (ubuntu) may run the root-owned deploy script with exactly these
+# arguments and nothing else. Installed 0440 root:root by ops/deploy/install.sh after `visudo -cf`.
+Cmnd_Alias CCHAN_DEPLOY = /usr/local/sbin/cchan-deploy stop-companion, \
+                          /usr/local/sbin/cchan-deploy start-companion, \
+                          /usr/local/sbin/cchan-deploy restart-runner, \
+                          /usr/local/sbin/cchan-deploy guard-runner
+ubuntu ALL=(root) NOPASSWD: CCHAN_DEPLOY

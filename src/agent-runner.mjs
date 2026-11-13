@@ -13,6 +13,7 @@ import { resolveModel } from './agent-providers.mjs';
 import { hardLimit, AGENT_HARD_LIMITS } from './escalation.mjs';
 import { RosterError } from './agent-roster.mjs';
 import { ManagerError, checkReview } from './agent-manager.mjs';
+import { COMPANION_UNIT, RUNNER_UNIT, ackFile, clearDeployState, readJson, waitUntil, writeJson } from './server-deploy.mjs';
 
 export const DEFAULT_LIMITS = Object.freeze({ maxConcurrent: 2, maxTurns: 80, maxSeconds: 3600, maxQueued: 20,
   heartbeatSeconds: 60 });
@@ -138,18 +139,21 @@ export function reviewPrompt(run, ticket) {
 }
 
 export class AgentRunner extends EventEmitter {
-  #file; #ops; #reporter; #roster; #manager; #merge; #release; #releasing = Promise.resolve(); #limits; #log; #now; #state; #children = new Map(); #timers = new Map(); #pumping = false;
+  #file; #ops; #reporter; #roster; #manager; #merge; #release; #deploy; #deployHold = false; #releasing = Promise.resolve(); #limits; #log; #now; #state; #children = new Map(); #timers = new Map(); #pumping = false;
 
   // file: JSON state file. ops: sandbox operations (see SandboxOps). reporter: Board hooks (see BoardReporter).
   // roster: C-chan's agent roster (#73); with it, every launch must name an active roster agent and follows its policy.
   // merge (#85): { origin, identity?, testCommand?, prepareCommand? } turns the merge step on (see src/agent-merge.mjs).
   // release (#90): { desktop: true, dataDir, buildCommand?, publishCommand?, home? } releases the desktop app after a merge
   // that raises desktop/package.json's version (see src/desktop-release.mjs). Anything but desktop: true leaves it off.
+  // deploy (#100): { server: true, stateFile, selfCommit, repo, releaseRoot, dataDir, releaseTool, ... } deploys main to the
+  // server after a merge and restarts what changed (see src/server-deploy.mjs). Anything but server: true leaves it off.
   // manager: manager mode (#76); it reads the weekly usage from the runs' rate events and refuses Opus/Fable above budget.
-  constructor({ file, ops, reporter, roster = null, manager = null, merge = null, release = null, limits = {}, log = () => {}, now = Date.now }) {
+  constructor({ file, ops, reporter, roster = null, manager = null, merge = null, release = null, deploy = null, limits = {}, log = () => {}, now = Date.now }) {
     super();
     this.#file = file; this.#ops = ops; this.#reporter = reporter; this.#roster = roster; this.#manager = manager; this.#merge = merge; this.#limits = normalizeLimits(limits);
     this.#release = release && typeof release === 'object' && release.desktop === true ? release : null;
+    this.#deploy = deploy && typeof deploy === 'object' && deploy.server === true && typeof deploy.stateFile === 'string' ? deploy : null;
     this.#log = log; this.#now = now;
     this.#state = this.#load();
   }
@@ -390,13 +394,14 @@ export class AgentRunner extends EventEmitter {
       this.#set(run, { release: { ...run.release, status: 'interrupted', endedAt: this.#now(), output: 'The runner restarted during the release.' } }, 'release.ended');
       this.#releaseLine(run);
     }
+    this.#recoverDeploy();
     this.#pump();
   }
 
   #runningCount() { return this.#state.runs.filter(run => ['preparing', 'running', 'stopping'].includes(run.state)).length; }
 
   #pump() {
-    if (this.#pumping) return;
+    if (this.#pumping || this.#deployHold) return; // a runner restart for a deploy is coming: queued runs wait for it
     this.#pumping = true;
     try {
       while (this.#runningCount() < this.#limits.maxConcurrent) {
@@ -556,6 +561,9 @@ export class AgentRunner extends EventEmitter {
     if (run.mode === 'merge' && run.state === 'succeeded' && run.mergeResult?.status === 'merged' && run.mergeResult.mergeCommit && this.#release) {
       await this.#releaseAfterMerge(run);
     }
+    if (run.mode === 'merge' && run.state === 'succeeded' && run.mergeResult?.status === 'merged' && run.mergeResult.mergeCommit && this.#deploy) {
+      await this.#deployAfterMerge(run);
+    }
     return this.public(run);
   }
 
@@ -591,6 +599,140 @@ export class AgentRunner extends EventEmitter {
     this.note({ type: 'manager.attention', kind: 'release_failed', key: `release:${run.id}`, ticketId: run.ticketId, ticketNumber: run.ticketNumber,
       agent: run.agent, suggestion: `${n}: the desktop release${r.version ? ` of ${r.version}` : ''} from ${String(r.commit).slice(0, 10)} ${what}. `
         + `Main is merged and unchanged. The output is on the ticket thread; fix the cause, then run scripts/build-desktop.sh and scripts/publish-desktop.sh from that commit, or merge a fix with a new version.` });
+  }
+
+  // The server deploy (#100), after a fresh merge and after the desktop release (one job at a time on the same chain).
+  #deployAfterMerge(run) {
+    const job = this.#releasing.then(() => this.#deployServer(run));
+    this.#releasing = job.catch(() => {});
+    return job;
+  }
+
+  async #deployServer(run) {
+    const startedAt = this.#now(), commit = run.mergeResult.mergeCommit;
+    this.#set(run, { deploy: { status: 'running', commit, startedAt } }, 'deploy.started');
+    let result;
+    try {
+      result = await this.#ops.deployServer({ ...this.#deploy, origin: this.#merge?.origin ?? null, commit, base: run.base });
+    } catch (error) { result = { status: 'error', output: error.message }; }
+    const status = ['deployed', 'skipped', 'rolled_back', 'recovery_failed', 'failed'].includes(result?.status) ? result.status : 'error';
+    const plan = result?.plan ? { companion: Boolean(result.plan.companion), runner: Boolean(result.plan.runner), reinstall: Boolean(result.plan.reinstall) } : null;
+    const kept = { status, reason: result?.reason ?? null, errorCode: result?.errorCode ?? null, commit, previous: result?.previous ?? null, plan,
+      idle: result?.idle ?? null, units: status === 'deployed' ? [COMPANION_UNIT] : [], health: status === 'deployed' ? 'passed' : null,
+      runner: null, output: text(result?.output, 8000), startedAt };
+    if (status === 'deployed' && plan?.runner) return this.#restartRunner(run, kept);
+    return this.#endDeploy(run, kept);
+  }
+
+  // The runner's own restart, last: wait (bounded) until no agent run is active and start no queued one, hand the restart
+  // to the guard in its own transient unit, and expect to be stopped. The new runner acknowledges on startup
+  // (#recoverDeploy); the guard checks it stays up or rolls back. If this process is still alive much later, it reports.
+  async #restartRunner(run, kept) {
+    const d = this.#deploy;
+    this.#deployHold = true;
+    this.#set(run, { deploy: { ...kept, status: 'runner_waiting' } });
+    const runs = await waitUntil(() => this.#runningCount() === 0, { timeoutMs: d.runnerWaitMs ?? 30 * 60_000, intervalMs: d.runnerPollMs ?? 5000,
+      ...(d.sleep ? { sleep: d.sleep } : {}), now: this.#now });
+    const state = { status: 'pending', phase: 'runner_restart', runId: run.id, ticketId: run.ticketId, ticketNumber: run.ticketNumber ?? null,
+      commit: kept.commit, previous: kept.previous, releaseRoot: d.releaseRoot, repo: d.repo, dataDir: d.dataDir, startedAt: this.#now() };
+    clearDeployState(d.stateFile);
+    writeJson(d.stateFile, state);
+    this.#set(run, { deploy: { ...kept, status: 'runner_restarting', units: [COMPANION_UNIT, RUNNER_UNIT], runnerWait: runs } }, 'deploy.progress');
+    try { await this.#reporter.deploy?.(run); } catch (error) { this.#log(`board deploy post for ${run.id} failed: ${error.code ?? error.message}`); }
+    try { await this.#ops.startRunnerGuard(); }
+    catch (error) {
+      clearDeployState(d.stateFile);
+      return this.#endDeploy(run, { ...kept, status: 'deployed', units: [COMPANION_UNIT], runner: 'restart_failed', runnerWait: runs,
+        output: text(`${kept.output}\nStarting the runner guard failed: ${error.stderr || error.message}`, 8000) });
+    }
+    this.#watchDeploy(d.restartTimeoutMs ?? 10 * 60_000);
+  }
+
+  // Poll the shared deploy file until the guard wrote a final status (or the bound passed), then report it.
+  #watchDeploy(timeoutMs) {
+    const d = this.#deploy, until = this.#now() + timeoutMs;
+    clearInterval(this.#timers.get('deploy'));
+    const timer = setInterval(() => {
+      const state = readJson(d.stateFile);
+      if (!state) { clearInterval(timer); this.#timers.delete('deploy'); this.#deployHold = false; this.#pump(); return; }
+      const final = !['pending', 'rolling_back'].includes(state.status);
+      if (!final && this.#now() < until) return;
+      clearInterval(timer); this.#timers.delete('deploy');
+      this.#finishDeploy(final ? state : { ...state, status: 'unconfirmed' });
+    }, d.watchMs ?? 2000);
+    timer.unref?.();
+    this.#timers.set('deploy', timer);
+  }
+
+  // The guard's result (read by the new runner, the restored one, or the old one if the restart never happened).
+  #finishDeploy(state) {
+    const d = this.#deploy;
+    const run = this.#state.runs.find(item => item.id === state.runId);
+    clearDeployState(d.stateFile);
+    this.#deployHold = false;
+    if (run?.deploy && !['deployed', 'rolled_back', 'recovery_failed', 'failed', 'error', 'interrupted'].includes(run.deploy.status)) {
+      const kept = run.deploy, both = [COMPANION_UNIT, RUNNER_UNIT];
+      const out = text(`${kept.output ?? ''}${state.output ? `\nRunner guard: ${state.output}` : ''}${state.reason ? `\n${state.reason}` : ''}`, 8000);
+      const next = {
+        deployed: { status: 'deployed', units: both, runner: 'healthy' },
+        rolled_back: { status: 'rolled_back', units: both, runner: 'rolled_back', health: 'failed' },
+        rollback_failed: { status: 'recovery_failed', units: both, runner: 'rollback_failed', health: 'failed' },
+        runner_restart_failed: { status: 'deployed', units: [COMPANION_UNIT], runner: 'restart_failed' },
+        unconfirmed: { status: 'deployed', units: both, runner: 'unconfirmed' }
+      }[state.status] ?? { status: 'deployed', units: both, runner: 'unconfirmed' };
+      this.#endDeploy(run, { ...kept, ...next, output: out });
+    }
+    this.#pump();
+  }
+
+  #endDeploy(run, kept) {
+    this.#set(run, { deploy: { ...kept, endedAt: this.#now() } }, 'deploy.ended', { deploy: kept.status, runner: kept.runner ?? null });
+    Promise.resolve(this.#reporter.deploy?.(run)).catch(error => this.#log(`board deploy post for ${run.id} failed: ${error.code ?? error.message}`));
+    this.#deployLine(run);
+  }
+
+  // One Manager line per deploy (#100): commit, units restarted, health result. Silent when nothing was deployed.
+  #deployLine(run) {
+    const r = run.deploy ?? {}, n = run.ticketNumber ? `#${run.ticketNumber}` : `ticket ${run.ticketId}`, c = String(r.commit).slice(0, 10);
+    if (r.status === 'skipped') return;
+    const waited = r.idle && r.idle.waitedMs >= 1000 ? ` Waited ${Math.round(r.idle.waitedMs / 1000)}s for an idle companion${r.idle.ok ? '' : ' (bound reached, restarted anyway)'}.` : '';
+    const reinstall = r.plan?.reinstall ? ' ops/deploy/ changed: Blackout re-runs `sudo sh ops/deploy/install.sh` from that commit.' : '';
+    let kind = 'deploy_failed', what;
+    if (r.status === 'deployed' && ['healthy', null].includes(r.runner ?? null)) {
+      kind = 'deployed';
+      what = `deployed ${c} to the server: restarted ${r.units.join(' and ')}; health check passed${r.runner === 'healthy' ? ' (companion /api/status, runner up and stable)' : ' (companion /api/status)'}. Tell Blackout it is live.`;
+    } else if (r.status === 'deployed') {
+      what = `deployed ${c}: the companion is restarted and healthy, but the runner ${r.runner === 'restart_failed' ? 'could not be restarted and still runs the previous code' : 'restart was not confirmed by the guard'}. Tell Blackout; he checks \`systemctl status cchan-agent-runner\`.`;
+    } else if (r.status === 'rolled_back') {
+      what = `the deploy of ${c} failed its health check${r.runner === 'rolled_back' ? ' (the new runner did not stay up)' : ''} and was rolled back to ${String(r.previous ?? 'the previous release').slice(0, 10)}. Main is unchanged. Tell Blackout; the output is on the ticket thread. Fix forward with a new merge.`;
+    } else if (r.status === 'recovery_failed') {
+      what = `the deploy of ${c} failed and the automatic rollback failed too: the server may be down. Tell Blackout now; do not retry.`;
+    } else if (r.status === 'interrupted') {
+      what = `the deploy of ${c} was cut off by a runner restart. Tell Blackout; he checks ~/personal-agent/current and the services.`;
+    } else {
+      what = `the deploy of ${c} did not run (${r.errorCode ?? r.status}); the previous release is still live. Tell Blackout; the output is on the ticket thread.`;
+    }
+    this.note({ type: 'manager.attention', kind, key: `deploy:${run.id}`, ticketId: run.ticketId, ticketNumber: run.ticketNumber,
+      agent: run.agent, suggestion: `${n}: ${what}${waited}${reinstall}` });
+  }
+
+  // On startup: a deploy this process was in the middle of, and the guard's shared file.
+  #recoverDeploy() {
+    for (const run of this.#state.runs.filter(item => ['running', 'runner_waiting'].includes(item.deploy?.status))) {
+      this.#endDeploy(run, { ...run.deploy, status: 'interrupted', output: text(`${run.deploy.output ?? ''}\nThe runner restarted during the deploy.`, 8000) });
+    }
+    if (!this.#deploy) return;
+    const d = this.#deploy, state = readJson(d.stateFile);
+    if (!state) {
+      for (const run of this.#state.runs.filter(item => item.deploy?.status === 'runner_restarting')) this.#finishDeploy({ runId: run.id, status: 'unconfirmed' });
+      return;
+    }
+    if (!['pending', 'rolling_back'].includes(state.status)) return this.#finishDeploy(state);
+    // The guard is checking this restart: say we are up (only the process running the deployed commit), start no run
+    // until it decided (a rollback restarts us again), and pick its result up.
+    if (state.status === 'pending' && state.commit === d.selfCommit) writeJson(ackFile(d.stateFile), { commit: d.selfCommit, pid: d.pid ?? process.pid, at: this.#now() });
+    this.#deployHold = true;
+    this.#watchDeploy(d.restartTimeoutMs ?? 10 * 60_000);
   }
 
   // After a merge run (#85): archive the ticket's per-task agents once it is done; raise a Manager line for anything else.
