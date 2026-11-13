@@ -105,6 +105,10 @@ export class BoardReporter {
     if (!ticket?.id) throw Object.assign(new Error('Ticket not found on the Board.'), { code: 'NOT_FOUND' });
     if (!this.#projects.has(ticket.project_id)) throw Object.assign(new Error('This ticket is outside the projects C-chan\'s agents may work in.'), { code: 'FORBIDDEN' });
     if (ticket.status === 'done') throw Object.assign(new Error('This ticket is already done.'), { code: 'INVALID' });
+    // #103: the Board refuses an execution on a ticket in review, so a coder launched on it would work with no Board record.
+    if (ticket.status === 'review') {
+      throw Object.assign(new Error('This ticket is in review. Return it to todo on the Board first (a coder cannot work on a ticket in review).'), { code: 'TICKET_IN_REVIEW' });
+    }
     run.board.projectId = ticket.project_id; run.board.threadId = ticket.thread_id ?? null; this.#version(run, ticket);
     const claimed = await this.#client.call('claim_ticket', { ticket_id: ticket.id, expected_version: ticket.version });
     this.#version(run, claimed);
