@@ -141,7 +141,10 @@ the run fails with `POLICY`, whatever the agent reported.
 packages are missing is also `MERGE_ERROR`), and `origin` (required: the push target, in the example
 `https://github.com/Blackoutburst/personal-agent.git`). Git runs as the owner; making the test copy, the prepare step
 and the test run go through `sudo cchan-sandbox-run` like agent units. Releasing the server (restart, rollout) is not
-part of it and stays with the owner.
+part of the merge itself. With `config.deploy.server` (#100, off by default) the runner deploys the merge commit
+afterwards through `ops/release.mjs`, restarts the companion and, when runner code changed, itself via a guard in a
+transient unit, with health checks and automatic rollback: [MANAGER.md](MANAGER.md#server-deploy-after-a-merge-100).
+The deploy's only root access is the fixed-verb `/usr/local/sbin/cchan-deploy` (`ops/deploy/`).
 
 **On the Board.** Each roster agent is mirrored as a managed agent profile named `C-chan · <name>`, with role, model,
 skills, the runner's projects and its status. Creating, updating and archiving the agent does the same to the profile.

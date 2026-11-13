@@ -13,6 +13,7 @@ import { createPrivateHttp } from './src/private-http.mjs';
 import { createConversationHttp } from './src/conversation-http.mjs';
 import { loadRuntimeConfig, companionIdFor } from './src/runtime-config.mjs';
 import { CompanionRunner } from './src/runner.mjs';
+import { activityWriter } from './src/server-deploy.mjs';
 import { Conversations } from './src/conversations.mjs';
 import { WebBudget } from './src/web-budget.mjs';
 import { Connectors } from './src/connectors.mjs';
@@ -325,7 +326,8 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         if (!runtimeDir) throw new Error('COMPANION_RUNTIME_DIR is required with COMPANION_RUNTIME_FILE');
         const appServersFor = runnerOptions.mcpServersFor ?? (() => []);
         agentOwners = agentRunnerOptions.socket || agentRunnerOptions.client ? (agentRunnerOptions.owners ?? []) : [];
-        runner = new CompanionRunner({ store, owners, runtimeDir, binaries, ...runnerOptions,
+        // #100: <dataDir>/companion-activity.json says whether an owner turn is running; the runner's deploy waits for idle.
+        runner = new CompanionRunner({ store, owners, runtimeDir, binaries, onActivity: activityWriter(join(dataDir, 'companion-activity.json')), ...runnerOptions,
           mcpServersFor: owner => {
             const additional = appServersFor(owner), companionId = companionIdFor(store, owner);
             if (additional && typeof additional.then === 'function') {

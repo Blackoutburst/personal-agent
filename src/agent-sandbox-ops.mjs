@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mergeAccepted, DEFAULT_IDENTITY } from './agent-merge.mjs';
 import { releaseDesktop } from './desktop-release.mjs';
+import { deployServer, DEPLOY_CLI } from './server-deploy.mjs';
 
 export const WRAPPER = '/usr/local/sbin/cchan-sandbox-run';
 export const SANDBOX_NODE = '/var/lib/cchan-agents/bin/node';
@@ -118,5 +119,18 @@ export class SandboxOps {
     return releaseDesktop({ origin: origin.trim(), commit, base, dataDir, buildCommand, buildTimeoutMs, tmp,
       sandboxDir: join(this.#root, 'release'), sandbox: (command, { cwd, timeoutMs }) => [this.#sudo, '-n', WRAPPER, '--cwd', cwd,
         '--max-seconds', String(Math.ceil((timeoutMs ?? 3_600_000) / 1000)), '--', ...command] });
+  }
+
+  // The server deploy after a merge (#100): owner-side, through the existing release tool. See src/server-deploy.mjs.
+  async deployServer(options) {
+    if (typeof options?.origin !== 'string' || !options.origin.trim()) return { status: 'error', commit: options?.commit ?? null, output: 'No origin: set config.merge.origin.' };
+    return deployServer({ ...options, origin: options.origin.trim() });
+  }
+
+  // Hand the runner's own restart to the guard (ops/deploy/runner-guard.mjs) in its own transient unit, through the one
+  // fixed sudo command line allowed for it. Returns once systemd accepted the unit; the guard then restarts this runner.
+  async startRunnerGuard({ deployCli = DEPLOY_CLI } = {}) {
+    await run(this.#exec, this.#sudo, ['-n', deployCli, 'guard-runner']);
+    return { started: true };
   }
 }
