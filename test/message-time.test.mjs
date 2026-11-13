@@ -38,9 +38,9 @@ test('a burst never spans midnight; app notes and untimed messages carry none', 
   assert.deepEqual([...burstEnds(list, { timeZone: 'UTC' })].sort(), ['a', 'b']);
 });
 
-test('the web client wires times into the chat list and styles them with the muted ink', () => {
+test('the web client wires times into the chat list and styles them with the soft ink', () => {
   const app = readFileSync(new URL('../public/companion-app.mjs', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../public/companion.css', import.meta.url), 'utf8');
   assert.match(app, /formatMessageTime/); assert.match(app, /burstEnds/);
-  assert.match(css, /\.msg-time \{[^}]*var\(--muted-ink\)/);
+  assert.match(css, /\.msg-time \{[^}]*var\(--soft\)/);
 });
