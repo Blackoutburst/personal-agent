@@ -88,7 +88,8 @@ export class SandboxOps {
     const dir = join(this.#root, 'repos', repo + '.git');
     const git = (...args) => run(this.#exec, 'git', ['-c', `safe.directory=${dir}`, '--git-dir', dir, ...args], { timeout: 30_000 }).then(out => out.trim());
     const head = await git('rev-parse', '--verify', 'refs/heads/' + branch);
-    const commits = Number(await git('rev-list', '--count', `refs/remotes/origin/${base}..refs/heads/${branch}`));
+    // The head is the branch's own; a failing commit count (no origin/<base> ref) must not hide it.
+    const commits = Number(await git('rev-list', '--count', `refs/remotes/origin/${base}..refs/heads/${branch}`).catch(() => NaN));
     return { head, commits: Number.isSafeInteger(commits) ? commits : null };
   }
 

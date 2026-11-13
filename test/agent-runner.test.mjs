@@ -370,3 +370,54 @@ test('Board reporter: only a "yes" the owner gave in person, to the runner\'s qu
 test('agent prompts carry the hard limits (#74)', () => {
   assert.match(agentPrompt({ agent: 'a', repo: 'r', branch: 'b', base: 'main' }, { number: 1, title: 't' }), /Hard limits: you never deploy, spend money/);
 });
+
+// #103: the branch head is recorded after every finished work run, and a coder is not run on a ticket in review.
+test('a work run that made no commit still records the branch head (#103)', async t => {
+  const { r, children, ops } = runner(t);
+  ops.branchInfo = async () => ({ head: 'c0ffee1234567', commits: 0 });
+  const run = launch(r);
+  await until(() => children.length === 1);
+  children[0].say({ type: 'result', is_error: false, result: 'OUTCOME: bookkeeping only\nEVIDENCE: none' }); children[0].exit(0);
+  await until(() => r.get(run.id).state === 'succeeded');
+  assert.deepEqual([r.get(run.id).head, r.get(run.id).commits], ['c0ffee1234567', 0]);
+});
+
+test('a run whose Board execution was refused still records the head, and the review of it is current (#103)', async t => {
+  const { checkReview } = await import('../src/agent-manager.mjs');
+  const client = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'P', number: 5, status: 'todo', version: 1 } },
+    claim_ticket: { version: 2 }, reserve_execution: Object.assign(new Error('distinct_live_review_claim_required'), { code: 'distinct_live_review_claim_required' }) });
+  const reporter = new BoardReporter({ client, projects: ['P'], ownerId: 'o' });
+  const { r, children, ops } = runner(t, { reporter });
+  ops.branchInfo = async () => ({ head: '279be1e0000', commits: 1 });
+  const run = launch(r, { ticketId: 'T' });
+  await until(() => children.length === 1);
+  children[0].say({ type: 'result', is_error: false, result: 'OUTCOME: done\nEVIDENCE: ok' }); children[0].exit(0);
+  await until(() => r.get(run.id).state === 'succeeded');
+  const done = r.get(run.id);
+  assert.match(done.board.executionError, /distinct_live_review_claim_required/);
+  assert.equal(done.head, '279be1e0000');
+  const review = { id: 'rev-1', ticketId: 'T', mode: 'review', state: 'succeeded', agent: 'rev', role: 'reviewer', reviewBranch: done.branch,
+    reviewHead: '279be1e0000', result: { kind: 'review', verdict: 'approve' }, endedAt: done.endedAt + 1 };
+  assert.equal(checkReview([done, review], { ticketId: 'T', reviewRunId: 'rev-1', verdict: 'approve' }).review.id, 'rev-1');
+});
+
+test('a failed run with a recorded head does not make a review of the same head stale; a different head does (#103)', async () => {
+  const { checkReview } = await import('../src/agent-manager.mjs');
+  const branch = 'agent/coder-1/t9';
+  const w = (id, state, head, endedAt) => ({ id, ticketId: 'T', mode: 'work', state, agent: 'coder-1', branch, head, endedAt });
+  const review = { id: 'rev', ticketId: 'T', mode: 'review', state: 'succeeded', agent: 'rev', role: 'reviewer', reviewBranch: branch,
+    reviewHead: 'h2', result: { kind: 'review', verdict: 'approve' }, endedAt: 10 };
+  assert.ok(checkReview([w('a', 'succeeded', 'h2', 1), w('b', 'failed', 'h2', 5), review], { ticketId: 'T', reviewRunId: 'rev' }));
+  assert.throws(() => checkReview([w('a', 'succeeded', 'h1', 1), w('b', 'failed', 'h2', 5), { ...review, reviewHead: 'h1' }], { ticketId: 'T', reviewRunId: 'rev' }), { code: 'STALE_REVIEW' });
+});
+
+test('a coder is not run on a ticket in review: the launch ends with a clear error, nothing is claimed (#103)', async t => {
+  const client = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'P', number: 94, status: 'review', version: 7 } } });
+  const reporter = new BoardReporter({ client, projects: ['P'], ownerId: 'o' });
+  await assert.rejects(reporter.begin({ id: 'x' }), e => e.code === 'TICKET_IN_REVIEW' && /in review/.test(e.message));
+  assert.deepEqual(client.calls.map(([name]) => name), ['get_ticket']);
+  const { r, children } = runner(t, { reporter });
+  const run = launch(r, { ticketId: 'T' });
+  await until(() => ['failed', 'cancelled'].includes(r.get(run.id).state));
+  assert.equal(r.get(run.id).errorCode, 'TICKET_IN_REVIEW'); assert.equal(children.length, 0);
+});
