@@ -71,25 +71,31 @@ Now, on those wakes, while the runner holds at least one active standing approva
   `src/board-session-bridge.mjs`). Reads (`READ_ONLY_BOARD_TOOLS`) pass. Every other Board call is held while the
   bridge resolves each target it names on the Board with its own read calls: tickets via `get_ticket`, threads via
   `get_thread` (its ticket, or its own project for a ticket-less thread), requests via `list_human_requests`, messages
-  via `get_message`, and project ids as targets of their own. The gate knows the exact schemas of
-  `release_managed_agent_claim {ticket_id, expected_version, idempotency_key, reason, recovery_evidence}`,
-  `update_ticket {ticket_id, expected_version, changes}`, `post_message {thread_id, body, idempotency_key, reply_to?}`,
-  `create_ticket {project_id, title, idempotency_key, depends_on?}` and `resolve_human_request {request_id, answer}`
-  (`BOARD_WRITE_SCHEMAS`): the main id is required and plain fields must not be objects. It walks the **whole argument
-  tree** (`update_ticket.changes`, `recovery_evidence`, fields outside the schema, other write tools). Any key that
-  names a Board object (`id`, `*_id(s)`, `project`, `depends_on`, `blocked_by`, `parent`, `links`, `related`,
-  `assignee`, `owner`, ... in snake or camel case) is a target: its kind comes from its name, and an unknown id key is
-  looked up as a ticket. Under such a key every string is an id. All targets must resolve to **one** project (so
-  `changes.project_id` cannot move a ticket and `depends_on` cannot reach into another project, even an approved one),
-  and that project must have an active standing approval: the bridge asks the app with the turn's unattended scheduler
-  token (agents op `boardGate`, which reads `GET /manager` approvals on the runner and needs an agent owner). Otherwise
-  the call never reaches the Board and the model gets a tool error starting "Refused on your own wake:" with the
-  reason. A call with no checkable target (for example `update_companion_profile`), an unknown or unreadable target
-  (an assignee profile or attachment id is not a ticket, so it is refused), a malformed id, arguments too deep (12
-  levels), too large (2000 nodes) or naming more than 50 targets, a failed approval check, or a gated bridge without
-  the token are all refused. The gate token is removed from connect.py's environment. Remaining gap: a reference stored
-  in a plain text field under a key that does not look like an id (for example inside a message body) is not a target;
-  the Board treats such text as text.
+  via `get_message`, and project ids as targets of their own. The gate **fails closed** on exact schemas
+  (`BOARD_WRITE_SCHEMAS`, `TICKET_CHANGES`): only
+  `release_managed_agent_claim {ticket_id, expected_version, idempotency_key, reason, recovery_evidence, view}`,
+  `update_ticket {ticket_id, expected_version, changes}`,
+  `post_message {thread_id, body, idempotency_key, reply_to, attachment_ids}`,
+  `create_ticket {project_id, title, description, acceptance_criteria, idempotency_key, depends_on, priority, labels,
+  required_skills, attachment_ids}` and `resolve_human_request {request_id, answer}` may pass. Any other write tool
+  (`delete_ticket`, `release_ticket`, `upload_attachment`, `update_companion_profile`, ...) is refused, and so is any key
+  a schema does not list. `update_ticket.changes` may only hold the TicketChanges keys `acceptance_criteria`,
+  `assignee_agent_id`, `assignee_owner_id`, `attachment_ids`, `blocked_reason`, `depends_on`, `description`,
+  `evidence`, `labels`, `outcome`, `priority`, `progress`, `recheck_after_seconds`, `release_claim`,
+  `required_skills`, `resolution`, `resource`, `status`, `title`, `unblock_owner`; anything else (`project_id`,
+  `blocking`, `prerequisites`, `epic`, `depends-on`, `links`, ...) is refused, so a relation cannot hide under a name
+  the gate does not know. The main id is required; plain fields must be a string, number or boolean (lists of them for
+  labels, acceptance criteria, skills, evidence, resource); `attachment_ids` must be a list of well-formed ids (shape
+  only: attachments are not resolvable through the Board's read tools). Every resolved id (main id, `reply_to`,
+  `depends_on`) must land in **one** project, even when a second project is approved too, and that project must have
+  an active standing approval: the bridge asks the app with the turn's unattended scheduler token (agents op
+  `boardGate`, which reads `GET /manager` approvals on the runner and needs an agent owner). Otherwise the call never
+  reaches the Board and the model gets a tool error starting "Refused on your own wake:" with the reason. A call with
+  no checkable target, an unknown or unreadable target, a malformed id, more than 50 targets or a list over 200 items,
+  a failed approval check, or a gated bridge without the token are all refused. The gate token is removed from
+  connect.py's environment. The `create_ticket`, `post_message` and `resolve_human_request` key lists are taken from
+  how the app uses those tools, not checked against the live Board schema: a real optional key missing here is refused
+  (fail closed) until it is added.
 - **Unchanged:** contact wakes (another companion writing) get none of this. Mail, the personal and Studio calendars,
   companion contacts, web tools, repo creation and approvals follow the same rules on every wake kind as before.
   Without any approval, own wakes are exactly as before, except that heartbeat wakes' agent launches, merges, stops

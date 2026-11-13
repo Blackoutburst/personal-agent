@@ -1,8 +1,9 @@
 // #94 rework: the per-project check for Board writes on C-chan's unattended wakes (proactive, heartbeat, follow-up,
 // contact). The Board session bridge (src/board-session-bridge.mjs, --gate) calls gateBoardWrite for every Board tool
 // call that is not a read. The target project is resolved here from the ticket, thread, request or message the call
-// names, through the Board's own read tools, never taken from the call alone. The whole argument tree is walked (exact
-// schemas below, nested update_ticket.changes, unknown id keys): every id must resolve to the same single project.
+// names, through the Board's own read tools, never taken from the call alone. Every argument is checked against the exact
+// schemas below, including update_ticket.changes; any other tool or key is refused. Every id must resolve to the same
+// single project.
 // The approval itself is asked from the companion app with the turn's unattended scheduler token (agents op
 // boardGate -> the runner's standing approvals). Anything unknown is refused.
 import { READ_ONLY_BOARD_TOOLS } from './tool-policy.mjs';
@@ -75,86 +76,94 @@ const lookup = async (read, tool, args, what) => {
   try { return await read(tool, args); } catch { refuse(`${what} could not be found on the Board.`); }
 };
 
-// The exact Board schemas of the write tools C-chan uses on her wakes. Each field has a kind: an id the gate resolves
-// on the Board ('ticket', 'tickets', 'thread', 'message', 'request', 'project'), a plain value ('value', which must not
-// be an object or array), or a free-form tree ('tree', walked like any other field). The first-listed id is required.
+// The exact Board schemas of the write tools C-chan uses on her wakes (#94 round 5: fail closed). A write tool that is
+// not listed here (delete_ticket, release_ticket, update_companion_profile, ...) is refused, and so is any key a schema
+// does not list, at the top level or inside update_ticket.changes. Each field has a kind:
+//   'ticket' | 'tickets' | 'thread' | 'message' | 'request' | 'project'  an id (or, for 'tickets', a list of ids) the
+//            gate resolves on the Board; every one must land in the call's single approved project;
+//   'value'  a string, number or boolean (never an object or array);
+//   'text'   a value or a list of values (labels, acceptance criteria, skills);
+//   'refs'   a list of well-formed ids that are not Board tickets/threads (attachments), checked for shape only;
+//   'changes' the update_ticket change set, checked against TICKET_CHANGES.
+// The required field is the call's main id.
+export const TICKET_CHANGES = Object.freeze({
+  acceptance_criteria: 'text', assignee_agent_id: 'value', assignee_owner_id: 'value', attachment_ids: 'refs',
+  blocked_reason: 'value', depends_on: 'tickets', description: 'value', evidence: 'text', labels: 'text', outcome: 'value',
+  priority: 'value', progress: 'value', recheck_after_seconds: 'value', release_claim: 'value', required_skills: 'text',
+  resolution: 'value', resource: 'text', status: 'value', title: 'value', unblock_owner: 'value'
+});
+
 export const BOARD_WRITE_SCHEMAS = Object.freeze({
   release_managed_agent_claim: { required: 'ticket_id', fields: { ticket_id: 'ticket', expected_version: 'value',
-    idempotency_key: 'value', reason: 'value', recovery_evidence: 'tree' } },
-  update_ticket: { required: 'ticket_id', fields: { ticket_id: 'ticket', expected_version: 'value', changes: 'tree' } },
-  post_message: { required: 'thread_id', fields: { thread_id: 'thread', body: 'value', idempotency_key: 'value', reply_to: 'message' } },
-  create_ticket: { required: 'project_id', fields: { project_id: 'project', title: 'value', idempotency_key: 'value', depends_on: 'tickets' } },
+    idempotency_key: 'value', reason: 'value', recovery_evidence: 'value', view: 'value' } },
+  update_ticket: { required: 'ticket_id', fields: { ticket_id: 'ticket', expected_version: 'value', changes: 'changes' } },
+  post_message: { required: 'thread_id', fields: { thread_id: 'thread', body: 'value', idempotency_key: 'value', reply_to: 'message',
+    attachment_ids: 'refs' } },
+  create_ticket: { required: 'project_id', fields: { project_id: 'project', title: 'value', description: 'value',
+    acceptance_criteria: 'text', idempotency_key: 'value', depends_on: 'tickets', priority: 'value', labels: 'text',
+    required_skills: 'text', attachment_ids: 'refs' } },
   resolve_human_request: { required: 'request_id', fields: { request_id: 'request', answer: 'value' } }
 });
 
-// Any key anywhere in the arguments that names a Board object, in snake or camel case: `id`, `*_id(s)`, and the
-// relation words below. Its value must resolve on the Board to the call's one approved project, or the call is refused.
-const snake = key => key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-const RELATION = /(^|_)(ids?|depends?|depends_on|dependencies|dependency|blocks|blocked_by|blockers?|parents?|children|child|duplicates?|duplicate_of|related|relates_to|links?|reply_to|replies_to|assignees?|owners?|project|ticket|thread|message|request)$/;
-const isIdKey = key => RELATION.test(snake(key));
-// Which Board object an id key names (by its words); anything else is looked up as a ticket and refused if it is not one.
-function kindOfKey(key) {
-  const name = snake(key);
-  if (/project/.test(name)) return 'project';
-  if (/thread/.test(name)) return 'thread';
-  if (/request/.test(name)) return 'request';
-  if (/message|reply/.test(name)) return 'message';
-  return 'ticket';
-}
+const MAX_TARGETS = 50, MAX_LIST = 200;
+const plain = value => typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value));
+const RESOLVED = new Set(['ticket', 'tickets', 'thread', 'message', 'request', 'project']);
 
-const MAX_DEPTH = 12, MAX_NODES = 2000, MAX_TARGETS = 50;
-
-// Every project this call would touch. Throws BoardGateRefusal when a target is malformed, unknown, or missing, and
-// when the call (top level or nested, e.g. update_ticket.changes.project_id or .depends_on) names more than one project.
+// Every project this call would touch. Throws BoardGateRefusal when the tool or a key is not in the exact schemas, a
+// field has the wrong shape, a target is malformed, unknown or missing, or the call names more than one project.
 export async function boardWriteTargets(tool, args, read) {
   if (!object(args)) refuse('The Board call has no arguments to check.');
+  const schema = Object.hasOwn(BOARD_WRITE_SCHEMAS, tool) ? BOARD_WRITE_SCHEMAS[tool] : null;
+  if (!schema) refuse(`${tool} is not a Board write this gate knows, so it is not allowed on your own wake.`);
+  if (args[schema.required] === undefined || args[schema.required] === null) refuse(`${tool} needs ${schema.required}.`);
   const targets = [];
-  let nodes = 0;
-  const resolverFor = kind => ({ project: id => Promise.resolve(id), ticket: id => ticketProject(read, id), tickets: id => ticketProject(read, id),
-    thread: id => threadProject(read, id), message: id => messageProject(read, id), request: id => requestProject(read, id) })[kind];
-  // Under an id key every string leaf is an id: in a list, or in an object (whose own id keys name their kind, and
-  // whose other strings count as ids of the outer kind, so a reference cannot hide under a key the gate does not know).
-  const addIds = (path, kind, value, depth = 1) => {
-    if (++nodes > MAX_NODES || depth > MAX_DEPTH) refuse('The Board call\'s arguments are too large or too deep to check.');
-    if (value === undefined || value === null) return;
-    if (Array.isArray(value)) { value.forEach((item, i) => addIds(`${path}[${i}]`, kind, item, depth + 1)); return; }
-    if (object(value)) {
-      for (const [key, child] of Object.entries(value)) addIds(`${path}.${key}`, isIdKey(key) ? kindOfKey(key) : kind, child, depth + 1);
-      return;
-    }
+  const target = (path, kind, value) => {
     const id = str(value);
     if (!id) refuse(`The Board call's ${path} is not a valid id.`);
     if (targets.length >= MAX_TARGETS) refuse('The Board call names too many targets to check.');
     targets.push({ path, kind, id });
   };
-  // Walk a value that is not itself an id: any id key inside it is a target.
-  const walk = (path, value, depth) => {
-    if (++nodes > MAX_NODES || depth > MAX_DEPTH) refuse('The Board call\'s arguments are too large or too deep to check.');
-    if (Array.isArray(value)) { value.forEach((item, i) => walk(`${path}[${i}]`, item, depth + 1)); return; }
-    if (!object(value)) return;
-    for (const [key, child] of Object.entries(value)) {
-      const where = path ? `${path}.${key}` : key;
-      if (child === undefined || child === null) continue;
-      if (isIdKey(key)) addIds(where, kindOfKey(key), child);
-      else walk(where, child, depth + 1);
-    }
+  const list = (path, value) => {
+    if (!Array.isArray(value)) refuse(`The Board call's ${path} must be a list.`);
+    if (value.length > MAX_LIST) refuse(`The Board call's ${path} is too long to check.`);
+    return value;
   };
-  const schema = Object.hasOwn(BOARD_WRITE_SCHEMAS, tool) ? BOARD_WRITE_SCHEMAS[tool] : null;
-  if (schema && (args[schema.required] === undefined || args[schema.required] === null)) refuse(`${tool} needs ${schema.required}.`);
+  const check = (path, kind, value) => {
+    if (value === undefined || value === null) return;
+    if (kind === 'value') { if (!plain(value)) refuse(`The Board call's ${path} must be a plain value.`); return; }
+    if (kind === 'text') {
+      if (Array.isArray(value)) list(path, value).forEach((item, i) => { if (!plain(item)) refuse(`The Board call's ${path}[${i}] must be a plain value.`); });
+      else if (!plain(value)) refuse(`The Board call's ${path} must be a plain value or a list of them.`);
+      return;
+    }
+    if (kind === 'refs') { list(path, value).forEach((item, i) => { if (!str(item)) refuse(`The Board call's ${path}[${i}] is not a valid id.`); }); return; }
+    if (kind === 'tickets') {
+      if (Array.isArray(value)) list(path, value).forEach((item, i) => target(`${path}[${i}]`, 'ticket', item));
+      else target(path, 'ticket', value);
+      return;
+    }
+    if (kind === 'changes') {
+      if (!object(value)) refuse(`The Board call's ${path} must be an object.`);
+      for (const [key, child] of Object.entries(value)) {
+        if (!Object.hasOwn(TICKET_CHANGES, key)) refuse(`The Board call's ${path}.${key} is not a ticket field this gate allows.`);
+        check(`${path}.${key}`, TICKET_CHANGES[key], child);
+      }
+      return;
+    }
+    if (RESOLVED.has(kind)) { target(path, kind, value); return; }
+    refuse(`The Board call's ${path} could not be checked.`);
+  };
   for (const [key, value] of Object.entries(args)) {
-    if (key === 'session_id' || value === undefined || value === null) continue; // session_id is the bridge's own, always replaced.
-    const kind = schema && Object.hasOwn(schema.fields, key) ? schema.fields[key] : null;
-    if (kind === 'value') { if (typeof value === 'object') refuse(`The Board call's ${key} must be a plain value.`); }
-    else if (kind === 'tree') walk(key, value, 1);
-    else if (kind) addIds(key, kind, value);
-    // A field outside the schema (or any field of another write tool): an id key is resolved by its name, the rest walked.
-    else if (isIdKey(key)) addIds(key, kindOfKey(key), value);
-    else walk(key, value, 1);
+    if (key === 'session_id') continue; // the bridge's own field, always replaced with the bound session.
+    if (!Object.hasOwn(schema.fields, key)) refuse(`The Board call's ${key} is not a ${tool} field this gate allows.`);
+    check(key, schema.fields[key], value);
   }
   if (!targets.length) refuse(`${tool} names no ticket, thread, request or project, so it cannot be checked against your approved projects.`);
+  const resolve = { project: id => Promise.resolve(id), ticket: id => ticketProject(read, id), thread: id => threadProject(read, id),
+    message: id => messageProject(read, id), request: id => requestProject(read, id) };
   const projects = new Set();
   for (const { path, kind, id } of targets) {
-    projects.add(await resolverFor(kind)(id));
+    projects.add(await resolve[kind](id));
     if (projects.size > 1) refuse(`The Board call's ${path} (${id}) is not in the same project as the rest of the call (${[...projects].join(', ')}); a wake may only write within one approved project.`);
   }
   return [...projects];

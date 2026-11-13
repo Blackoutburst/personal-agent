@@ -52,10 +52,10 @@ function app({ allowed = id => id === 'cchan' } = {}) {
 
 test('Board writes on an own wake: approved project passes, resolved on the Board from ticket, thread, request or project (#94)', async () => {
   const { approved } = app();
-  for (const [tool, args] of [['create_ticket', { project_id: APPROVED, title: 'x' }], ['update_ticket', { ticket_id: 'TA', status: 'done' }],
+  for (const [tool, args] of [['create_ticket', { project_id: APPROVED, title: 'x' }], ['update_ticket', { ticket_id: 'TA', changes: { status: 'done' } }],
     ['post_message', { thread_id: 'THA', body: 'hi' }], ['post_message', { thread_id: 'GEN', body: 'hi', reply_to: 'MA' }],
     ['release_managed_agent_claim', { ticket_id: 'TA' }], ['resolve_human_request', { request_id: 'RQA', answer: 'yes' }],
-    ['update_ticket', { ticket_id: 'TA', depends_on_ticket_ids: ['TA'] }]]) {
+    ['update_ticket', { ticket_id: 'TA', changes: { depends_on: ['TA'] } }]]) {
     const verdict = await gateBoardWrite({ tool, args, read, approved: approved('cchan') });
     assert.equal(verdict.ok, true, `${tool} ${JSON.stringify(args)}: ${verdict.reason}`);
     assert.deepEqual(verdict.projects, [APPROVED]);
@@ -67,22 +67,21 @@ test('Board writes on an own wake: approved project passes, resolved on the Boar
 test('Board writes on an own wake: unapproved project, foreign owner and unknown targets are refused (#94)', async () => {
   const { approved } = app();
   const cases = [
-    ['update_ticket', { ticket_id: 'TB', status: 'done' }, /Project proj-other has no active standing approval/],
+    ['update_ticket', { ticket_id: 'TB', changes: { status: 'done' } }, /Project proj-other has no active standing approval/],
     ['post_message', { thread_id: 'THB', body: 'hi' }, /proj-other/],
     ['resolve_human_request', { request_id: 'RQB', answer: 'yes' }, /proj-other/],
     ['create_ticket', { project_id: OTHER, title: 'x' }, /proj-other/],
     ['release_managed_agent_claim', { ticket_id: 'TB' }, /proj-other/],
     // The call cannot borrow the approved project's id for another project's ticket, thread or reply.
-    ['update_ticket', { ticket_id: 'TB', project_id: APPROVED }, /proj-other/],
-    ['update_ticket', { ticket_id: 'TA', project_id: OTHER }, /proj-other/],
+    ['update_ticket', { ticket_id: 'TB', changes: { depends_on: ['TA'] } }, /proj-other/],
     ['post_message', { thread_id: 'THA', reply_to: 'MB', body: 'hi' }, /proj-other/],
-    ['update_ticket', { ticket_id: 'TA', depends_on_ticket_ids: ['TB'] }, /proj-other/],
+    ['update_ticket', { ticket_id: 'TA', changes: { depends_on: ['TB'] } }, /proj-other/],
     // Unknown targets.
     ['update_ticket', { ticket_id: 'T-missing' }, /could not be found/],
     ['post_message', { thread_id: 'TH-missing', body: 'hi' }, /could not be found/],
     ['post_message', { thread_id: 'LOOSE', body: 'hi' }, /belongs to no project ticket/],
     ['resolve_human_request', { request_id: 'RQ-missing' }, /could not be found/],
-    ['update_companion_profile', { name: 'C-chan' }, /names no ticket, thread, request or project/],
+    ['update_companion_profile', { name: 'C-chan' }, /update_companion_profile is not a Board write this gate knows/],
     ['update_ticket', {}, /update_ticket needs ticket_id/],
     ['post_message', { body: 'hi', project_id: APPROVED }, /post_message needs thread_id/],
     ['update_ticket', { ticket_id: '../TA' }, /not a valid id/],
@@ -102,15 +101,21 @@ test('Board writes on an own wake: unapproved project, foreign owner and unknown
   assert.equal((await gateBoardWrite({ tool: 'update_ticket', args: { ticket_id: 'TA' }, read, approved: async () => { throw new Error('down'); } })).ok, false);
 });
 
-test('Board writes on an own wake: the exact schemas pass with every field, nested ids in the same approved project pass (#94)', async () => {
+test('Board writes on an own wake: the exact schemas pass with every field (#94)', async () => {
   const { approved } = app();
+  const allChanges = { acceptance_criteria: ['a', 'b'], assignee_agent_id: 'coder-1', assignee_owner_id: 'owner-1', attachment_ids: ['att-1'],
+    blocked_reason: 'waiting', depends_on: ['TA'], description: 'd', evidence: 'tests green', labels: ['x'], outcome: 'o', priority: 'high',
+    progress: 'half', recheck_after_seconds: 600, release_claim: true, required_skills: ['node'], resolution: 'fixed', resource: 'repo',
+    status: 'review', title: 't', unblock_owner: 'owner-1' };
   const ok = [
-    ['release_managed_agent_claim', { ticket_id: 'TA', expected_version: 3, idempotency_key: 'k-1', reason: 'stale claim',
-      recovery_evidence: { run: 'r-1', notes: ['agent exited'], ticket_id: 'TA' } }],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 4, changes: { status: 'review', title: 'x', project_id: APPROVED, depends_on: ['TA'] } }],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 4, changes: { links: [{ ticket_id: 'TA' }], dependsOn: 'TA', related: { tickets: ['TA'] } } }],
-    ['post_message', { thread_id: 'THA', body: 'done', idempotency_key: 'k-2', reply_to: 'MA' }],
-    ['create_ticket', { project_id: APPROVED, title: 'x', idempotency_key: 'k-3', depends_on: ['TA'] }],
+    ['release_managed_agent_claim', { ticket_id: 'TA', expected_version: 3, idempotency_key: 'k-1', reason: 'stale claim', recovery_evidence: 'run r-1 exited', view: 'full' }],
+    ['release_managed_agent_claim', { ticket_id: 'TA', expected_version: 3, idempotency_key: 'k-1', reason: 'stale claim', recovery_evidence: 7 }],
+    ['update_ticket', { ticket_id: 'TA', expected_version: 4, changes: allChanges }],
+    ['update_ticket', { ticket_id: 'TA', expected_version: 4, changes: { depends_on: 'TA', acceptance_criteria: 'one line' } }],
+    ['update_ticket', { ticket_id: 'TA', session_id: 'x', changes: {} }],
+    ['post_message', { thread_id: 'THA', body: 'done', idempotency_key: 'k-2', reply_to: 'MA', attachment_ids: ['att-2'] }],
+    ['create_ticket', { project_id: APPROVED, title: 'x', description: 'd', acceptance_criteria: ['a'], idempotency_key: 'k-3', depends_on: ['TA'],
+      priority: 'low', labels: ['y'], required_skills: ['z'], attachment_ids: [] }],
     ['create_ticket', { project_id: APPROVED, title: 'x', idempotency_key: 'k-3', depends_on: [] }],
     ['resolve_human_request', { request_id: 'RQA', answer: 'yes' }]
   ];
@@ -121,48 +126,58 @@ test('Board writes on an own wake: the exact schemas pass with every field, nest
   }
 });
 
-test('Board writes on an own wake: ids nested anywhere in the arguments cannot reach another project (#94 nested-bypass probes)', async () => {
+test('Board writes on an own wake: the gate fails closed on unknown tools, unknown keys and wrong shapes (#94 round 5 probes)', async () => {
   const { approved, manager } = app();
   // Even a second approved project may not be mixed into one call.
   manager.approve({ projectId: OTHER, direction: 'Also approved.' });
   const both = approved('cchan');
+  const upd = changes => ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes }];
   const probes = [
-    // update_ticket.changes: moving the ticket, depending on / linking to another project's ticket, in any spelling.
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { project_id: OTHER } }, /changes\.project_id \(proj-other\) is not in the same project/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { projectId: OTHER } }, /changes\.projectId/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { depends_on: ['TA', 'TB'] } }, /changes\.depends_on\[1\] \(TB\)/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { dependsOn: 'TB' } }, /changes\.dependsOn/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { blocked_by: ['TB'] } }, /changes\.blocked_by\[0\]/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { parent_ticket_id: 'TB' } }, /changes\.parent_ticket_id/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { links: [{ ticket_id: 'TB' }] } }, /changes\.links\[0\]\.ticket_id/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { meta: { deep: [{ thread_id: 'THB' }] } } }, /changes\.meta\.deep\[0\]\.thread_id/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { reply_to: 'MB' } }, /changes\.reply_to/],
-    // Unknown id keys are looked up as tickets: another project's ticket or anything not on the Board is refused.
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { epic_id: 'TB' } }, /changes\.epic_id/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { assignee_id: 'profile-7' } }, /Ticket profile-7 could not be found/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { attachment_ids: ['att-1'] } }, /Ticket att-1 could not be found/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { owner: 'someone' } }, /Ticket someone could not be found/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { depends_on: [{ id: 'TB' }] } }, /changes\.depends_on\[0\]\.id \(TB\)/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { links: [{ ticket_id: 'TA', ref: 'TB' }] } }, /changes\.links\[0\]\.ref \(TB\)/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { links: [{ ticket_id: 'TA', kind: 'relates to' }] } }, /changes\.links\[0\]\.kind is not a valid id/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { depends_on: [true] } }, /changes\.depends_on\[0\] is not a valid id/],
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { project_id: 7 } }, /not a valid id/],
-    // Fields outside the schema and free-form trees are walked too.
-    ['update_ticket', { ticket_id: 'TA', expected_version: 1, project_id: OTHER, changes: {} }, /project_id \(proj-other\) is not in the same project/],
-    ['release_managed_agent_claim', { ticket_id: 'TA', expected_version: 1, idempotency_key: 'k', reason: 'r', recovery_evidence: { ticket_id: 'TB' } }, /recovery_evidence\.ticket_id/],
-    ['release_managed_agent_claim', { ticket_id: 'TA', expected_version: 1, idempotency_key: 'k', reason: 'r', recovery_evidence: [{ runs: [{ thread: 'THB' }] }] }, /recovery_evidence\[0\]\.runs\[0\]\.thread/],
+    // Reviewer probes: relation keys the old name heuristic did not recognise, now refused because they are not TicketChanges keys.
+    [...upd({ blocking: ['TB'] }), /changes\.blocking is not a ticket field/],
+    [...upd({ prerequisites: ['TB'] }), /changes\.prerequisites is not a ticket field/],
+    [...upd({ epic: 'TB' }), /changes\.epic is not a ticket field/],
+    [...upd({ 'depends-on': ['TB'] }), /changes\.depends-on is not a ticket field/],
+    [...upd({ blocking: ['TA'] }), /changes\.blocking is not a ticket field/], // refused even when it points inside the project
+    [...upd({ project_id: OTHER }), /changes\.project_id is not a ticket field/],
+    [...upd({ projectId: APPROVED }), /changes\.projectId is not a ticket field/],
+    [...upd({ dependsOn: 'TA' }), /changes\.dependsOn is not a ticket field/],
+    [...upd({ blocked_by: ['TB'] }), /changes\.blocked_by is not a ticket field/],
+    [...upd({ parent_ticket_id: 'TB' }), /changes\.parent_ticket_id/],
+    [...upd({ links: [{ ticket_id: 'TA' }] }), /changes\.links is not a ticket field/],
+    [...upd({ meta: { deep: [{ thread_id: 'THB' }] } }), /changes\.meta is not a ticket field/],
+    [...upd(JSON.parse('{"__proto__": {"depends_on": ["TB"]}, "status": "done"}')), /changes\.__proto__ is not a ticket field/],
+    // Allowed keys with the wrong shape.
+    [...upd({ depends_on: ['TA', 'TB'] }), /changes\.depends_on\[1\] \(TB\) is not in the same project/],
+    [...upd({ depends_on: [{ id: 'TA' }] }), /changes\.depends_on\[0\] is not a valid id/],
+    [...upd({ depends_on: [true] }), /changes\.depends_on\[0\] is not a valid id/],
+    [...upd({ status: { ticket_id: 'TB' } }), /changes\.status must be a plain value/],
+    [...upd({ labels: [{ ticket_id: 'TB' }] }), /changes\.labels\[0\] must be a plain value/],
+    [...upd({ evidence: { ticket_id: 'TB' } }), /changes\.evidence must be a plain value/],
+    [...upd({ attachment_ids: ['../x'] }), /changes\.attachment_ids\[0\] is not a valid id/],
+    [...upd({ attachment_ids: 'att-1' }), /changes\.attachment_ids must be a list/],
+    [...upd({ depends_on: Array.from({ length: 60 }, () => 'TA') }), /too many targets/],
+    [...upd('done'), /changes must be an object/],
+    // Top-level keys outside the schema.
+    ['update_ticket', { ticket_id: 'TA', expected_version: 1, project_id: OTHER, changes: {} }, /project_id is not a update_ticket field/],
+    ['update_ticket', { ticket_id: 'TA', status: 'done' }, /status is not a update_ticket field/],
+    ['release_managed_agent_claim', { ticket_id: 'TA', expected_version: 1, idempotency_key: 'k', reason: 'r', recovery_evidence: { ticket_id: 'TB' } }, /recovery_evidence must be a plain value/],
     ['release_managed_agent_claim', { ticket_id: 'TA', expected_version: 1, idempotency_key: 'k', reason: { ticket_id: 'TB' } }, /reason must be a plain value/],
+    ['release_managed_agent_claim', { ticket_id: 'TA', expected_version: 1, release_all: true }, /release_all is not a release_managed_agent_claim field/],
     ['post_message', { thread_id: 'THA', body: 'x', idempotency_key: 'k', reply_to: 'MB' }, /reply_to \(MB\)/],
     ['post_message', { thread_id: 'THA', body: { ticket_id: 'TB' }, idempotency_key: 'k' }, /body must be a plain value/],
-    ['post_message', { thread_id: 'THA', body: 'x', idempotency_key: 'k', mentions: [{ ticket_id: 'TB' }] }, /mentions\[0\]\.ticket_id/],
-    ['create_ticket', { project_id: APPROVED, title: 'x', idempotency_key: 'k', depends_on: ['TB'] }, /depends_on(\[0\])? \(TB\)/],
-    ['create_ticket', { project_id: APPROVED, title: 'x', idempotency_key: 'k', depends_on: 'TB' }, /depends_on(\[0\])? \(TB\)/],
-    ['create_ticket', { project_id: APPROVED, title: 'x', idempotency_key: 'k', parent: 'TB' }, /parent \(TB\)/],
-    ['create_ticket', { project_id: APPROVED, title: 'x', idempotency_key: 'k', idempotency: { request_id: 'RQB' } }, /idempotency\.request_id/],
-    ['resolve_human_request', { request_id: 'RQA', answer: 'yes', ticket_id: 'TB' }, /ticket_id \(TB\)/],
+    ['post_message', { thread_id: 'THA', body: 'x', idempotency_key: 'k', mentions: [{ ticket_id: 'TB' }] }, /mentions is not a post_message field/],
+    ['create_ticket', { project_id: APPROVED, title: 'x', idempotency_key: 'k', depends_on: ['TB'] }, /depends_on\[0\] \(TB\)/],
+    ['create_ticket', { project_id: APPROVED, title: 'x', idempotency_key: 'k', depends_on: 'TB' }, /depends_on \(TB\)/],
+    ['create_ticket', { project_id: APPROVED, title: 'x', idempotency_key: 'k', parent: 'TB' }, /parent is not a create_ticket field/],
+    ['resolve_human_request', { request_id: 'RQA', answer: 'yes', ticket_id: 'TB' }, /ticket_id is not a resolve_human_request field/],
     ['resolve_human_request', { request_id: 'RQA', answer: { thread_id: 'THB' } }, /answer must be a plain value/],
-    // Another write tool (no exact schema) gets the same walk.
-    ['release_ticket', { ticket_id: 'TA', note: { ticketIds: ['TB'] } }, /note\.ticketIds\[0\]/]
+    // Write tools without an explicit schema are refused outright, whatever they name.
+    ['delete_ticket', { ticket_id: 'TA' }, /delete_ticket is not a Board write this gate knows/],
+    ['release_ticket', { ticket_id: 'TA' }, /release_ticket is not a Board write this gate knows/],
+    ['upload_attachment', { thread_id: 'THA', filename: 'a', content_base64: 'eA==' }, /upload_attachment is not a Board write/],
+    ['constructor', { ticket_id: 'TA' }, /constructor is not a Board write/],
+    ['update_ticket', null, /no arguments/]
   ];
   for (const [tool, args, reason] of probes) {
     const verdict = await gateBoardWrite({ tool, args, read, approved: both });
@@ -170,13 +185,6 @@ test('Board writes on an own wake: ids nested anywhere in the arguments cannot r
     assert.match(verdict.reason, /^Refused on your own wake: /);
     assert.match(verdict.reason, reason, `${tool} ${JSON.stringify(args)}: ${verdict.reason}`);
   }
-  // Too deep or too large to check is refused, not skipped.
-  let deep = { ticket_id: 'TB' }; for (let i = 0; i < 20; i += 1) deep = { more: deep };
-  assert.match((await gateBoardWrite({ tool: 'update_ticket', args: { ticket_id: 'TA', changes: deep }, read, approved: both })).reason, /too large or too deep/);
-  const many = { ticket_id: 'TA', changes: { depends_on: Array.from({ length: 60 }, () => 'TA') } };
-  assert.match((await gateBoardWrite({ tool: 'update_ticket', args: many, read, approved: both })).reason, /too many targets/);
-  // session_id is the bridge's own field (always replaced), not a target.
-  assert.equal((await gateBoardWrite({ tool: 'update_ticket', args: { ticket_id: 'TA', session_id: 'x', changes: {} }, read, approved: both })).ok, true);
 });
 
 test('the boardGate op answers from the runner\'s active approvals only (#94)', async () => {
@@ -258,16 +266,18 @@ const text = message => JSON.parse(message.result.content[0].text);
 test('the gated bridge forwards approved writes and refuses others before they reach the Board (#94)', async t => {
   const dir = tmp(t), { agents } = app(), gate = await schedulerEndpoint(t, agents);
   const b = bridge(t, dir, { [GATE_URL_ENV]: gate.url, [GATE_TOKEN_ENV]: gate.token });
-  const ok = await b.call('update_ticket', { ticket_id: 'TA', status: 'done' });
+  const ok = await b.call('update_ticket', { ticket_id: 'TA', changes: { status: 'done' } });
   assert.equal(ok.result.isError, undefined, JSON.stringify(ok));
   assert.equal(text(ok).wrote, 'update_ticket');
-  const refused = await b.call('update_ticket', { ticket_id: 'TB', status: 'done' });
+  const refused = await b.call('update_ticket', { ticket_id: 'TB', changes: { status: 'done' } });
   assert.equal(refused.result.isError, true);
   assert.match(refused.result.content[0].text, /Refused on your own wake: Project proj-other has no active standing approval/);
   const unknown = await b.call('post_message', { thread_id: 'TH-missing', body: 'x' });
   assert.equal(unknown.result.isError, true); assert.match(unknown.result.content[0].text, /could not be found/);
-  const nested = await b.call('update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { project_id: OTHER } });
-  assert.equal(nested.result.isError, true); assert.match(nested.result.content[0].text, /changes\.project_id \(proj-other\) is not in the same project/);
+  const nested = await b.call('update_ticket', { ticket_id: 'TA', expected_version: 1, changes: { blocking: ['TB'] } });
+  assert.equal(nested.result.isError, true); assert.match(nested.result.content[0].text, /changes\.blocking is not a ticket field/);
+  const deleted = await b.call('delete_ticket', { ticket_id: 'TA' });
+  assert.equal(deleted.result.isError, true); assert.match(deleted.result.content[0].text, /delete_ticket is not a Board write this gate knows/);
   const created = await b.call('create_ticket', { project_id: APPROVED, title: 'x' });
   assert.equal(text(created).wrote, 'create_ticket');
   // Reads pass straight through; the Board process never sees the gate's token; the bridge's own reads stay internal.
