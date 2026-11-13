@@ -134,17 +134,21 @@ test('a mention always gets a reply; an unmentioned companion may stay silent', 
 });
 
 test('smart delay: a burst of texts waits until people stop typing and is answered once', async t => {
-  const f = fixture(t, { gatherMs: 60, now: Date.now, handler: who => who === 'blackout' ? 'one reply' : 'NO_REPLY' });
+  const f = fixture(t, { gatherMs: 60, handler: who => who === 'blackout' ? 'one reply' : 'NO_REPLY' });
   const groupId = await f.create();
   await f.as('screamer', { action: 'typing', groupId, active: true });
   await f.post('screamer', groupId, 'so');
-  await sleep(40);
+  // The injected clock only moves when the test moves it, so no amount of load can end the gathering early.
+  f.clock += 40;
+  await sleep(20);
   assert.equal(f.turns.length, 0, 'A fragment waits');
   await f.as('screamer', { action: 'typing', groupId, active: true });
   assert.deepEqual((await f.as('blackout', { action: 'snapshot', groupId })).typing, ['owner:screamer'], 'Others see who is typing');
   await f.post('screamer', groupId, 'what are we doing tonight?');
+  f.clock += 20;
   await sleep(20);
   assert.equal(f.turns.length, 0, 'Still gathering');
+  f.clock += 10_000; // people stopped typing: the quiet window has passed
   await f.groups.idle();
   assert.equal(f.turns.filter(turn => turn.who === 'blackout').length, 1, 'One decision per companion for the whole burst');
   const prompt = f.turns.find(turn => turn.who === 'blackout').prompt;
