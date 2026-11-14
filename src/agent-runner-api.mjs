@@ -78,12 +78,20 @@ export function createRunnerApi({ runner, roster, manager = null, opsBoard = nul
       return ok(200, { run: runner.stop(parts[1]) });
     }
     if (method === 'GET' && url.pathname === '/events') {
+      // approved (#98): the event's ticket is in a project with an active standing approval (from the Board watch's
+      // snapshot). Only those wake C-chan; an unknown ticket or project is never approved.
+      const mark = events => events.map(event => {
+        const ticket = typeof event.ticketId === 'string' ? (tickets() ?? []).find(item => item.id === event.ticketId) : null;
+        const project = ticket?.projectId ?? (typeof event.projectId === 'string' ? event.projectId : null);
+        return { ...event, approved: Boolean(manager && typeof project === 'string' && manager.approved(project)) };
+      });
       const after = Number(url.searchParams.get('after') ?? 0), wait = Math.min(30, Number(url.searchParams.get('wait') ?? 0));
       let events = runner.events(Number.isFinite(after) ? after : 0);
       if (!events.length && wait > 0) {
         await new Promise(resolve => { const timer = setTimeout(resolve, wait * 1000); waiters.add(() => { clearTimeout(timer); resolve(); }); });
         events = runner.events(Number.isFinite(after) ? after : 0);
       }
+      events = mark(events);
       return ok(200, { events, last: runner.events(0).at(-1)?.seq ?? 0 });
     }
     if (parts[0] === 'roster') {

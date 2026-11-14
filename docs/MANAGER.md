@@ -104,6 +104,25 @@ Now, on those wakes, while the runner holds at least one active standing approva
 
 Tests: `test/manager-wakes.test.mjs`, `test/manager-wakes-account.test.mjs`, `test/board-write-gate.test.mjs`.
 
+## Run-event wakes and status push (#98)
+
+`AgentEvents` (`src/agent-runner-client.mjs`) turns runner events into wakes without waiting for a timer:
+
+- **Approved projects only.** `GET /events` marks each event `approved` (its ticket's project, from the Board watch, has an
+  active standing approval). Unmarked or unapproved events are skipped, so a runner that predates #98 wakes nobody.
+- **One wake per run event.** A run end (succeeded, failed, interrupted, merge conflict/error via its Manager line) or a
+  ticket entering review/ready is a Board wake carrying the result; a run id wakes at most once (`agent_wake_seen`).
+  Events are coalesced (3 s window, then one wake for everything), capped at 12 wakes an hour; the rest wait in
+  `agent_wake_pending` and go out as one wake when the cap frees.
+- **Tools on that wake.** It is a Board wake, so it has the owner-token agent tools (launch, merge, stop, decide) and the
+  owner's Board tools, a superset of #94's.
+- **Interrupted runs** (runner restart) say so in the wake and tell her to relaunch at once.
+- **Status push.** Only milestones (ticket done/merged, deployed, desktop release published, release/deploy failed,
+  repeated failure, Needs-you) become one short owner message (a `watch` wake), never per step. While the owner's quiet
+  hours are on they wait in `agent_milestone_pending`.
+
+Tests: `test/manager-run-wakes.test.mjs`. Not run live: real runner restart, real Board, real push delivery.
+
 ## Running unattended
 
 The runner's model-free Board watch (#72) already turns run results and Board changes into wakes. Manager mode adds a
