@@ -243,7 +243,10 @@ export function boardLink(value) {
 }
 function feeling(value, role) { check(role === 'assistant' && typeof value === 'string' && /^[a-z-]{1,20}$/.test(value)); return value; }
 function message(value, threadId) {
-  const selected = plain(value, ['id', 'threadId', 'role', 'text'], ['requestId', 'feeling', 'attachments', 'peer', 'url', 'preview']);
+  const selected = plain(value, ['id', 'threadId', 'role', 'text'], ['requestId', 'feeling', 'attachments', 'peer', 'url', 'preview', 'at']);
+  // #99: send time (epoch ms), optional so older servers still validate.
+  if (Object.hasOwn(selected, 'at')) check(Number.isSafeInteger(selected.at) && selected.at > 0);
+  const when = Object.hasOwn(selected, 'at') ? { at: selected.at } : {};
   check(selected.threadId === threadId, 'RESYNC_REQUIRED');
   // #61b: an app activity line in a Board conversation (a silent Board wake). App text, an optional Board link and an
   // optional quote of the companion's Board post (untrusted Board text: shown as text only).
@@ -261,13 +264,13 @@ function message(value, threadId) {
     check(['sent', 'received'].includes(peer.direction) && typeof peer.companionId === 'string' && peer.companionId.length === 36 && PEER_ID.test(peer.companionId));
     for (const key of ['name', 'ownerLabel']) { text(peer[key], 80, 320); check(peer[key] === peer[key].trim() && !/[\x00-\x1f\x7f]/.test(peer[key])); }
     check(typeof peer.sentAtISO === 'string' && peer.sentAtISO.length === 24 && Number.isFinite(Date.parse(peer.sentAtISO)) && new Date(peer.sentAtISO).toISOString() === peer.sentAtISO);
-    return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: 'peer', text: text(selected.text, 4000, 16000), peer };
+    return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: 'peer', text: text(selected.text, 4000, 16000), ...when, peer };
   }
   check(!Object.hasOwn(selected, 'peer'));
   check(selected.role === 'user' || selected.role === 'assistant');
   const files = Object.hasOwn(selected, 'attachments') ? array(selected.attachments, 8).map(parseAttachment) : [];
   check(new Set(files.map(file => file.id)).size === files.length && files.every(file => file.direction === (selected.role === 'user' ? 'user' : 'companion')));
-  return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: selected.role,
+  return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: selected.role, ...when,
     text: text(selected.text, selected.role === 'user' ? USER_CHARS : ASSISTANT_CHARS, selected.role === 'user' ? USER_BYTES : ASSISTANT_BYTES, selected.role === 'assistant' || files.length > 0),
     ...(Object.hasOwn(selected, 'requestId') ? { requestId: identifier(selected.requestId, true) } : {}),
     ...(Object.hasOwn(selected, 'attachments') ? { attachments: files } : {}),

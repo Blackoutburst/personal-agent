@@ -12,6 +12,7 @@ import { createWeatherUI } from './weather-ui.mjs';
 import { createWebPushUI, createPushPresence, registerServiceWorker } from './web-push-ui.mjs';
 import { createActiveClient } from './active-client.mjs';
 import { splitBubbles } from './bubbles.mjs';
+import { formatMessageTime, burstEnds } from './message-time.mjs';
 import { createVoiceRecorder, voiceView } from './voice-ui.mjs';
 import { createBoardUI } from './board-ui.mjs';
 import { createGroupUI, renderMarkdown } from './group-ui.mjs';
@@ -46,7 +47,7 @@ const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().t
 
 let profile = null, runtime = null, view = 'loading', chatOpened = false, state = client.getState();
 let wearing = 'base', draftLook = null, pollTimer = null, polling = false, happyUntil = 0, lastTurnKey = null;
-const messageNodes = new Map();
+const messageNodes = new Map(), timeNodes = new Map();
 let uploads = [], uploadEpoch = 0, fileNotice = '', uploadsKey = '';
 // Voice messages (set up with the composer below): the recorder, a send in progress, the typing ping while recording.
 let voiceRecorder = null, voiceSending = false, recordingPing = null;
@@ -306,8 +307,8 @@ function appNote(message) {
 function renderMessages() {
   const list = $('messages'), history = $('history');
   const follow = history.scrollHeight - history.scrollTop - history.clientHeight < 120;
-  const keep = new Set();
-  let index = 0;
+  const keep = new Set(), order = []; let index = 0;
+  const zoneName = profile?.timezone || timezone, ends = burstEnds(state.messages, { timeZone: zoneName });
   for (const message of state.messages) {
     if (!message.text && !message.attachments?.length) continue;
     keep.add(message.id);
@@ -330,10 +331,17 @@ function renderMessages() {
       const noteKey = JSON.stringify([message.text, message.preview ?? '', message.url ?? '']);
       if (node.dataset.note !== noteKey) { node.replaceChildren(...appNote(message)); node.dataset.note = noteKey; }
     } else if (message.role !== 'peer') renderCompanionBubbles(node, message);
-    if (list.children[index] !== node) list.insertBefore(node, list.children[index] ?? null);
-    index++;
+    order.push(node); index++;
+    if (ends.has(message.id)) {
+      let stamp = timeNodes.get(message.id);
+      if (!stamp) { stamp = el('li', { className: `msg-time ${message.role === 'user' ? 'user' : 'companion'}` }); timeNodes.set(message.id, stamp); }
+      setText(stamp, formatMessageTime(message.at, { timeZone: zoneName }));
+      order.push(stamp); keep.add('t:' + message.id);
+    }
   }
+  order.forEach((node, i) => { if (list.children[i] !== node) list.insertBefore(node, list.children[i] ?? null); });
   for (const [id, node] of messageNodes) if (!keep.has(id)) { node.remove(); messageNodes.delete(id); }
+  for (const [id, node] of timeNodes) if (!keep.has('t:' + id)) { node.remove(); timeNodes.delete(id); }
   const busy = state.turn?.state === 'streaming' || Boolean(state.pending);
   // The companion's reply arrives bubble by bubble: it keeps "typing" under them until the reply is done.
   setProp($('typing'), 'hidden', !busy);

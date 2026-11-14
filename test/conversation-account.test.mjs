@@ -565,7 +565,8 @@ test('the feeling tag picks the face and never shows in the reply', async t => {
   for (const reply of replies) assert.doesNotMatch(reply.text, /feel|\[/, 'no part of the tag is ever shown');
   assert.deepEqual([replies.at(-1).text, replies.at(-1).feeling], ['Ha, yes!', 'laugh']);
   const snapshot = (await post(app, { action: 'snapshot', threadId })).body;
-  assert.deepEqual(snapshot.messages.at(-1), { id: replies.at(-1).id, threadId, role: 'assistant', text: 'Ha, yes!', requestId: 'feel', feeling: 'laugh' });
+  assert.equal(typeof snapshot.messages.at(-1).at, 'number');
+  assert.deepEqual({ ...snapshot.messages.at(-1), at: undefined }, { id: replies.at(-1).id, threadId, role: 'assistant', text: 'Ha, yes!', at: undefined, requestId: 'feel', feeling: 'laugh' });
   assert.equal(snapshot.messages[0].feeling, undefined, 'user messages have no feeling');
   // The instructions ask for the tag and tell the companion how it looks.
   const prompt = f.calls('blackout')[0].args[f.calls('blackout')[0].args.indexOf('--system-prompt') + 1];

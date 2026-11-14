@@ -673,3 +673,8 @@ legend { font-weight: 700; margin-bottom: 10px; }
 .ops-ticket { text-align: left; padding: 6px 8px; border: 1px solid var(--shade); border-radius: 8px; background: none; color: inherit; font: inherit; cursor: pointer; overflow-wrap: anywhere; }
 .ops-ticket:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
 .ops-messages li, .ops-decisions li { overflow-wrap: anywhere; white-space: pre-wrap; }
+
+/* #99: send time under a burst of bubbles, muted, small */
+.msg-time { list-style: none; font-size: 11.5px; line-height: 1.2; color: var(--soft); margin-top: -2px; padding: 0 6px; }
+.msg-time.user { align-self: flex-end; }
+.msg-time.companion { align-self: flex-start; }
