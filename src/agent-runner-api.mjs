@@ -71,7 +71,7 @@ export function createRunnerApi({ runner, roster, manager = null, opsBoard = nul
     if (method === 'POST' && url.pathname === '/runs') {
       const launch = unattended(body);
       if (launch.gate !== null) requireApproved({ ticketId: typeof launch.body.ticketId === 'string' ? launch.body.ticketId : '' });
-      return ok(202, { run: runner.launch(launch.body) });
+      return ok(202, { run: await runner.launchWithApproval(launch.body) });
     }
     if (method === 'POST' && parts[0] === 'runs' && parts[2] === 'stop' && parts.length === 3) {
       if (unattended(body).gate !== null) requireApproved({ ticketId: runner.get(parts[1])?.ticketId ?? '' });

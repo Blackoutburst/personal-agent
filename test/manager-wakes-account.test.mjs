@@ -46,6 +46,7 @@ async function setup(t, { approve = true, gate = true, kind = 'heartbeat' } = {}
   const launched = [];
   const runner = { on() {}, list: () => [], events: () => [], limits: {}, get: () => null,
     launch: body => { launched.push(body); return { id: `run-${launched.length}` }; }, stop: id => ({ id }) };
+  runner.launchWithApproval = async body => runner.launch(body); // the real runner's path with no owner approval
   const api = createRunnerApi({ runner, roster: { summary: () => ({}) }, manager, projects: [APPROVED, OTHER],
     tickets: () => [{ id: 'TA', projectId: APPROVED }, { id: 'TB', projectId: OTHER }] });
   const client = { call: async (method, path, body) => {

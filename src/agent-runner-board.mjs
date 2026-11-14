@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { escalationQuestion } from './escalation.mjs';
+import { COMPANION_UNIT as COMPANION } from './server-deploy.mjs';
 // The runner's Board side (#72, docs/AGENT-RUNNER.md). The runner has its own Board worker identity, paired once by
 // the owner, with the credential kept inside its connect.py bridge (never read here). Sub-agents in the sandbox have
 // no Board access, so this reporter does the Board work for them:
@@ -76,6 +77,27 @@ export class BoardReporter {
       question, summary: question.slice(0, 240), idempotency_key: key, ...(Number.isSafeInteger(version) ? { expected_version: version } : {}) });
   }
 
+  // An owner approval for a hard-limit launch: a Needs-you raised for the same limit on the ticket (the runner's own
+  // escalationQuestion text), answered "yes", and resolved by the owner in person: the Board's activity must show a
+  // human resolver with the owner's id (answers C-chan gives as companion do not count). used: request ids already spent.
+  // Returns { requestId } or null.
+  async ownerApproval({ ticketId, limit, used = [] }) {
+    const read = await this.#client.call('get_ticket', { ticket_id: ticketId, view: 'full' });
+    const ticket = read?.ticket ?? read;
+    if (!ticket?.id || !this.#projects.has(ticket.project_id) || !limit?.label) return null;
+    const prefix = `Needs your decision (${limit.label} is a hard limit;`;
+    const candidates = (Array.isArray(ticket.human_requests) ? ticket.human_requests : []).filter(request => request?.status === 'resolved'
+      && typeof request.id === 'string' && !used.includes(request.id) && typeof request.question === 'string'
+      && request.question.startsWith(prefix) && /^\s*yes\b/i.test(String(request.answer ?? '')));
+    if (!candidates.length) return null;
+    const listed = await this.#client.call('list_activity', { ticket_id: ticket.id, limit: 200, view: 'full' });
+    const events = Array.isArray(listed) ? listed : Array.isArray(listed?.result) ? listed.result : Array.isArray(listed?.items) ? listed.items : [];
+    const byOwner = new Set(events.filter(event => event?.event === 'human_input_resolved' && event.actor?.kind === 'human'
+      && event.actor?.owner_id === this.#ownerId && event.ticket_id === ticket.id).map(event => event.detail?.request_id));
+    const found = candidates.find(request => byOwner.has(request.id));
+    return found ? { requestId: found.id } : null;
+  }
+
   async begin(run) {
     run.board = { claimed: false, execution: null, revision: null, executionError: null };
     const read = await this.#client.call('get_ticket', { ticket_id: run.ticketId, view: 'full' });
@@ -83,6 +105,10 @@ export class BoardReporter {
     if (!ticket?.id) throw Object.assign(new Error('Ticket not found on the Board.'), { code: 'NOT_FOUND' });
     if (!this.#projects.has(ticket.project_id)) throw Object.assign(new Error('This ticket is outside the projects C-chan\'s agents may work in.'), { code: 'FORBIDDEN' });
     if (ticket.status === 'done') throw Object.assign(new Error('This ticket is already done.'), { code: 'INVALID' });
+    // #103: the Board refuses an execution on a ticket in review, so a coder launched on it would work with no Board record.
+    if (ticket.status === 'review') {
+      throw Object.assign(new Error('This ticket is in review. Return it to todo on the Board first (a coder cannot work on a ticket in review).'), { code: 'TICKET_IN_REVIEW' });
+    }
     run.board.projectId = ticket.project_id; run.board.threadId = ticket.thread_id ?? null; this.#version(run, ticket);
     const claimed = await this.#client.call('claim_ticket', { ticket_id: ticket.id, expected_version: ticket.version });
     this.#version(run, claimed);
@@ -247,6 +273,33 @@ export class BoardReporter {
         ? `Desktop release skipped ${at}: ${String(r.output).slice(0, 500)} Nothing was published. Run ${run.id}.`
         : `Desktop release ${r.version ?? ''} ${at} failed (${r.status}). ${r.status === 'build_failed' ? 'Nothing was published' : `The server still serves ${r.served ?? 'the previous version'}`}; main is unchanged. Run ${run.id}.\n\nOutput:\n${String(r.output).slice(-12000)}`;
     await this.#post(run, body.slice(0, 19000), `release-${r.status}`);
+  }
+
+  // The server deploy after a merge (#100): commit, units restarted and the health result, or the failure with its output,
+  // on the ticket's thread. A merge that changes nothing on the server posts nothing.
+  async deploy(run) {
+    const r = run.deploy ?? {};
+    if (!run.board?.merge || r.status === 'skipped') return;
+    const c = String(r.commit).slice(0, 10), units = (r.units ?? []).join(', ');
+    const waited = r.idle && r.idle.waitedMs >= 1000 ? ` Waited ${Math.round(r.idle.waitedMs / 1000)}s for an idle companion${r.idle.ok ? '' : ' (bound reached)'}.` : '';
+    const reinstall = r.plan?.reinstall ? ' ops/deploy/ changed: re-run `sudo sh ops/deploy/install.sh` from this commit.' : '';
+    const output = r.output ? `\n\nOutput:\n${String(r.output).slice(-12000)}` : '';
+    let body, key = `deploy-${r.status}`;
+    if (r.status === 'runner_restarting') {
+      body = `Deployed ${c} to the server: ${COMPANION} restarted, health check passed.${waited} Restarting the runner now (the guard checks it stays up, or rolls back). Run ${run.id}.`;
+    } else if (r.status === 'deployed') {
+      key = `deploy-deployed-${r.runner ?? 'companion'}`;
+      body = r.runner && r.runner !== 'healthy'
+        ? `Deployed ${c}: ${COMPANION} is healthy, but the runner ${r.runner === 'restart_failed' ? 'could not be restarted (it still runs the previous code)' : 'restart was not confirmed'}.${waited} Run ${run.id}.${output}`
+        : `Deployed ${c} to the server. Restarted: ${units}. Health check passed${r.runner === 'healthy' ? ' (companion /api/status; runner up and stable)' : ' (companion /api/status)'}.${waited}${reinstall} Run ${run.id}.`;
+    } else if (r.status === 'rolled_back') {
+      body = `Deploy of ${c} failed its health check and was rolled back to ${String(r.previous ?? 'the previous release').slice(0, 10)}; main is unchanged.${reinstall} Run ${run.id}.${output}`;
+    } else if (r.status === 'recovery_failed') {
+      body = `Deploy of ${c} failed and the automatic rollback failed too: check the server now. Run ${run.id}.${output}`;
+    } else {
+      body = `Deploy of ${c} did not run (${r.errorCode ?? r.status}); the previous release is still live. Run ${run.id}.${output}`;
+    }
+    await this.#post(run, body.slice(0, 19000), key);
   }
 
   // The reviewer's report goes on the ticket's thread; the ticket itself is not changed (C-chan accepts or returns it).

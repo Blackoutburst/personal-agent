@@ -44,7 +44,9 @@ retry() {
   done
 }
 rm -rf dist
-retry npm install --no-audit --no-fund
+# `npm ci`, never `npm install`: install may rewrite desktop/package-lock.json (npm-version differences, optional
+# platform deps), dirtying the checkout and blocking `git pull`. ci installs the lockfile exactly and never writes it.
+retry npm ci --no-audit --no-fund
 retry npm run dist
 ls -l dist/*.exe dist/*.blockmap dist/latest.yml
 sha256sum dist/*.exe dist/*.blockmap dist/latest.yml

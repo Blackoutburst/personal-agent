@@ -53,6 +53,12 @@ function windowOf(value) {
 const latestWork = (runs, ticketId) => runs.filter(run => run.ticketId === ticketId && run.mode !== 'review' && run.state === 'succeeded' && run.head)
   .sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0)).at(-1) ?? null;
 
+// The branch's actual head (#103): the head the runner recorded after the latest finished work run on this branch, whatever
+// that run's state (a run that made no commit or whose Board record was refused still read the branch head).
+const branchHead = (runs, ticketId, branch) => runs.filter(run => run.ticketId === ticketId && (run.mode ?? 'work') === 'work' && run.branch === branch
+  && run.head && run.endedAt != null && !['queued', 'starting', 'running', 'stopping'].includes(run.state))
+  .sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0)).at(-1) ?? null;
+
 // Is this review run an independent, current report on the ticket's work? -> { review, work } or throws.
 export function checkReview(runs, { ticketId, reviewRunId, verdict = null }) {
   const review = runs.find(run => run.id === reviewRunId);
@@ -66,7 +72,7 @@ export function checkReview(runs, { ticketId, reviewRunId, verdict = null }) {
   if (authors.has(review.agent) || review.role !== 'reviewer') {
     throw new ManagerError('NOT_INDEPENDENT', `${review.agent} is not an independent reviewer of ${review.reviewBranch}: the reviewer must be a reviewer agent and never the author.`);
   }
-  const work = latestWork(runs, ticketId);
+  const work = branchHead(runs, ticketId, review.reviewBranch) ?? latestWork(runs, ticketId);
   // A review that recorded no head cannot prove it saw the current work, so it counts as stale.
   if (work && work.head !== review.reviewHead) {
     throw new ManagerError('STALE_REVIEW', `Review ${review.id} checked ${String(review.reviewHead).slice(0, 10)}, but the latest work is ${String(work.head).slice(0, 10)} (${work.agent}). Review the current work first.`);

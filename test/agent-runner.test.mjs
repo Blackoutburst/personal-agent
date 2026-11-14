@@ -309,6 +309,115 @@ test('a launch asking for a hard-limit action is refused and becomes a Needs-you
   assert.equal(r.list?.().length ?? 0, 0);
 });
 
+test('an owner approval admits exactly one hard-limit launch on its ticket; none, or a spent one, still refuses', async t => {
+  const { r, reporter } = runner(t);
+  const raised = [], asked = [];
+  reporter.hardLimit = async info => { raised.push(info); };
+  let answer = { requestId: 'req-yes-1' };
+  reporter.ownerApproval = async info => { asked.push(info); return answer; };
+  const input = { agent: 'coder', ticketId: 'ticket-a', repo: 'personal-agent', model: 'sonnet', instructions: 'Then deploy it to production.' };
+  const run = await r.launchWithApproval({ ...input, requestId: 'req-a' });
+  assert.equal(run.state, 'queued');
+  assert.equal(asked[0].limit.id, 'deployment');
+  assert.deepEqual(asked[0].used, []);
+  assert.equal(raised.length, 0);
+  await r.stop(run.id);
+  // The same approval again (the Board still lists it): spent, so refused and a new Needs-you is raised.
+  await assert.rejects(r.launchWithApproval({ ...input, requestId: 'req-b' }), error => error.code === 'HARD_LIMIT');
+  assert.deepEqual(asked[1].used, ['req-yes-1']);
+  // No approval at all: refused.
+  answer = null;
+  await assert.rejects(r.launchWithApproval({ ...input, requestId: 'req-c' }), error => error.code === 'HARD_LIMIT');
+  // An approval check that fails: refused, never admitted.
+  reporter.ownerApproval = async () => { throw new Error('Board down'); };
+  await assert.rejects(r.launchWithApproval({ ...input, requestId: 'req-d' }), error => error.code === 'HARD_LIMIT');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(raised.length, 3);
+  // A plain launch() never consults approvals, and JSON input cannot carry one.
+  reporter.ownerApproval = async () => ({ requestId: 'req-yes-2' });
+  assert.throws(() => r.launch({ ...input, requestId: 'req-e', ownerApproval: { requestId: 'req-yes-2', ticketId: 'ticket-a', limitId: 'deployment' } }), error => error.code === 'HARD_LIMIT');
+});
+
+test('Board reporter: only a "yes" the owner gave in person, to the runner\'s question for that limit, is an approval', async () => {
+  const q = label => `Needs your decision (${label} is a hard limit; C-chan and her agents never do this alone): coder was asked to: deploy`;
+  const requests = [
+    { id: 'by-companion', status: 'resolved', answer: 'yes, go ahead (Blackout said yes in chat)', question: q('deployment') },
+    { id: 'said-no', status: 'resolved', answer: 'no, do not', question: q('deployment') },
+    { id: 'other-limit', status: 'resolved', answer: 'yes, go ahead', question: q('security') },
+    { id: 'open', status: 'open', answer: null, question: q('deployment') },
+    { id: 'spent', status: 'resolved', answer: 'yes, go ahead', question: q('deployment') },
+    { id: 'good', status: 'resolved', answer: 'yes, go ahead', question: q('deployment') }
+  ];
+  const human = id => ({ event: 'human_input_resolved', ticket_id: 'T', actor: { kind: 'human', owner_id: 'o' }, detail: { request_id: id } });
+  const activity = { result: [
+    { event: 'human_input_resolved', ticket_id: 'T', actor: { kind: 'agent', companion_for: 'o', owner_id: 'o' }, detail: { request_id: 'by-companion' } },
+    human('said-no'), human('other-limit'), human('spent'), human('good')] };
+  const client = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'P', human_requests: requests } }, list_activity: activity });
+  const reporter = new BoardReporter({ client, projects: ['P'], ownerId: 'o' });
+  const limit = { id: 'deployment', label: 'deployment' };
+  assert.deepEqual(await reporter.ownerApproval({ ticketId: 'T', limit, used: ['spent'] }), { requestId: 'good' });
+  assert.equal(await reporter.ownerApproval({ ticketId: 'T', limit, used: ['spent', 'good'] }), null);
+  // A different human owner does not count.
+  const other = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'P', human_requests: requests } },
+    list_activity: [{ ...human('good'), actor: { kind: 'human', owner_id: 'someone-else' } }] });
+  assert.equal(await new BoardReporter({ client: other, projects: ['P'], ownerId: 'o' }).ownerApproval({ ticketId: 'T', limit }), null);
+  // Outside the allowed projects: nothing is read beyond the ticket.
+  const outside = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'X', human_requests: requests } }, list_activity: activity });
+  assert.equal(await new BoardReporter({ client: outside, projects: ['P'], ownerId: 'o' }).ownerApproval({ ticketId: 'T', limit }), null);
+  assert.deepEqual(outside.calls.map(([name]) => name), ['get_ticket']);
+});
+
 test('agent prompts carry the hard limits (#74)', () => {
   assert.match(agentPrompt({ agent: 'a', repo: 'r', branch: 'b', base: 'main' }, { number: 1, title: 't' }), /Hard limits: you never deploy, spend money/);
+});
+
+// #103: the branch head is recorded after every finished work run, and a coder is not run on a ticket in review.
+test('a work run that made no commit still records the branch head (#103)', async t => {
+  const { r, children, ops } = runner(t);
+  ops.branchInfo = async () => ({ head: 'c0ffee1234567', commits: 0 });
+  const run = launch(r);
+  await until(() => children.length === 1);
+  children[0].say({ type: 'result', is_error: false, result: 'OUTCOME: bookkeeping only\nEVIDENCE: none' }); children[0].exit(0);
+  await until(() => r.get(run.id).state === 'succeeded');
+  assert.deepEqual([r.get(run.id).head, r.get(run.id).commits], ['c0ffee1234567', 0]);
+});
+
+test('a run whose Board execution was refused still records the head, and the review of it is current (#103)', async t => {
+  const { checkReview } = await import('../src/agent-manager.mjs');
+  const client = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'P', number: 5, status: 'todo', version: 1 } },
+    claim_ticket: { version: 2 }, reserve_execution: Object.assign(new Error('distinct_live_review_claim_required'), { code: 'distinct_live_review_claim_required' }) });
+  const reporter = new BoardReporter({ client, projects: ['P'], ownerId: 'o' });
+  const { r, children, ops } = runner(t, { reporter });
+  ops.branchInfo = async () => ({ head: '279be1e0000', commits: 1 });
+  const run = launch(r, { ticketId: 'T' });
+  await until(() => children.length === 1);
+  children[0].say({ type: 'result', is_error: false, result: 'OUTCOME: done\nEVIDENCE: ok' }); children[0].exit(0);
+  await until(() => r.get(run.id).state === 'succeeded');
+  const done = r.get(run.id);
+  assert.match(done.board.executionError, /distinct_live_review_claim_required/);
+  assert.equal(done.head, '279be1e0000');
+  const review = { id: 'rev-1', ticketId: 'T', mode: 'review', state: 'succeeded', agent: 'rev', role: 'reviewer', reviewBranch: done.branch,
+    reviewHead: '279be1e0000', result: { kind: 'review', verdict: 'approve' }, endedAt: done.endedAt + 1 };
+  assert.equal(checkReview([done, review], { ticketId: 'T', reviewRunId: 'rev-1', verdict: 'approve' }).review.id, 'rev-1');
+});
+
+test('a failed run with a recorded head does not make a review of the same head stale; a different head does (#103)', async () => {
+  const { checkReview } = await import('../src/agent-manager.mjs');
+  const branch = 'agent/coder-1/t9';
+  const w = (id, state, head, endedAt) => ({ id, ticketId: 'T', mode: 'work', state, agent: 'coder-1', branch, head, endedAt });
+  const review = { id: 'rev', ticketId: 'T', mode: 'review', state: 'succeeded', agent: 'rev', role: 'reviewer', reviewBranch: branch,
+    reviewHead: 'h2', result: { kind: 'review', verdict: 'approve' }, endedAt: 10 };
+  assert.ok(checkReview([w('a', 'succeeded', 'h2', 1), w('b', 'failed', 'h2', 5), review], { ticketId: 'T', reviewRunId: 'rev' }));
+  assert.throws(() => checkReview([w('a', 'succeeded', 'h1', 1), w('b', 'failed', 'h2', 5), { ...review, reviewHead: 'h1' }], { ticketId: 'T', reviewRunId: 'rev' }), { code: 'STALE_REVIEW' });
+});
+
+test('a coder is not run on a ticket in review: the launch ends with a clear error, nothing is claimed (#103)', async t => {
+  const client = fakeBoard({ get_ticket: { ticket: { id: 'T', project_id: 'P', number: 94, status: 'review', version: 7 } } });
+  const reporter = new BoardReporter({ client, projects: ['P'], ownerId: 'o' });
+  await assert.rejects(reporter.begin({ id: 'x' }), e => e.code === 'TICKET_IN_REVIEW' && /in review/.test(e.message));
+  assert.deepEqual(client.calls.map(([name]) => name), ['get_ticket']);
+  const { r, children } = runner(t, { reporter });
+  const run = launch(r, { ticketId: 'T' });
+  await until(() => ['failed', 'cancelled'].includes(r.get(run.id).state));
+  assert.equal(r.get(run.id).errorCode, 'TICKET_IN_REVIEW'); assert.equal(children.length, 0);
 });

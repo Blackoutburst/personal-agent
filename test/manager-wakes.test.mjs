@@ -140,6 +140,7 @@ function runnerApi(t, { realRunner = false } = {}) {
     runner = { on() {}, list: () => [], events: () => [], limits: {}, get: id => runs.find(run => run.id === id) ?? null,
       launch: body => { launched.push(body); return { id: `run-${launched.length}`, ...body }; },
       stop: id => { stopped.push(id); return { id }; } };
+    runner.launchWithApproval = async body => runner.launch(body); // the real runner's path with no owner approval
   }
   const api = createRunnerApi({ runner, roster: { summary: () => ({}) }, manager, projects: [APPROVED, OTHER], tickets: () => tickets });
   const agents = { client: { call: (method, path, body) => api(method, path, body ?? {}) }, allowed: id => id === 'cchan' };
