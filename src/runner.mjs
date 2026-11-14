@@ -100,8 +100,10 @@ export class CompanionRunner {
   // group (#53, docs/GROUP-CHAT.md): a group chat turn runs in its own empty folder (runtimeDir/<label>/groups/<id>),
   // never in the private workspace, so the provider loads no workspace files and keeps a separate session per group.
   // Codex runs it read-only there.
-  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal, group = null, boardConversationKey } = {}) {
-    return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, images, appServers, onEvent, signal, group, boardConversationKey });
+  // unattended (#94): a turn nobody asked for (the companion's own wakes): mcpServersFor(owner, { unattended: true }) gives
+  // it tool credentials the app recognises as unattended.
+  turn(companionId, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal, group = null, boardConversationKey, unattended = false } = {}) {
+    return this.#enqueue(this.ownerFor(companionId), { prompt, resume, systemPrompt, allowedTools, toolFilter, images, appServers, onEvent, signal, group, boardConversationKey, unattended });
   }
 
   // Whether this owner's agent is running or has a queued turn (the Minecraft connector, #68, lets chat go first).
@@ -130,11 +132,11 @@ export class CompanionRunner {
 
   #activity() { try { this.onActivity?.(this.queues.size); } catch { /* reporting activity never breaks a turn */ } }
 
-  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal, group = null, boardConversationKey } = {}, releaseCheck = false) {
+  #enqueue(owner, { prompt, resume = null, systemPrompt = null, allowedTools, toolFilter, images = [], appServers = [], onEvent = () => {}, signal, group = null, boardConversationKey, unattended = false } = {}, releaseCheck = false) {
     if (!owner) return Promise.reject(new RunnerError('NO_RUNTIME'));
     let toolPolicy, cwd = null;
     try {
-      const configured = releaseCheck ? [] : this.mcpServersFor(owner);
+      const configured = releaseCheck ? [] : unattended === true ? this.mcpServersFor(owner, { unattended: true }) : this.mcpServersFor(owner);
       if (configured && typeof configured.then === 'function') {
         Promise.resolve(configured).catch(() => {});
         throw new TypeError('mcpServersFor must return synchronously');
@@ -143,7 +145,11 @@ export class CompanionRunner {
           || images.some(path => typeof path !== 'string' || !path || path.length > 4096 || /[\x00-\x1f]/.test(path))) throw new TypeError('Invalid turn input');
       toolPolicy = releaseCheck ? narrowToolPolicy({ tools: WEB_TOOLS, board: null })
         : narrowToolPolicy({ tools: owner.tools, board: owner.board }, allowedTools, [...configured, ...appServers], toolFilter);
-      toolPolicy = bindBoardSession(toolPolicy, owner.label, boardConversationKey);
+      // #94: on unattended turns the Board bridge checks every write's project against the standing approvals, asking
+      // the app with this turn's unattended scheduler token. Without that token it refuses every Board write.
+      const scheduler = unattended === true ? configured.find(server => server?.name === 'scheduler') : null;
+      toolPolicy = bindBoardSession(toolPolicy, owner.label, boardConversationKey, unattended === true ? { gate: {
+        url: scheduler?.env?.COMPANION_SCHEDULER_URL ?? null, token: scheduler?.env?.COMPANION_SCHEDULER_TOKEN ?? null } } : {});
       if (owner.provider === 'codex' && toolPolicy.tools.length
           && (toolPolicy.tools.length !== WEB_TOOLS.length || !WEB_TOOLS.every(tool => toolPolicy.tools.includes(tool)))) {
         throw new TypeError('Codex web tools must be selected together');

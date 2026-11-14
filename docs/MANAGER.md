@@ -34,16 +34,75 @@ still applies.
 Enforced in code:
 
 - **Only from an owner chat.** `agents_approve_project` and `agents_revoke_project` are refused in every wake (Board,
-  own, contact, mail, ...) by `wakeToolFilter` in `src/conversations.mjs`. So Board text, an agent or a wake can never
+  own, contact, mail, ...) by `wakeToolFilter` in `src/conversations.mjs`, and on the unattended token (#94). So Board text, an agent or a wake can never
   give C-chan autonomy.
 - **Only Blackout's projects.** An approval must name one of the runner's `config.projects`, which are Blackout's
   projects. Any other project is refused with `FORBIDDEN`, so TheScreamer's projects stay his.
 - **One active approval per project.** Approving again replaces the direction (a scope change Blackout agreed to).
   Revoking it puts C-chan back on confirm-first. Both are logged as decisions.
 
-Not enforced in code: the Board writes C-chan makes with her own Board tools. Those go through her paired companion
-profile, which this app cannot gate per project. Her instructions carry the rule, and the Board's own permissions on
-her profile are the outer limit.
+Board writes C-chan makes with her own Board tools in owner chats and Board wakes are not gated per project in code:
+her instructions carry the rule, and the Board's own permissions on her profile are the outer limit. On her own
+(unattended) wakes they are gated per project (#94, below).
+
+## Own wakes in approved projects (#94)
+
+Owner direction, 12 Nov 2026: manager mode runs unattended, without waiting for Blackout on routine steps. Before #94,
+C-chan's own wakes (`proactive`, `heartbeat`, `followup`) had no Board write tools, and proactive/follow-up wakes had no
+agent tools, so finished work waited until Blackout wrote in chat.
+
+Now, on those wakes, while the runner holds at least one active standing approval:
+
+- **Tools** (`wakeToolFilter(kind, { manager })` in `src/conversations.mjs`): `agents_launch`, `agents_merge`,
+  `agents_stop`, `agents_decide`, and every Board tool in the owner's `board.allowedTools` (for example `create_ticket`,
+  `update_ticket`, `release_managed_agent_claim`). The approval check is `GET /status` on the runner
+  (`manager.approvals > 0` and `manager.unattendedGate: true`, `managerWake` in `server.mjs`), made at the start of
+  each own wake. Any failure counts as no approval, and so does a runner that predates #94 (it would not check the
+  project), so the runner must be restarted on this code before own wakes act.
+- **Per project, enforced in code for the agent tools.** These turns run with a second scheduler token for the companion
+  (`unattended`, from `CompanionRunner.turn({ unattended: true })` → `mcpServersFor(owner, { unattended: true })`).
+  Calls on it carry `unattended: true` to the runner, which takes a launch, merge, stop or decision only when the
+  ticket (as seen by its Board watch, never as claimed by the request) is in a project with an active approval
+  (`NOT_APPROVED` otherwise; a `plan` decision may name the approved project instead). Hard limits, the roster,
+  the budget and the review and merge checks still run after that. `agents_approve_project` and
+  `agents_revoke_project` are refused on that token as well (`OWNER_CHAT_ONLY`).
+- **Board writes per project, enforced in code** (`src/board-write-gate.mjs`). An unattended turn runs its Board MCP
+  server through the session bridge in gated mode (`bindBoardSession(..., { gate })` in `src/runner.mjs`, `--gate` in
+  `src/board-session-bridge.mjs`). Reads (`READ_ONLY_BOARD_TOOLS`) pass. Every other Board call is held while the
+  bridge resolves each target it names on the Board with its own read calls: tickets via `get_ticket`, threads via
+  `get_thread` (its ticket, or its own project for a ticket-less thread), requests via `list_human_requests`, messages
+  via `get_message`, and project ids as targets of their own. The gate **fails closed** on exact schemas
+  (`BOARD_WRITE_SCHEMAS`, `TICKET_CHANGES`): only
+  `release_managed_agent_claim {ticket_id, expected_version, idempotency_key, reason, recovery_evidence, view}`,
+  `update_ticket {ticket_id, expected_version, changes}`,
+  `post_message {thread_id, body, idempotency_key, reply_to, attachment_ids}`,
+  `create_ticket {project_id, title, description, acceptance_criteria, idempotency_key, depends_on, priority, labels,
+  required_skills, attachment_ids}` and `resolve_human_request {request_id, answer}` may pass. Any other write tool
+  (`delete_ticket`, `release_ticket`, `upload_attachment`, `update_companion_profile`, ...) is refused, and so is any key
+  a schema does not list. `update_ticket.changes` may only hold the TicketChanges keys `acceptance_criteria`,
+  `assignee_agent_id`, `assignee_owner_id`, `attachment_ids`, `blocked_reason`, `depends_on`, `description`,
+  `evidence`, `labels`, `outcome`, `priority`, `progress`, `recheck_after_seconds`, `release_claim`,
+  `required_skills`, `resolution`, `resource`, `status`, `title`, `unblock_owner`; anything else (`project_id`,
+  `blocking`, `prerequisites`, `epic`, `depends-on`, `links`, ...) is refused, so a relation cannot hide under a name
+  the gate does not know. The main id is required; plain fields must be a string, number or boolean (lists of them for
+  labels, acceptance criteria, skills, evidence, resource); `attachment_ids` must be a list of well-formed ids (shape
+  only: attachments are not resolvable through the Board's read tools). Every resolved id (main id, `reply_to`,
+  `depends_on`) must land in **one** project, even when a second project is approved too, and that project must have
+  an active standing approval: the bridge asks the app with the turn's unattended scheduler token (agents op
+  `boardGate`, which reads `GET /manager` approvals on the runner and needs an agent owner). Otherwise the call never
+  reaches the Board and the model gets a tool error starting "Refused on your own wake:" with the reason. A call with
+  no checkable target, an unknown or unreadable target, a malformed id, more than 50 targets or a list over 200 items,
+  a failed approval check, or a gated bridge without the token are all refused. The gate token is removed from
+  connect.py's environment. The `create_ticket`, `post_message` and `resolve_human_request` key lists are taken from
+  how the app uses those tools, not checked against the live Board schema: a real optional key missing here is refused
+  (fail closed) until it is added.
+- **Unchanged:** contact wakes (another companion writing) get none of this. Mail, the personal and Studio calendars,
+  companion contacts, web tools, repo creation and approvals follow the same rules on every wake kind as before.
+  Without any approval, own wakes are exactly as before, except that heartbeat wakes' agent launches, merges, stops
+  and decisions now also need an approved project (they used the owner-chat token before).
+- **Board wakes** (runner events, Needs-you, mentions) keep using the owner token and their existing tools.
+
+Tests: `test/manager-wakes.test.mjs`, `test/manager-wakes-account.test.mjs`, `test/board-write-gate.test.mjs`.
 
 ## Running unattended
 

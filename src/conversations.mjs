@@ -29,7 +29,19 @@ const CONTACT_WAKE = 'contact', TALKING_WAKES = [...OWN_WAKES, CONTACT_WAKE];
 // Background wakes read the Board only, except Board-triggered ("board") wakes: a Needs-you request or a mention needs
 // the companion to answer on the Board, so those keep every Board tool the owner configured.
 // Background wakes never browse: native web tools are for owner chat turns (#42) and the app's own watch checks.
-export const wakeToolFilter = kind => name => !WEB_TOOLS.includes(name) && !['mcp__scheduler__create_release_watch', 'mcp__scheduler__create_topic_watch', 'mcp__scheduler__update_release_watch',
+// #94: Manager mode runs unattended. On the companion's own wakes (MANAGER_WAKES) of an owner with at least one active
+// standing approval (manager: true), the manager tools (MANAGER_TOOLS) and the configured Board tools pass. These turns
+// use an unattended scheduler token (server.mjs), so the runner accepts their agent calls only for tickets of approved
+// projects (src/agent-runner-api.mjs), and their Board bridge lets a Board write through only when its target project,
+// resolved on the Board, is approved (src/board-write-gate.mjs). The approvals > 0 check here only decides whether the
+// tools are offered. Contact wakes, mail, the Studio calendar and approvals stay as before.
+export const MANAGER_WAKES = Object.freeze(['proactive', 'followup', 'heartbeat']);
+const MANAGER_TOOLS = ['mcp__scheduler__agents_launch', 'mcp__scheduler__agents_merge', 'mcp__scheduler__agents_stop', 'mcp__scheduler__agents_decide'];
+export const wakeToolFilter = (kind, { manager = false } = {}) => {
+  const base = baseWakeFilter(kind);
+  return manager === true && MANAGER_WAKES.includes(kind) ? name => MANAGER_TOOLS.includes(name) || name.startsWith(BOARD_PREFIX) || base(name) : base;
+};
+const baseWakeFilter = kind => name => !WEB_TOOLS.includes(name) && !['mcp__scheduler__create_release_watch', 'mcp__scheduler__create_topic_watch', 'mcp__scheduler__update_release_watch',
   'mcp__scheduler__create_event', 'mcp__scheduler__update_event', 'mcp__scheduler__delete_event', 'mcp__scheduler__github_create_repo',
   'mcp__scheduler__read_x_post', 'mcp__scheduler__watch_x_video'].includes(name)
   // The companion's own wakes (#54) and contact wakes (#58) never send mail: mail stays with owner chats and Board/mail wakes.
@@ -181,7 +193,7 @@ function titleFrom(text) {
 }
 
 export class Conversations {
-  #db; #runner; #now; #systemPrompt; #boardInbox; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote; #gatherMs; #texting; #groupWakes; #wakeTools; #gathering = new Map(); #typing = new Map(); #runs = new Map();
+  #db; #runner; #now; #systemPrompt; #boardInbox; #flushMs; #session; #allowedTools; #wakePolicy; #onSettled; #webBudget; #toolFilterFor; #linkContext; #turnNote; #gatherMs; #texting; #groupWakes; #wakeTools; #managerWake; #gathering = new Map(); #typing = new Map(); #runs = new Map();
   // Both filters must keep a tool (connector switches, #43, on top of the wake or web-allowance filter).
   #filter(companionId, own) {
     const extra = this.#toolFilterFor(companionId);
@@ -198,7 +210,7 @@ export class Conversations {
   constructor({ store, runner = null, systemPrompt = () => null, now = Date.now, flushMs = FLUSH_MS, allowedTools,
     session = { maxTurns: 40, idleMs: 6 * 3600_000, recentMessages: 16 }, wakePolicy = {}, onSettled = () => {}, files = null,
     fileToolsForTurn = () => ({ servers: [], dispose() {} }), onNativeSettled = () => {}, webBudget = null, toolFilterFor = () => null, linkContext = null, turnNote = null, gatherMs = 0, texting = false, boardInbox = null, groupWakes = null,
-    wakeTools = () => null }) {
+    wakeTools = () => null, managerWake = () => false }) {
     this.#db = store.db; this.#runner = runner; this.#now = now; this.#systemPrompt = systemPrompt; this.#flushMs = flushMs;
     this.#session = session; this.#allowedTools = allowedTools; this.#onSettled = onSettled;
     this.#files = files; this.#fileToolsForTurn = fileToolsForTurn;
@@ -215,6 +227,9 @@ export class Conversations {
     // wakeTools(companionId, { kind, wakeId, threadId, requestId, current }) -> { servers, dispose } or null (#58): app tools
     // for the companion's own wakes and contact wakes (the companion-contact tool). Other wakes get none.
     this.#wakeTools = wakeTools;
+    // managerWake(companionId) -> boolean or a promise of one (#94): whether this owner has an active standing approval,
+    // so its own wakes get the manager tools (wakeToolFilter). Any failure counts as false.
+    this.#managerWake = managerWake;
     // gatherMs: an owner message waits this long before the companion starts answering. Messages sent in the
     // meantime join the same turn, so a burst of short texts gets one reply, like talking to a person.
     this.#gatherMs = Number.isSafeInteger(gatherMs) && gatherMs > 0 ? gatherMs : 0;
@@ -857,6 +872,9 @@ export class Conversations {
         WHERE thread_id=? ORDER BY created_at DESC,r DESC LIMIT ?) ORDER BY created_at,r`).all(thread.id, this.#session.recentMessages)
         .map(row=>({role:row.role,text:row.text,...(row.role==='peer'?{peer:JSON.parse(row.peer_json)}:{})}));
       let buffered = '', overflow = false;
+      let manager = false;
+      if (MANAGER_WAKES.includes(wake.kind)) { try { manager = (await this.#managerWake(companionId)) === true; } catch { manager = false; } }
+      if (controller.signal.aborted || this.#closing) throw invalid();
       let groups = '';
       if (OWN_WAKES.includes(wake.kind) && this.#groupWakes) { try { groups = String(this.#groupWakes.note(companionId) ?? ''); } catch { groups = ''; } }
       const turnInput = {
@@ -864,7 +882,10 @@ export class Conversations {
           + 'For this background turn only, return exactly one JSON object, without markdown or other text: {"action":"message","text":"your message"} '
           + 'or {"action":"silent"}' + (groups ? ' (or the group choice below)' : '') + '. Your native feeling tag may precede the JSON. Message text must be nonempty and at most 4000 characters. Respond naturally again on normal user turns.\n\n' + wake.prompt + groups,
         resume, boardConversationKey: thread.id, systemPrompt: this.#systemPrompt(companionId, { fresh: !resume, recent }),
-        allowedTools: this.#allowedTools, toolFilter: this.#filter(companionId, wakeToolFilter(wake.kind)), signal: controller.signal,
+        allowedTools: this.#allowedTools, toolFilter: this.#filter(companionId, wakeToolFilter(wake.kind, { manager })), signal: controller.signal,
+        // #94: the companion's own and contact wakes call the scheduler tools with an unattended token, so the runner
+        // takes their agent calls only inside approved projects.
+        ...(MANAGER_WAKES.includes(wake.kind) || wake.kind === CONTACT_WAKE ? { unattended: true } : {}),
         ...(wakeTools?.servers.length ? { appServers: wakeTools.servers } : {}),
         onEvent: event => {
           if (event.type === 'session' && currentSession()) this.#db.prepare(`UPDATE conv_threads SET provider_session=? WHERE id=? AND EXISTS(

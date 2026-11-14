@@ -147,12 +147,16 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
   let activeClients = null, pushHold = null, minecraft = null;
   const fileTurns = new Map();
   const contactTurns = new Map();
-  const schedulerTokens = new Map(), schedulerOwnerTokens = new Map();
-  const tokenFor = companionId => {
-    if (!schedulerOwnerTokens.has(companionId)) {
-      const token = randomBytes(32).toString('hex'); schedulerOwnerTokens.set(companionId, token); schedulerTokens.set(token, companionId);
+  // #94: each companion has two scheduler tokens: one for owner chats (and Board wakes), one for its own wakes
+  // (unattended), so the agent tools know which kind of turn is calling.
+  const schedulerTokens = new Map(), schedulerOwnerTokens = new Map(), unattendedTokens = new Set();
+  const tokenFor = (companionId, unattended = false) => {
+    const key = (unattended ? 'unattended:' : 'owner:') + companionId;
+    if (!schedulerOwnerTokens.has(key)) {
+      const token = randomBytes(32).toString('hex'); schedulerOwnerTokens.set(key, token); schedulerTokens.set(token, companionId);
+      if (unattended) unattendedTokens.add(token);
     }
-    return schedulerOwnerTokens.get(companionId);
+    return schedulerOwnerTokens.get(key);
   };
   let conversations = null;
   let refreshWorkspaceInstructions = () => {};
@@ -239,7 +243,8 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
           return fail(415, 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json.');
         }
         const parsed = await readJsonBody(req, 16384);
-        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value, { calendar, github, mail, x, studioCalendar, agents });
+        const result = parsed.failure ?? await schedulerOperation(schedulerService, companionId, parsed.value, { calendar, github, mail, x, studioCalendar, agents,
+          unattended: unattendedTokens.has(token) });
         if (result.closeConnection) res.setHeader('connection', 'close');
         return send(result.status, result.body);
       }
@@ -329,7 +334,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         agentOwners = agentRunnerOptions.socket || agentRunnerOptions.client ? (agentRunnerOptions.owners ?? []) : [];
         // #100: <dataDir>/companion-activity.json says whether an owner turn is running; the runner's deploy waits for idle.
         runner = new CompanionRunner({ store, owners, runtimeDir, binaries, onActivity: activityWriter(join(dataDir, 'companion-activity.json')), ...runnerOptions,
-          mcpServersFor: owner => {
+          mcpServersFor: (owner, { unattended = false } = {}) => {
             const additional = appServersFor(owner), companionId = companionIdFor(store, owner);
             if (additional && typeof additional.then === 'function') {
               Promise.resolve(additional).catch(() => {}); throw new TypeError('App tools must be synchronous');
@@ -337,7 +342,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
             if (!Array.isArray(additional) || !companionId || !server.address()) throw new TypeError('Invalid app tools');
             return [...additional, { name: 'scheduler', command: process.execPath, args: [join(ROOT, 'src', 'scheduler-mcp.mjs')],
               env: { COMPANION_SCHEDULER_URL: `http://127.0.0.1:${server.address().port}/internal/scheduler`,
-                COMPANION_SCHEDULER_TOKEN: tokenFor(companionId) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'schedule_followup', 'cancel_followup', 'create_release_watch', 'create_topic_watch', 'update_release_watch',
+                COMPANION_SCHEDULER_TOKEN: tokenFor(companionId, unattended === true) }, allowedTools: ['create_schedule', 'list_schedules', 'cancel_schedule', 'schedule_followup', 'cancel_followup', 'create_release_watch', 'create_topic_watch', 'update_release_watch',
                   'list_calendar', 'create_event', 'update_event', 'delete_event',
                   'github_list_repos', 'github_repo', 'github_pulls', 'github_pull', 'github_create_repo', 'read_x_post', 'watch_x_video',
                   'mail_status', 'mail_inbox', 'mail_read', 'mail_send', 'mail_mark_handled', 'mail_opt_out',
@@ -484,7 +489,14 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         groupWakes: { note: companionId => groupChat?.wakeNote(companionId) ?? '', nudge: (companionId, groupId, note) => groupChat?.nudge(companionId, groupId, note) ?? false },
         linkContext: (companionId, text) => x.forTurn(companionId, text),
         turnNote: (companionId, requestId) => discord?.turnNote(companionId, requestId) ?? null,
-        toolFilterFor: companionId => connectors.toolFilter(companionId), wakePolicy: {
+        toolFilterFor: companionId => connectors.toolFilter(companionId),
+        // #94: an agent owner's own wakes get the manager tools while the runner holds at least one active standing approval.
+        managerWake: async companionId => {
+          if (!agents?.allowed(companionId)) return false;
+          const answer = await agents.client.call('GET', '/status', null, { timeoutMs: 5000 });
+          return answer.status === 200 && answer.body?.manager?.unattendedGate === true
+            && Number.isSafeInteger(answer.body.manager.approvals) && answer.body.manager.approvals > 0;
+        }, wakePolicy: {
         beforeStart: (companionId, id) => (schedulerStore.isReleaseOccurrence(companionId, id) || Boolean(runner?.ownerFor(companionId))) && schedulerStore.startInTransaction(companionId, id),
         canDeliver: (companionId, id) => schedulerStore.canDeliver(companionId, id),
         recordReleaseCheck: (companionId, id, check, text) => schedulerStore.recordReleaseCheck(companionId, id, check, text),
