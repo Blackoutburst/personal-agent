@@ -11,6 +11,7 @@
 // The reviewed code (the test run and the prepare step) never runs as the owner: with `sandbox` set both go through the same
 // cchan-sandbox-run wrapper the agent units use (its own hardened unit, no owner keys, no agent socket). Without it (tests
 // on temp repos) they run directly with a scrubbed environment (a throw-away HOME). Only git itself runs as the owner.
+// The desktop release after a merge (#91, src/desktop-release.mjs) keeps to this: its build runs in the same sandbox.
 // They run in a separate, throw-away copy of the merge result, and the push is made from a fresh bare repository that
 // holds only the merged commit, so nothing the tested code writes (a pushurl, hooks, refs) can redirect or alter the push.
 // With a sandbox, the sandbox user makes that copy itself, under `sandboxDir` (inside its own root, which the owner can
@@ -41,16 +42,18 @@ export function run(binary, args, { cwd, env, timeout = 120_000, input = null } 
 
 // Run by the sandbox user (through `sandbox`): make a fresh test copy under $1 from the bundle on stdin, check out $2,
 // print the copy's directory. Everything it creates belongs to the sandbox user.
-const SANDBOX_COPY = [
+// The prefix names the copy's directory (the desktop release, #91, makes its build copy the same way).
+export const sandboxCopyScript = prefix => [
   'set -eu',
   'mkdir -p "$1"',
-  'd=$(mktemp -d "$1/cchan-merge-test-XXXXXXXX")',
+  `d=$(mktemp -d "$1/${prefix}-XXXXXXXX")`,
   'cat > "$d/merged.bundle"',
   'git clone --quiet --no-checkout "$d/merged.bundle" "$d/repo" >&2',
   'git -C "$d/repo" checkout --quiet --detach "$2" >&2',
   'rm -f "$d/merged.bundle"',
   'printf "%s\\n" "$d"'
 ].join('; ');
+const SANDBOX_COPY = sandboxCopyScript('cchan-merge-test');
 
 // Early check (#92): the node that will run the steps (in the sandbox, as the sandbox user) must start and be at least the
 // repo's package.json engines.node minimum (">=X"). Returns a readable refusal, or null.

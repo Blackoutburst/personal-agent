@@ -1,14 +1,16 @@
-// The desktop release after a merge (#90): the gate and the build/publish steps on temp repos with a fake build and a
-// fake publish (shell scripts committed into the repo, like the real ones), and the runner/reporter wiring with fakes.
-// Nothing here runs the real scripts/build-desktop.sh or scripts/publish-desktop.sh.
+// The desktop release after a merge (#90, #91): the gate, the sandboxed build, the runner's own publish and the
+// pair-atomic feed on temp repos, with a fake build (a shell script committed into the repo, like the real one) and a
+// fake sandbox wrapper; then the runner/reporter wiring with fakes. Nothing here runs the real scripts/build-desktop.sh,
+// the real cchan-sandbox-run or sudo.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { releaseDesktop, compareVersions, servedDesktopVersion } from '../src/desktop-release.mjs';
+import { releaseDesktop, compareVersions, servedDesktopVersion, parseLatestYml, checkLatestYml, publishDesktop } from '../src/desktop-release.mjs';
+import { SandboxOps, WRAPPER } from '../src/agent-sandbox-ops.mjs';
 import { AgentRunner } from '../src/agent-runner.mjs';
 import { BoardReporter } from '../src/agent-runner-board.mjs';
 import { Manager } from '../src/agent-manager.mjs';
@@ -16,10 +18,13 @@ import { Roster } from '../src/agent-roster.mjs';
 
 const ID = ['-c', 'user.name=Setup', '-c', 'user.email=setup@example.test', '-c', 'commit.gpgsign=false'];
 const git = (cwd, ...args) => execFileSync('git', [...ID, ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } }).trim();
-const sha = text => createHash('sha256').update(text).digest('hex');
+const sha = (text, algorithm = 'sha256', encoding = 'hex') => createHash(algorithm).update(text).digest(encoding);
+const installer = v => `installer ${v}\n`;
+const yml = (v, digest = sha(installer(v), 'sha512', 'base64')) => `version: ${v}\nfiles:\n  - url: Companion-Setup-${v}-x64.exe\n    sha512: ${digest}\n    size: ${installer(v).length}\npath: Companion-Setup-${v}-x64.exe\nsha512: ${digest}\nreleaseDate: '2026-11-12T00:00:00.000Z'\n`;
 
-// A fake build: writes the installer, blockmap and latest.yml for the package.json version into desktop/dist; it also
-// records where it ran and with which HOME. FAKE_BUILD_FAIL in the repo makes it fail.
+// A fake build: writes the installer, blockmap and an electron-builder style latest.yml (with the installer's sha512)
+// for the package.json version into desktop/dist, and logs the commit, HOME and whether it ran under the fake sandbox.
+// FAKE_BUILD_FAIL / FAKE_BAD_YML / FAKE_NO_BLOCKMAP in the repo make it fail or build something inconsistent.
 const BUILD = `#!/bin/sh
 set -eu
 cd "$(dirname "$0")/../desktop"
@@ -27,37 +32,33 @@ cd "$(dirname "$0")/../desktop"
 v=$(sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' package.json)
 mkdir -p dist
 printf 'installer %s\\n' "$v" > "dist/Companion-Setup-$v-x64.exe"
-printf 'blockmap %s\\n' "$v" > "dist/Companion-Setup-$v-x64.exe.blockmap"
-printf 'version: %s\\n' "$v" > dist/latest.yml
-printf '%s %s\\n' "$(git rev-parse HEAD 2>/dev/null || echo none)" "$HOME" > "$FAKE_LOG"
+[ -f ../FAKE_NO_BLOCKMAP ] || printf 'blockmap %s\\n' "$v" > "dist/Companion-Setup-$v-x64.exe.blockmap"
+d=$(node -e 'process.stdout.write(require("crypto").createHash("sha512").update(require("fs").readFileSync(process.argv[1])).digest("base64"))' "dist/Companion-Setup-$v-x64.exe")
+[ ! -f ../FAKE_BAD_YML ] || d=AAAA
+s=$(wc -c < "dist/Companion-Setup-$v-x64.exe" | tr -d ' ')
+printf 'version: %s\\nfiles:\\n  - url: Companion-Setup-%s-x64.exe\\n    sha512: %s\\n    size: %s\\npath: Companion-Setup-%s-x64.exe\\nsha512: %s\\n' "$v" "$v" "$d" "$s" "$v" "$d" > dist/latest.yml
+printf '%s %s %s %s\\n' "$(git rev-parse HEAD 2>/dev/null || echo none)" "$HOME" "\${FAKE_SANDBOX:-owner}" "$(pwd)" > "$FAKE_LOG"
 echo "built $v"
 `;
-// A fake publish with the real one's order: installer + blockmap, then latest.yml, then desktop.json. FAKE_PUBLISH_FAIL
-// makes it fail after latest.yml was replaced (the worst moment for a half-published feed).
-const PUBLISH = `#!/bin/sh
-set -eu
-cd "$(dirname "$0")/.."
-v=$(sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' desktop/package.json)
-d="$COMPANION_DATA_DIR/downloads"; mkdir -p "$d"
-cp "desktop/dist/Companion-Setup-$v-x64.exe" "desktop/dist/Companion-Setup-$v-x64.exe.blockmap" "$d/"
-cp desktop/dist/latest.yml "$d/latest.yml"
-[ ! -f FAKE_PUBLISH_FAIL ] || { echo "disk full" >&2; exit 4; }
-printf '{"version":"%s","file":"Companion-Setup-%s-x64.exe"}\\n' "$v" "$v" > "$d/desktop.json"
-echo "published $v"
-`;
+
+// The fake sandbox: a wrapper that runs the command in cwd with FAKE_SANDBOX=1, recording every call.
+const inCwd = (command, cwd) => ['/usr/bin/env', 'FAKE_SANDBOX=1', 'sh', '-c', 'cd "$1" && shift && exec "$@"', 'sh', cwd, ...command];
 
 function repos(t, version = '0.4.0') {
-  const root = mkdtempSync(join(tmpdir(), 'release-90-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const root = mkdtempSync(join(tmpdir(), 'release-91-')); t.after(() => rmSync(root, { recursive: true, force: true }));
   const origin = join(root, 'origin.git'), seed = join(root, 'seed'), data = join(root, 'data'), log = join(root, 'build.log');
+  const sandboxDir = join(root, 'sbroot', 'release'); mkdirSync(join(root, 'sbroot'));
   git(root, 'init', '--bare', '--initial-branch=main', origin);
   git(root, 'clone', '--quiet', origin, seed);
   git(seed, 'checkout', '-b', 'main');
   mkdirSync(join(seed, 'desktop')); mkdirSync(join(seed, 'scripts'));
-  writeFileSync(join(seed, 'scripts', 'build-desktop.sh'), BUILD); writeFileSync(join(seed, 'scripts', 'publish-desktop.sh'), PUBLISH);
+  writeFileSync(join(seed, 'scripts', 'build-desktop.sh'), BUILD);
+  // The merged publish script must never run: if anything executes it, it leaves a marker.
+  writeFileSync(join(seed, 'scripts', 'publish-desktop.sh'), `#!/bin/sh\ntouch ${join(root, 'PUBLISH_SCRIPT_RAN')}\n`);
   writeFileSync(join(seed, 'desktop', 'package.json'), JSON.stringify({ name: 'companion-desktop', version }, null, 2) + '\n');
   git(seed, 'add', '.'); git(seed, 'commit', '-m', 'seed'); git(seed, 'push', '--quiet', 'origin', 'main');
   // What agents_merge does: a --no-ff merge of a branch onto main, pushed. Returns the merge commit.
-  const mergeBranch = (files, name = 'agent/coder-1/t90') => {
+  const mergeBranch = (files, name = 'agent/coder-1/t91') => {
     git(seed, 'checkout', '--quiet', '-B', name, 'main');
     for (const [file, content] of Object.entries(files)) {
       if (content === null) rmSync(join(seed, file)); else writeFileSync(join(seed, file), content);
@@ -69,25 +70,28 @@ function repos(t, version = '0.4.0') {
     return git(seed, 'rev-parse', 'HEAD');
   };
   const bump = (v, extra = {}) => mergeBranch({ 'desktop/package.json': JSON.stringify({ name: 'companion-desktop', version: v }, null, 2) + '\n', ...extra });
-  // What the server serves now (a previous publish).
-  const serve = v => {
-    mkdirSync(join(data, 'downloads'), { recursive: true });
-    writeFileSync(join(data, 'downloads', `Companion-Setup-${v}-x64.exe`), `installer ${v}\n`);
-    writeFileSync(join(data, 'downloads', 'latest.yml'), `version: ${v}\n`);
-    writeFileSync(join(data, 'downloads', 'desktop.json'), JSON.stringify({ version: v, file: `Companion-Setup-${v}-x64.exe` }) + '\n');
+  const downloads = join(data, 'downloads');
+  // What the server serves now: a previous hand publish (plain files, as scripts/publish-desktop.sh leaves them).
+  const serve = (v, json = JSON.stringify({ version: v, file: `Companion-Setup-${v}-x64.exe` }) + '\n') => {
+    mkdirSync(downloads, { recursive: true });
+    writeFileSync(join(downloads, `Companion-Setup-${v}-x64.exe`), installer(v));
+    writeFileSync(join(downloads, 'latest.yml'), yml(v));
+    writeFileSync(join(downloads, 'desktop.json'), json);
   };
-  const feed = () => ['latest.yml', 'desktop.json'].map(name => { try { return readFileSync(join(data, 'downloads', name), 'utf8'); } catch { return null; } });
-  const release = (commit, extra = {}) => {
-    return releaseDesktop({ origin, commit, dataDir: data, tmp: root, buildCommand: ['sh', 'scripts/build-desktop.sh'], publishCommand: ['sh', 'scripts/publish-desktop.sh'], ...extra });
-  };
+  const feed = () => ['latest.yml', 'desktop.json'].map(name => { try { return readFileSync(join(downloads, name), 'utf8'); } catch { return null; } });
+  const seen = [];
+  const sandbox = (command, opts) => { seen.push({ command, ...opts }); return inCwd(command, opts.cwd); };
+  const buildCommand = ['sh', '-c', `FAKE_LOG=${log} exec sh scripts/build-desktop.sh`];
+  const release = (commit, extra = {}) => releaseDesktop({ origin, commit, dataDir: data, tmp: join(root, 'tmp'), buildCommand, sandbox, sandboxDir, ...extra });
   const built = () => existsSync(log) ? readFileSync(log, 'utf8').trim().split(' ') : null;
-  return { root, origin, seed, data, mergeBranch, bump, serve, feed, release, built };
+  const publishScriptRan = () => existsSync(join(root, 'PUBLISH_SCRIPT_RAN'));
+  const leftovers = () => [...(existsSync(sandboxDir) ? execFileSync('ls', [sandboxDir]).toString().split('\n').filter(Boolean) : []),
+    ...(existsSync(join(root, 'tmp')) ? execFileSync('ls', [join(root, 'tmp')]).toString().split('\n').filter(Boolean) : [])];
+  return { root, origin, seed, data, downloads, sandboxDir, mergeBranch, bump, serve, feed, release, built, seen, buildCommand, publishScriptRan, leftovers };
 }
 
-// The release gives the build a scrubbed environment (PATH, HOME, LANG, CI), so FAKE_LOG goes in through a wrapper.
-function withLog(r) {
-  return (commit, extra = {}) => r.release(commit, { buildCommand: ['sh', '-c', `FAKE_LOG=${join(r.root, 'build.log')} exec sh scripts/build-desktop.sh`], ...extra });
-}
+const fileIn = (r, name) => join(r.downloads, name);
+const servedFiles = r => execFileSync('ls', ['-A', r.downloads]).toString().split('\n').filter(Boolean).sort();
 
 test('versions compare as x.y.z numbers; anything else is not comparable (#90)', () => {
   assert.equal(compareVersions('0.10.0', '0.9.9'), 1);
@@ -98,38 +102,94 @@ test('versions compare as x.y.z numbers; anything else is not comparable (#90)',
   assert.equal(servedDesktopVersion('/nonexistent-dir-90'), null);
 });
 
-test('release: a merge that raises the version builds and publishes it from exactly the merge commit (#90)', async t => {
-  const r = repos(t); r.serve('0.4.0');
-  const commit = r.bump('0.5.0');
-  const result = await withLog(r)(commit);
-  assert.equal(result.status, 'published', result.output);
-  assert.deepEqual({ version: result.version, previous: result.previous, served: result.served, file: result.file },
-    { version: '0.5.0', previous: '0.4.0', served: '0.4.0', file: 'Companion-Setup-0.5.0-x64.exe' });
-  assert.equal(result.sha256, sha('installer 0.5.0\n'));
-  assert.equal(servedDesktopVersion(r.data), '0.5.0');
-  assert.deepEqual(r.feed(), ['version: 0.5.0\n', '{"version":"0.5.0","file":"Companion-Setup-0.5.0-x64.exe"}\n']);
-  const [builtAt, home] = r.built();
-  assert.equal(builtAt, commit, 'built from the merge commit itself');
-  assert.notEqual(home, process.env.HOME, 'the build gets its own HOME');
-  assert.equal(git(r.origin, 'rev-parse', 'main'), commit, 'main untouched');
-  assert.deepEqual(execFileSync('ls', [r.root]).toString().split('\n').filter(name => name.startsWith('cchan-release-')), [], 'the clone is removed');
+test('latest.yml: the release reads version, path and sha512 and checks them against the installer (#91)', () => {
+  const v = '0.5.0', file = `Companion-Setup-${v}-x64.exe`, sha512 = sha(installer(v), 'sha512', 'base64'), size = installer(v).length;
+  assert.deepEqual(parseLatestYml(yml(v)), { version: v, path: file, sha512, files: [{ url: file, sha512, size }] });
+  assert.equal(checkLatestYml(yml(v), { version: v, file, sha512, size }), null);
+  assert.match(checkLatestYml(yml('0.4.0'), { version: v, file, sha512, size }), /names version 0\.4\.0/);
+  assert.match(checkLatestYml(yml(v, 'AAAA'), { version: v, file, sha512, size }), /sha512 .* does not match/);
+  assert.match(checkLatestYml(`version: ${v}\npath: ${file}\n`, { version: v, file, sha512, size }), /no sha512/);
+  assert.match(checkLatestYml(yml(v), { version: v, file, sha512, size: size + 1 }), /size/);
 });
 
-test('release: nothing is published for a merge without a version bump (#90)', async t => {
+test('release: the build runs through the sandbox wrapper (SandboxOps), the runner publishes, the merged publish script never runs (#91)', async t => {
   const r = repos(t); r.serve('0.4.0');
-  const commit = r.mergeBranch({ 'desktop/main.js': 'console.log(1)\n' });
-  const result = await withLog(r)(commit);
+  const commit = r.bump('0.5.0');
+  // A fake sudo standing in for `sudo -n cchan-sandbox-run --cwd X --max-seconds N -- cmd`: it checks that exact shape,
+  // logs it, and runs cmd in X with FAKE_SANDBOX=1. Everything SandboxOps sends through it is what would run sandboxed.
+  const sudoLog = join(r.root, 'sudo.log'), sudo = join(r.root, 'sudo');
+  writeFileSync(sudo, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${sudoLog}\n[ "$1" = -n ] && [ "$2" = ${WRAPPER} ] && [ "$3" = --cwd ] && [ "$5" = --max-seconds ] && [ "$7" = -- ] || exit 99\ncwd=$4; shift 7\ncd "$cwd" && FAKE_SANDBOX=1 exec "$@"\n`);
+  chmodSync(sudo, 0o755);
+  const ops = new SandboxOps({ sudo, root: join(r.root, 'sbroot') });
+  const result = await ops.releaseDesktop({ origin: r.origin, commit, base: 'main', dataDir: r.data, tmp: join(r.root, 'tmp'), buildCommand: r.buildCommand,
+    publishCommand: ['sh', 'scripts/publish-desktop.sh'] /* an old config key: ignored */ });
+  assert.equal(result.status, 'published', result.output);
+  const [builtAt, , where, cwd] = r.built();
+  assert.equal(builtAt, commit, 'built from the merge commit itself');
+  assert.equal(where, '1', 'the build ran under the sandbox wrapper');
+  assert.ok(cwd.startsWith(join(r.root, 'sbroot', 'release', 'cchan-release-build-')), cwd);
+  const calls = readFileSync(sudoLog, 'utf8').trim().split('\n');
+  assert.deepEqual(calls.map(line => line.split(' -- ')[1].split(' ')[0]), ['sh', 'sh', 'cat', 'cat', 'cat', 'rm'], calls.join('\n'));
+  assert.ok(calls.every(line => line.startsWith(`-n ${WRAPPER} --cwd `)));
+  assert.equal(r.publishScriptRan(), false, 'scripts/publish-desktop.sh never ran');
+  assert.deepEqual(r.leftovers(), [], 'the sandbox copy and the runner temp dir are removed');
+  assert.equal(servedDesktopVersion(r.data), '0.5.0');
+});
+
+test('release: a merge that raises the version is built in the sandbox and published with matching sha256/sha512 (#91)', async t => {
+  const r = repos(t); r.serve('0.4.0');
+  const commit = r.bump('0.5.0');
+  const result = await r.release(commit);
+  assert.equal(result.status, 'published', result.output);
+  assert.deepEqual({ version: result.version, previous: result.previous, served: result.served, file: result.file, notes: result.notes },
+    { version: '0.5.0', previous: '0.4.0', served: '0.4.0', file: 'Companion-Setup-0.5.0-x64.exe', notes: [] });
+  assert.equal(result.sha256, sha(installer('0.5.0')));
+  assert.equal(result.sha512, sha(installer('0.5.0'), 'sha512', 'base64'));
+  // What the sandbox was asked to do: make its copy, build, hand out the three files, remove its copy.
+  assert.deepEqual(r.seen.map(s => s.command[0] === 'sh' && s.command[1] === '-c' && s.command[2].includes('mktemp') ? 'copy' : s.command.slice(0, 3).join(' ')),
+    ['copy', r.buildCommand.join(' '), 'cat -- desktop/dist/Companion-Setup-0.5.0-x64.exe', 'cat -- desktop/dist/Companion-Setup-0.5.0-x64.exe.blockmap', 'cat -- desktop/dist/latest.yml', `rm -rf --`]);
+  const [builtAt, , where] = r.built();
+  assert.equal(builtAt, commit); assert.equal(where, '1');
+  // Served: installer, blockmap and the pair, byte for byte what the build made.
+  assert.equal(sha(readFileSync(fileIn(r, 'Companion-Setup-0.5.0-x64.exe'))), result.sha256);
+  assert.equal(sha(readFileSync(fileIn(r, 'Companion-Setup-0.5.0-x64.exe')), 'sha512', 'base64'), result.sha512);
+  assert.equal(readFileSync(fileIn(r, 'Companion-Setup-0.5.0-x64.exe.blockmap'), 'utf8'), 'blockmap 0.5.0\n');
+  const [latest, desktop] = r.feed();
+  assert.equal(checkLatestYml(latest, { version: '0.5.0', file: result.file, sha512: result.sha512, size: installer('0.5.0').length }), null);
+  assert.deepEqual(JSON.parse(desktop), { version: '0.5.0', file: 'Companion-Setup-0.5.0-x64.exe' });
+  // The pair are fixed symlinks into the one switched feed pointer.
+  assert.equal(readlinkSync(fileIn(r, 'latest.yml')), '.feed/current/latest.yml');
+  assert.equal(readlinkSync(fileIn(r, 'desktop.json')), '.feed/current/desktop.json');
+  assert.ok(lstatSync(fileIn(r, '.feed/current')).isSymbolicLink());
+  assert.equal(git(r.origin, 'rev-parse', 'main'), commit, 'main untouched');
+  assert.equal(r.publishScriptRan(), false);
+  assert.deepEqual(r.leftovers(), []);
+});
+
+test('release: without a sandbox (temp repos only) the build runs in its own copy with a throw-away HOME (#91)', async t => {
+  const r = repos(t); r.serve('0.4.0');
+  const result = await r.release(r.bump('0.5.0'), { sandbox: null, sandboxDir: null });
+  assert.equal(result.status, 'published', result.output);
+  const [, home, where, cwd] = r.built();
+  assert.equal(where, 'owner'); assert.notEqual(home, process.env.HOME);
+  assert.ok(cwd.startsWith(join(r.root, 'tmp', 'cchan-release-build-')), cwd);
+  assert.deepEqual(r.leftovers(), []);
+});
+
+test('release: nothing is built or published for a merge without a version bump (#90)', async t => {
+  const r = repos(t); r.serve('0.4.0');
+  const result = await r.release(r.mergeBranch({ 'desktop/main.js': 'console.log(1)\n' }));
   assert.equal(result.status, 'skipped'); assert.equal(result.reason, 'no_bump');
-  assert.equal(r.built(), null, 'no build ran');
-  assert.deepEqual(r.feed(), ['version: 0.4.0\n', '{"version":"0.4.0","file":"Companion-Setup-0.4.0-x64.exe"}\n']);
+  assert.equal(r.built(), null, 'no build ran'); assert.deepEqual(r.seen, [], 'nothing went to the sandbox');
+  assert.deepEqual(r.feed(), [yml('0.4.0'), '{"version":"0.4.0","file":"Companion-Setup-0.4.0-x64.exe"}\n']);
 });
 
 test('release: a lower version, or one the server already serves, publishes nothing (#90)', async t => {
   const r = repos(t, '0.4.0'); r.serve('0.4.0');
-  const lower = await withLog(r)(r.bump('0.3.9'));
+  const lower = await r.release(r.bump('0.3.9'));
   assert.equal(lower.status, 'skipped'); assert.equal(lower.reason, 'not_higher');
   const r2 = repos(t, '0.4.0'); r2.serve('0.6.0'); // published by hand ahead of main
-  const behind = await withLog(r2)(r2.bump('0.5.0'));
+  const behind = await r2.release(r2.bump('0.5.0'));
   assert.equal(behind.status, 'skipped'); assert.equal(behind.reason, 'not_higher'); assert.match(behind.output, /already serves 0\.6\.0/);
   assert.equal(r.built(), null); assert.equal(r2.built(), null);
   assert.equal(servedDesktopVersion(r.data), '0.4.0'); assert.equal(servedDesktopVersion(r2.data), '0.6.0');
@@ -137,55 +197,128 @@ test('release: a lower version, or one the server already serves, publishes noth
 
 test('release: the first publish (nothing served yet) goes out; a non x.y.z version is an error (#90)', async t => {
   const r = repos(t);
-  const first = await withLog(r)(r.bump('0.4.1'));
+  const first = await r.release(r.bump('0.4.1'));
   assert.equal(first.status, 'published', first.output); assert.equal(first.served, null);
   assert.equal(servedDesktopVersion(r.data), '0.4.1');
-  const bad = await withLog(r)(r.bump('banana'));
+  const bad = await r.release(r.bump('banana'));
   assert.equal(bad.status, 'error'); assert.match(bad.output, /not x\.y\.z/);
   assert.equal(servedDesktopVersion(r.data), '0.4.1');
 });
 
+test('release: a served or previous version that is not x.y.z does not block later releases (#91)', async t => {
+  // A served desktop.json with a non-x.y.z version (the server serves nothing for it): replaced, with a note.
+  for (const served of ['banana', '0.5.0-beta']) {
+    const r = repos(t); r.serve('0.4.0', JSON.stringify({ version: served, file: 'Companion-Setup-0.4.0-x64.exe' }) + '\n');
+    const result = await r.release(r.bump('0.4.1'));
+    assert.equal(result.status, 'published', result.output); assert.equal(result.served, served);
+    assert.match(result.notes.join(' '), /not x\.y\.z/);
+    assert.equal(servedDesktopVersion(r.data), '0.4.1');
+    // And the release after it goes on normally.
+    assert.equal((await r.release(r.bump('0.4.2'))).status, 'published');
+  }
+  // The version before the merge was not x.y.z: only the served version is compared.
+  const r = repos(t, 'banana'); r.serve('0.4.0');
+  const fixed = await r.release(r.bump('0.5.0'));
+  assert.equal(fixed.status, 'published', fixed.output); assert.match(fixed.notes.join(' '), /before this merge .* not x\.y\.z/);
+  const r2 = repos(t, 'banana'); r2.serve('0.6.0');
+  const still = await r2.release(r2.bump('0.5.0'));
+  assert.equal(still.status, 'skipped'); assert.equal(still.reason, 'not_higher');
+});
+
 test('release: a failed build publishes nothing and the previous version stays served (#90)', async t => {
   const r = repos(t); r.serve('0.4.0');
-  const before = r.feed();
+  const before = r.feed(), files = servedFiles(r);
   const commit = r.bump('0.5.0', { FAKE_BUILD_FAIL: 'x' });
-  const result = await withLog(r)(commit);
+  const result = await r.release(commit);
   assert.equal(result.status, 'build_failed'); assert.match(result.output, /electron-builder exploded/); assert.match(result.output, /exit 3/);
-  assert.deepEqual(r.feed(), before);
-  assert.equal(existsSync(join(r.data, 'downloads', 'Companion-Setup-0.5.0-x64.exe')), false);
+  assert.deepEqual(r.feed(), before); assert.deepEqual(servedFiles(r), files, 'downloads untouched');
   assert.equal(git(r.origin, 'rev-parse', 'main'), commit, 'main untouched');
+  assert.deepEqual(r.leftovers(), []);
 });
 
-test('release: a publish that fails half-way puts the previous feed back and removes the new installer files (#90)', async t => {
-  const r = repos(t); r.serve('0.4.0');
-  const before = r.feed();
-  const commit = r.bump('0.5.0', { FAKE_PUBLISH_FAIL: 'x' });
-  const result = await withLog(r)(commit);
-  assert.equal(result.status, 'publish_failed'); assert.match(result.output, /disk full/);
-  assert.deepEqual(r.feed(), before, 'latest.yml (already replaced by the script) and desktop.json are as before');
-  assert.equal(existsSync(join(r.data, 'downloads', 'Companion-Setup-0.5.0-x64.exe')), false);
-  assert.equal(existsSync(join(r.data, 'downloads', 'Companion-Setup-0.5.0-x64.exe.blockmap')), false);
-  assert.equal(existsSync(join(r.data, 'downloads', 'Companion-Setup-0.4.0-x64.exe')), true, 'the served installer stays');
-  assert.equal(git(r.origin, 'rev-parse', 'main'), commit);
+test('release: a build whose files do not hold together (wrong sha512 in latest.yml, no blockmap) publishes nothing (#91)', async t => {
+  for (const [flag, text] of [['FAKE_BAD_YML', /latest\.yml's sha512 .* does not match/], ['FAKE_NO_BLOCKMAP', /blockmap could not be read/]]) {
+    const r = repos(t); r.serve('0.4.0');
+    const before = r.feed(), files = servedFiles(r);
+    const result = await r.release(r.bump('0.5.0', { [flag]: 'x' }));
+    assert.equal(result.status, 'build_failed'); assert.match(result.output, text);
+    assert.deepEqual(r.feed(), before); assert.deepEqual(servedFiles(r), files);
+  }
 });
 
-test('release: a publish that exits 0 but serves the wrong thing is caught and rolled back (#90)', async t => {
+test('release: a build copy the sandbox reports outside its release dir is refused (#91)', async t => {
   const r = repos(t); r.serve('0.4.0');
-  const before = r.feed();
-  const commit = r.bump('0.5.0');
-  const result = await withLog(r)(commit, { publishCommand: ['sh', '-c', 'cp desktop/dist/latest.yml "$COMPANION_DATA_DIR/downloads/latest.yml"'] });
-  assert.equal(result.status, 'publish_failed'); assert.match(result.output, /serves 0\.4\.0 instead of 0\.5\.0/);
-  assert.deepEqual(r.feed(), before);
-});
-
-test('release: only a commit on origin/main is released (#90)', async t => {
-  const r = repos(t); r.serve('0.4.0');
-  git(r.seed, 'checkout', '--quiet', '-b', 'agent/x/t1');
-  writeFileSync(join(r.seed, 'desktop', 'package.json'), '{"version":"9.9.9"}\n'); git(r.seed, 'commit', '--quiet', '-am', 'branch only');
-  git(r.seed, 'push', '--quiet', 'origin', 'agent/x/t1');
-  const result = await withLog(r)(git(r.seed, 'rev-parse', 'HEAD'));
-  assert.equal(result.status, 'error'); assert.match(result.output, /not on origin\/main/);
+  const liar = (command, { cwd }) => command[0] === 'sh' && String(command[2]).includes('mktemp') ? ['echo', '/home/ubuntu'] : inCwd(command, cwd);
+  const result = await r.release(r.bump('0.5.0'), { sandbox: liar });
+  assert.equal(result.status, 'error'); assert.match(result.output, /build copy in the sandbox/);
   assert.equal(r.built(), null); assert.equal(servedDesktopVersion(r.data), '0.4.0');
+  assert.equal((await r.release(r.bump('0.5.1'), { sandboxDir: null })).status, 'error', 'a sandbox needs a sandboxDir');
+});
+
+// A publish that fails at each moment, from a hand-published (plain files) folder and from one the runner already
+// published to: the pair served before is served after, byte for byte; the new installer files are gone.
+for (const stage of ['copied', 'staged', 'swapped']) {
+  test(`release: a publish failing after "${stage}" leaves the previous feed served intact (#91)`, async t => {
+    const r = repos(t); r.serve('0.4.0');
+    const before = r.feed();
+    const failed = await r.release(r.bump('0.5.0'), { fault: s => { if (s === stage) throw new Error(`disk full at ${s}`); } });
+    assert.equal(failed.status, 'publish_failed'); assert.match(failed.output, new RegExp(`disk full at ${stage}`));
+    assert.deepEqual(r.feed(), before);
+    assert.equal(existsSync(fileIn(r, 'Companion-Setup-0.5.0-x64.exe')), false);
+    assert.equal(existsSync(fileIn(r, 'Companion-Setup-0.5.0-x64.exe.blockmap')), false);
+    assert.equal(existsSync(fileIn(r, 'Companion-Setup-0.4.0-x64.exe')), true, 'the served installer stays');
+    // Now from a runner-published feed: 0.5.1 goes out, 0.6.0 fails, 0.5.1 is still served.
+    assert.equal((await r.release(r.bump('0.5.1'))).status, 'published');
+    const published = r.feed();
+    const again = await r.release(r.bump('0.6.0'), { fault: s => { if (s === stage) throw new Error('boom'); } });
+    assert.equal(again.status, 'publish_failed');
+    assert.deepEqual(r.feed(), published);
+    assert.equal(existsSync(fileIn(r, 'Companion-Setup-0.6.0-x64.exe')), false);
+    assert.equal(r.publishScriptRan(), false);
+  });
+}
+
+test('release: latest.yml and desktop.json switch together, in one rename (#91)', async t => {
+  const r = repos(t); r.serve('0.4.0');
+  const old = r.feed(), seenAt = {};
+  const result = await r.release(r.bump('0.5.0'), { fault: s => { seenAt[s] = r.feed(); } });
+  assert.equal(result.status, 'published', result.output);
+  assert.deepEqual(seenAt.copied, old, 'the installer files are in place, the pair is still the old one');
+  assert.deepEqual(seenAt.staged, old, 'the new pair is staged, the old one is still served');
+  assert.deepEqual(seenAt.swapped, r.feed(), 'one rename later both are new');
+  assert.match(seenAt.swapped[0], /^version: 0\.5\.0/); assert.match(seenAt.swapped[1], /"0\.5\.0"/);
+});
+
+test('release: a real filesystem failure while publishing changes nothing served; a later hand publish is picked up (#91)', async t => {
+  const r = repos(t); r.serve('0.4.0');
+  const before = r.feed();
+  writeFileSync(fileIn(r, '.feed'), 'in the way\n'); // the feed dir cannot be made
+  const failed = await r.release(r.bump('0.5.0'));
+  assert.equal(failed.status, 'publish_failed', failed.output);
+  assert.deepEqual(r.feed(), before);
+  rmSync(fileIn(r, '.feed'));
+  assert.equal((await r.release(r.bump('0.5.1'))).status, 'published');
+  // Blackout publishes 0.6.0 by hand (scripts/publish-desktop.sh renames plain files over the symlinks).
+  writeFileSync(fileIn(r, 'Companion-Setup-0.6.0-x64.exe'), installer('0.6.0'));
+  writeFileSync(fileIn(r, 'latest.yml'), yml('0.6.0'));
+  writeFileSync(fileIn(r, 'desktop.json.tmp'), '{"version":"0.6.0","file":"Companion-Setup-0.6.0-x64.exe"}\n');
+  execFileSync('mv', [fileIn(r, 'desktop.json.tmp'), fileIn(r, 'desktop.json')]);
+  assert.equal(servedDesktopVersion(r.data), '0.6.0');
+  assert.equal((await r.release(r.bump('0.6.1'))).status, 'published');
+  assert.equal(servedDesktopVersion(r.data), '0.6.1');
+  // Feed dirs: only the current one and the one before it are kept.
+  const dirs = execFileSync('ls', [fileIn(r, '.feed')]).toString().split('\n').filter(Boolean);
+  assert.equal(dirs.length, 3, dirs.join(' ')); assert.ok(dirs.includes('current'));
+});
+
+test('publishDesktop: a swap back that fails says where to look (#91)', async t => {
+  const r = repos(t); r.serve('0.4.0');
+  const art = join(r.root, 'art'); mkdirSync(art);
+  writeFileSync(join(art, 'i'), installer('0.5.0')); writeFileSync(join(art, 'b'), 'bm\n'); writeFileSync(join(art, 'l'), yml('0.5.0'));
+  const result = await publishDesktop({ downloads: r.downloads, version: '0.5.0', file: 'Companion-Setup-0.5.0-x64.exe', artifacts: { installer: join(art, 'i'), blockmap: join(art, 'b'), latest: join(art, 'l') },
+    sha256: sha(installer('0.5.0')), sha512: sha(installer('0.5.0'), 'sha512', 'base64'),
+    fault: s => { if (s === 'swapped') { rmSync(join(r.downloads, '.feed'), { recursive: true }); writeFileSync(join(r.downloads, '.feed'), 'x'); throw new Error('boom'); } } });
+  assert.equal(result.ok, false); assert.match(result.problem, /Putting the previous feed back failed too/); assert.match(result.problem, /\.feed\/current/);
 });
 
 // ---------- The runner's wiring, with fakes ----------
@@ -319,4 +452,14 @@ test('runner: a release cut off by a restart is marked interrupted with a Manage
   assert.equal(runner.get(run.id).release.status, 'interrupted');
   const line = runner.events(0).find(item => item.type === 'manager.attention');
   assert.equal(line.kind, 'release_failed'); assert.match(line.suggestion, /runner restart/);
+});
+
+test('runner: a published release with a note (a non-x.y.z version left out of the gate) says so on the thread (#91)', async t => {
+  const s = setup(t, { releaseResult: { status: 'published', version: '0.5.0', previous: '0.4.0', served: 'banana', sha256: 'f'.repeat(64), sha512: 'x', file: 'Companion-Setup-0.5.0-x64.exe',
+    notes: ['downloads/desktop.json named "banana", which is not x.y.z (the server served nothing); it was replaced.'], output: 'built' } });
+  const run = await s.merged();
+  assert.equal(run.release.status, 'published'); assert.equal(run.release.sha512, 'x'); assert.equal(run.release.notes.length, 1);
+  const post = s.calls.posts.find(body => /^Desktop 0\.5\.0 published/.test(body));
+  assert.match(post, /Built in the agent sandbox, published by the runner/); assert.match(post, /Note: .*banana.*not x\.y\.z/);
+  assert.deepEqual(s.lines(), []);
 });

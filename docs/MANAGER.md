@@ -92,33 +92,56 @@ Manager line `merge_refused` tells C-chan to relaunch a coder (the next delivery
 [AGENT-RUNNER.md](AGENT-RUNNER.md#roster) (merge runs). Deploying the server after a merge is automatic only when
 Blackout turned it on (#100, below); otherwise it stays with him.
 
-## Desktop release after a merge (#90)
+## Desktop release after a merge (#90, #91)
 
 With `"release": { "desktop": true }` in the runner config, a merge that goes through (full suite passed, main pushed)
 and raises `desktop/package.json`'s version also releases the Windows desktop app, so nobody runs the scripts by hand.
-The runner does it itself, without a model and owner-side (the same account as the push, never in the agent sandbox),
-in `src/desktop-release.mjs`:
+The runner does it itself, without a model, in `src/desktop-release.mjs`. No merged code runs as the owner account:
 
-1. a fresh clone of `config.merge.origin`, checked out at exactly the merge commit, which must be on `origin/main`
-   (never an agent branch, never the sandbox's clone);
-2. the gate: the version on the merge commit must be higher than on its first parent (the main it was merged into) and
-   higher than the version the server serves (`<dataDir>/downloads/desktop.json`). No bump, a lower or equal version, or
-   a server that already serves it: nothing is built or published. An `already_merged` result releases nothing either;
-3. `bash scripts/build-desktop.sh` in that clone (environment: only `PATH`, `HOME` = `release.home` or a throw-away dir,
-   `LANG`, `CI`, `NPM_CLI` if set), then `bash scripts/publish-desktop.sh` with `COMPANION_DATA_DIR=<dataDir>`;
-4. a check that `desktop.json` now names the new version and that the served installer has the built installer's sha256.
+1. the owner side (git only) makes a fresh clone of `config.merge.origin` and checks the merge commit is on
+   `origin/main` (never an agent branch, never the sandbox's clone);
+2. the gate, read from the commit objects: the version on the merge commit must be `x.y.z`, higher than on its first
+   parent (the main it was merged into) and higher than what `<dataDir>/downloads/desktop.json` names. No bump, a lower
+   or equal version, or a server that already serves it: nothing is built or published. An `already_merged` result
+   releases nothing either. A first parent or served version that is **not** `x.y.z` is not comparable: it is left out
+   of the gate and the thread post says so ("Note: …"); it never blocks later releases (the server serves nothing for a
+   non-`x.y.z` `desktop.json` anyway). A non-`x.y.z` version on the merge commit itself is an error (`release_failed`);
+3. **the build runs in the agent sandbox**: the sandbox user makes its own copy of the merge commit under
+   `/var/lib/cchan-agents/release` (a git bundle on stdin, exactly like the merge's test copy) and runs
+   `bash scripts/build-desktop.sh` there through `sudo -n cchan-sandbox-run --cwd … --max-seconds …`, the same wrapper
+   and unit hardening as the tests (sandbox user, its `HOME`, no owner keys, no agent socket, network allowed);
+4. the installer, its blockmap and `latest.yml` come out as bytes from `cat` run **as the sandbox user** into the
+   runner's private temp dir (the owner never opens a path in the sandbox, so a planted symlink cannot make it read its
+   own files). `latest.yml` must name the version, the installer's file name and its sha512 (and size);
+5. **the runner publishes with its own code** (`publishDesktop`); `scripts/publish-desktop.sh` from the merge is never
+   run. The installer and blockmap are copied into `downloads/` (temp name, then rename); `latest.yml` and
+   `desktop.json` are staged in a new feed directory and switched in together (below); then the served files are
+   checked: `desktop.json` names the version and file, the served installer has the built sha256 and sha512, the served
+   `latest.yml` lists that sha512, the blockmap matches.
 
-The ticket thread gets "Desktop X published … Installer … sha256 …", or the failure with its output. A failed build
-publishes nothing. A failed publish or check puts `latest.yml` and `desktop.json` back as they were and removes the
-installer files it added, so the previously published version is still served. Either way the Manager line
-`release_failed` is raised; main is never rolled back. A runner restart in the middle of a release raises the same line
-(then check that `desktop.json` and `latest.yml` name the same version). Releases run one at a time. Installed apps
-pick the new version up through the in-app updater (#89, [DESKTOP.md](DESKTOP.md)). Server deploys are the next
-section (#100).
+Call path: `AgentRunner#releaseDesktop` → `SandboxOps.releaseDesktop` (adds the wrapper, `sandboxDir`
+`/var/lib/cchan-agents/release`) → `releaseDesktop`: owner `git clone/merge-base/show/bundle` → sandbox `sh` (copy) →
+sandbox build command → sandbox `cat` ×3 → runner `publishDesktop` → sandbox `rm -rf` of its copy.
 
-The build runs the merged commit's code (the build script, `npm install` with its install scripts, electron-builder) as
-the owner account, as it did when Blackout ran it by hand; that is the trust Blackout gives an accepted, reviewed merge
-by turning this on.
+**Pair-atomic feed.** `downloads/latest.yml` and `downloads/desktop.json` are fixed symlinks to
+`.feed/current/latest.yml` and `.feed/current/desktop.json`; `.feed/current` points at one feed directory and is
+replaced with a single `rename`. Readers see either the old pair or the new pair, never a mix, also after a crash. On
+the first release the plain files a hand publish left are copied into a feed directory and replaced by the symlinks
+(same content). A later hand publish with `scripts/publish-desktop.sh` still works (it renames plain files over the
+symlinks); the next runner release converts the folder again. The previous feed directory is kept, older ones removed.
+
+The ticket thread gets "Desktop X published … Installer … sha256 …", or the failure with its output. A failed build or
+an inconsistent build (missing file, `latest.yml` not matching the installer) publishes nothing. A failed publish or
+check switches the previous pair back in one rename and removes the installer files it added, so the previously
+published version is still served, byte for byte. Either way the Manager line `release_failed` is raised; main is never
+rolled back. A runner restart in the middle raises the same line (the pair is consistent; check which version
+`desktop.json` names). Releases run one at a time. Installed apps pick the new version up through the in-app updater
+(#89, [DESKTOP.md](DESKTOP.md)). Server deploys are the next section (#100).
+
+Trust: the merged code (build script, `npm install` with its install scripts, electron-builder) runs only as the sandbox
+user, like the merge's tests (#85). What the owner account trusts from it is data: the three files, which the runner
+checks against each other and serves. The installer itself is still built from merged code and goes to Blackout's
+machines through the updater; that is the trust Blackout gives an accepted, reviewed merge by turning this on.
 
 ## Server deploy after a merge (#100)
 
@@ -275,14 +298,18 @@ Only the owner can grant these on the Board and on the host:
    packages for the suite, e.g. a `prepareCommand` such as `["node","ops/sandbox/install-deps.mjs"]`); create a merger
    agent (`agents_save_agent`: `role: merger`, any model, it is not used). No directory has to be created: the sandbox
    user makes `/var/lib/cchan-agents/merge` itself. The merge steps run on `/var/lib/cchan-agents/bin/node` by default (`config.merge.nodePath` overrides; `null` means the default). The runner's own node under `/opt` is not used: the sandbox hides `/opt`, so the binary must live under the bound `/var/lib/cchan-agents` and be executable by the sandbox user, and a node older than `engines.node` is refused with a readable `merge_failed` reason (#92).
-6. **Desktop release (#90), one time, optional:** install this branch and restart the runner. Check that the owner
-   account can build by hand once (`scripts/build-desktop.sh` from a clean clone: npm or network for the pinned npm,
-   Electron downloads) and that `~/personal-agent-data/downloads` is where the companion serves the app from. Then add to
+6. **Desktop release (#90, #91), one time, optional:** install this branch and restart the runner. The build runs as the
+   sandbox user, so check once that it can build there: from a clone made by the sandbox user under
+   `/var/lib/cchan-agents`, `sudo -n /usr/local/sbin/cchan-sandbox-run --cwd <clone> -- bash scripts/build-desktop.sh`
+   (it needs npm, or `curl`/`openssl` for the pinned npm fallback, `node` on the sandbox PATH and network for the
+   Electron downloads). If npm is somewhere specific, put it in the command:
+   `"buildCommand": ["/usr/bin/env", "NPM_CLI=/var/lib/cchan-agents/…/npm-cli.js", "bash", "scripts/build-desktop.sh"]`.
+   Check that `~/personal-agent-data/downloads` is where the companion serves the app from. Then add to
    `~/.config/cchan-agent-runner/config.json`:
    `"release": { "desktop": true }`; optional keys: `"dataDir"` (default `~/personal-agent-data`, the companion's
-   `COMPANION_DATA_DIR`), `"home"` (a persistent HOME for the build so npm and Electron downloads are cached, e.g.
-   `"/home/ubuntu/.cache/cchan-desktop-release"`), `"buildTimeoutMs"` (default one hour), `"publishTimeoutMs"`,
-   `"buildCommand"` / `"publishCommand"` (argv arrays run in the clone, defaults the two scripts). Restart the runner.
+   `COMPANION_DATA_DIR`), `"buildTimeoutMs"` (default one hour), `"buildCommand"` (argv run in the sandbox copy, default
+   `["bash","scripts/build-desktop.sh"]`). `"publishCommand"` and `"home"` from #90 are ignored now (the runner
+   publishes itself; the build uses the sandbox user's HOME). Restart the runner.
    **Turning it off:** remove the key or set `"desktop": false` and restart the runner; merges then go on as before and
    publish nothing. Requires merging to be on (step 5).
 7. **Server deploy (#100), one time, optional:** `sudo sh ops/deploy/install.sh` from a reviewed checkout, release

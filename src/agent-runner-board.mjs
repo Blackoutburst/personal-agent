@@ -267,8 +267,9 @@ export class BoardReporter {
     const r = run.release ?? {};
     if (!run.board?.merge || ['no_bump', 'no_desktop'].includes(r.reason)) return;
     const at = `from ${run.base} @ ${String(r.commit).slice(0, 10)}`;
+    const notes = Array.isArray(r.notes) && r.notes.length ? ` Note: ${r.notes.join(' ')}` : '';
     const body = r.status === 'published'
-      ? `Desktop ${r.version} published ${at} (was ${r.served ?? 'none'}). Installer ${r.file} sha256 ${r.sha256}. Installed apps update through the in-app updater. Run ${run.id}.`
+      ? `Desktop ${r.version} published ${at} (was ${r.served ?? 'none'}). Installer ${r.file} sha256 ${r.sha256}. Built in the agent sandbox, published by the runner. Installed apps update through the in-app updater.${notes} Run ${run.id}.`
       : r.status === 'skipped'
         ? `Desktop release skipped ${at}: ${String(r.output).slice(0, 500)} Nothing was published. Run ${run.id}.`
         : `Desktop release ${r.version ?? ''} ${at} failed (${r.status}). ${r.status === 'build_failed' ? 'Nothing was published' : `The server still serves ${r.served ?? 'the previous version'}`}; main is unchanged. Run ${run.id}.\n\nOutput:\n${String(r.output).slice(-12000)}`;

@@ -62,7 +62,9 @@ need our own helper process, our own checksum and relaunch logic, all untestable
    `<COMPANION_DATA_DIR>/downloads/` (default `~/personal-agent-data`) and writes `desktop.json` last:
    `{"version":"0.4.1","file":"Companion-Setup-0.4.1-x64.exe"}`. It refuses to publish if `latest.yml` is for another
    version. That folder lives outside the checkout, so `ops/release.mjs` leaves it alone and the service serves the new
-   build at once. Nothing is committed to git.
+   build at once. Nothing is committed to git. With `config.release.desktop` on, the agent runner does steps 2–3 itself
+   after a merge that bumps the version: the build in the agent sandbox, the publish with its own code, `latest.yml` and
+   `desktop.json` switched together through `downloads/.feed/current` (symlinks; see [MANAGER.md](MANAGER.md#desktop-release-after-a-merge-90-91)).
 
 Server, owner only (404 when no valid `desktop.json` + installer exist, 401 when signed out):
 - `GET /api/desktop` returns `{version, size, sha256}`; `GET /api/desktop/download` serves the installer as
