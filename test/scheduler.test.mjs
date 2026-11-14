@@ -339,6 +339,17 @@ test('invalid inputs cannot inject owner selectors, unbounded jobs, unsupported 
   assert.deepEqual(f.scheduler.list(f.a).items, []); assert.deepEqual(f.scheduler.pending(f.a), []);
 });
 
+test('event wakes built by server code may run past the 2000-character reminder limit', async t => {
+  const f = fixture(t);
+  const { eventsPrompt } = await import('../src/agent-runner-client.mjs');
+  const events = Array.from({ length: 30 }, (_, i) => ({ type: 'manager.attention', ticketNumber: i + 1, suggestion: 'x'.repeat(600) }));
+  const prompt = eventsPrompt(events);
+  assert.ok(prompt.length > 2000 && prompt.length <= 8000, String(prompt.length));
+  assert.match(prompt, /more event\(s\)/);
+  assert.equal(f.scheduler.enqueueEvent(f.a, { requestId: 'long-event', kind: 'board', prompt }).kind, 'board');
+  denied(() => f.scheduler.enqueueEvent(f.a, { requestId: 'too-long-event', kind: 'board', prompt: 'x'.repeat(8001) }), 'INVALID_REQUEST');
+});
+
 test('service hands durable occurrences to Conversations and observes completion without duplicating work', async t => {
   const f = fixture(t), conversations = fakeConversations(f), service = serviceFor(f, conversations);
   service.create(f.a, { requestId: 'service-a', text: 'A reminder', dueAt: iso(f.now() + MINUTE) });

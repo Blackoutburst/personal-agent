@@ -5,6 +5,7 @@ import { ProactiveWakes, validPerDay } from './proactive.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/, HASH = /^[a-f0-9]{64}$/, CLOCK = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const EVENT_TEXT = 8000;
 const PERIOD = 6 * 3600000, GRACE = 24 * 3600000, DAY_MS = 24 * 3600000, BOARD_WAKE_CAP = 200, MAX_BOARD_WAKE_CAP = 10000;
 const TERMINAL = new Set(['message', 'silent', 'cancelled', 'interrupted', 'error', 'missed']);
 const ROUTINES = ['dailyDigest', 'weeklyCheckin'];
@@ -27,9 +28,10 @@ function shape(value, required, optional = []) {
     return Object.fromEntries(keys.map(key => [key, descriptors[key].value]));
   } catch { throw new SchedulerError('INVALID_REQUEST'); }
 }
-function text(value) {
-  requireSchedule(typeof value === 'string' && value.isWellFormed() && value.trim() && value.length <= 2000
-    && Buffer.byteLength(value) <= 8000 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value));
+// max: 2000 for reminder text; event wakes (built by server code, never by the model) take up to EVENT_TEXT.
+function text(value, max = 2000) {
+  requireSchedule(typeof value === 'string' && value.isWellFormed() && value.trim() && value.length <= max
+    && Buffer.byteLength(value) <= max * 4 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value));
   return value.trim();
 }
 function instant(value) {
@@ -364,7 +366,7 @@ export class SchedulerStore {
   enqueueEvent(companionId, input) {
     const value = shape(input, ['requestId', 'kind', 'prompt']);
     requireSchedule(typeof value.requestId === 'string' && REQUEST.test(value.requestId) && ['watch', 'board', 'calendar', 'connector'].includes(value.kind));
-    const prompt = text(value.prompt), fingerprint = digest({ kind: value.kind, prompt });
+    const prompt = text(value.prompt, EVENT_TEXT), fingerprint = digest({ kind: value.kind, prompt });
     return this.#tx(() => {
       this.#owner(companionId);
       const prior = this.#db.prepare('SELECT * FROM scheduler_occurrences WHERE companion_id=? AND slot_key=?').get(companionId, 'event:' + value.requestId);
