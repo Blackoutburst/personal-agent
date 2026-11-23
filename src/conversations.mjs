@@ -11,8 +11,10 @@ import { quietWindow, withoutSilence, maybeSilent, BURST_NOTE, FOLLOW_UP_NOTE } 
 // nothing the browser sends selects another companion, provider home or session.
 // Turns run on the server independently of any client: closing the page never stops a reply.
 
+// wakeChars/wakeBytes must stay at least the scheduler's event-wake limit (scheduler.mjs EVENT_TEXT): a wake the
+// scheduler stores but Conversations refuses was queued forever and blocked every wake after it (#105).
 export const LIMITS = Object.freeze({ userChars: 8000, userBytes: 32768, assistantChars: 100000, titleChars: 80,
-  threads: 200, snapshotMessages: 60, eventsPage: 100 });
+  threads: 200, snapshotMessages: 60, eventsPage: 100, wakeChars: 8000, wakeBytes: 32000, noticeChars: 2000 });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/;
 const DEFAULT_TITLE = 'New conversation';
@@ -303,7 +305,7 @@ export class Conversations {
         || !Object.hasOwn(descriptors[key], 'value'))) throw invalid();
     const value = Object.fromEntries(fields.map(key => [key, descriptors[key].value]));
     if (typeof value.id !== 'string' || !UUID.test(value.id) || !['reminder', 'heartbeat', 'watch', 'board', 'release_watch', 'calendar', 'connector', ...TALKING_WAKES].includes(value.kind)
-        || !wellFormed(value.prompt, 4000, 16000)) throw invalid();
+        || !wellFormed(value.prompt, LIMITS.wakeChars, LIMITS.wakeBytes)) throw invalid();
     const digest = createHash('sha256').update(JSON.stringify(value)).digest('hex');
     const wake = this.#tx(() => {
       const prior = this.#wake(companionId, value.id);
@@ -403,6 +405,22 @@ export class Conversations {
   }
 
   proactiveResult(companionId, id) { return this.#wakeResult(this.#wake(companionId, id)); }
+
+  // #105: a plain server notice in the owner's ongoing chat, written by server code without a model turn (the
+  // scheduler's liveness notice must reach the owner even when the wake path is what is broken). Push/Discord get it
+  // through onSettled like any assistant message. Returns the message id.
+  notice(companionId, text) {
+    if (this.#closing || typeof companionId !== 'string' || !UUID.test(companionId) || !wellFormed(text, LIMITS.noticeChars, LIMITS.noticeChars * 4)) throw invalid();
+    const messageId = randomUUID();
+    const threadId = this.#tx(() => {
+      const thread = this.#ongoing(companionId);
+      this.#db.prepare("INSERT INTO conv_messages(id,thread_id,role,text,created_at) VALUES(?,?,'assistant',?,?)").run(messageId, thread, text, this.#now());
+      this.#append(thread, { type: 'message', messageId });
+      return thread;
+    });
+    this.#settled({ companionId, threadId, requestId: 'notice-' + messageId, state: 'complete', text, messageId, proactive: true });
+    return messageId;
+  }
 
   // A crashed/failed release attempt is a stale check, never a provider retry.
   // Reconcile it before the scheduler finishes its occurrence so a third-stale

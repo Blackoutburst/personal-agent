@@ -558,7 +558,10 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
       },
         companions: () => [...new Set([...owners.map(owner => companionIdFor(store, owner)).filter(id => id && profiles.get(id)),
           ...schedulerStore.releaseCompanions()])],
-        ready: companionId => Boolean(runner?.ownerFor(companionId)), ...(schedulerOptions.pollMs ? { pollMs: schedulerOptions.pollMs } : {}) });
+        ready: companionId => Boolean(runner?.ownerFor(companionId)), ...(schedulerOptions.pollMs ? { pollMs: schedulerOptions.pollMs } : {}),
+        // #105: failures are logged per wake, and a plain notice tells the owner when scheduled wakes stopped.
+        log: message => console.error(message), notice: (companionId, text) => conversations.notice(companionId, text),
+        ...(schedulerOptions.now ? { now: schedulerOptions.now } : {}) });
       schedulerHttp = createSchedulerHttp({ access, scheduler: schedulerService, calendar });
       // Board companion duties (docs/BOARD-COMPANION.md): Needs-you wakes, profile sync and attachments.
       boardCompanion = new BoardCompanion({ store, owners, profiles, scheduler: schedulerService,

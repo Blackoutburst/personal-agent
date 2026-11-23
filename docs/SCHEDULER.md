@@ -189,3 +189,68 @@ legacy table shapes, positional writers and the v1 fixture are unchanged. `conv_
 existing `kind` column. On rollback, own wakes and follow-ups simply stop; a message still held for quiet hours stays
 undelivered (older code cannot find its occurrence) until forward code returns. Keep the tables; do not delete them.
 
+
+## Failure isolation and liveness (#105)
+
+From 14 to 23 Nov 2026 no scheduled wake ran for C-chan: the scheduler started taking event wakes up to 8000 characters
+(5322a44, `enqueueEvent` → `text(value.prompt, EVENT_TEXT)`) while `Conversations.enqueueProactive` still refused wake
+prompts over 4000 (`wellFormed(value.prompt, 4000, 16000)`). A long runner event wake was stored, then refused on every
+tick. `SchedulerService#tick` ran each owner's wakes in one try with an empty catch, so the refusal of the oldest wake
+skipped every wake queued after it (own wakes, heartbeats, watches, reminders), and nothing was logged. Now:
+
+- `Conversations` admits wake prompts up to `LIMITS.wakeChars` (8000), at least the scheduler's `EVENT_TEXT`; a test
+  pins the two together.
+- Each pending wake runs in its own try/catch. A failing wake is logged once (kind, id prefix and error code, never the
+  prompt), the wakes behind it still run, and after three failed ticks in a row it is retired as `error`. A failing owner
+  tick is logged when it starts failing and when its error code changes.
+- Catch-up after an outage: the service records when it last finished a whole tick for an owner (`scheduler_ticks`,
+  additive, written at most every 5 minutes; before this release, the last wake that started stands in). When that is
+  more than a day ago (the server was down, or every tick failed as from 14 Nov), server-built event wakes (`event:`
+  slots: Board, runner, calendar, connector) due more than a day ago that never started become `missed`, and the log says
+  `Scheduler catch-up after an outage: N event wake(s) ...`. Event wakes held while the scheduler kept ticking (provider
+  cooldown, agent runner down, quiet hours) are never marked missed by this; they run when the hold ends. Heartbeats, own
+  wakes and watch checks already coalesce to one; reminders keep their own one-day rule.
+- Liveness: before each owner's wakes, the service checks when any scheduled wake last started. When nothing has started
+  for three expected gaps (own wakes: 1.5 × 24 h / per day; heartbeats: 6 h), and never less than 24 hours, counted from
+  the service start or last settings change at the latest, the owner gets one plain server message in the ongoing chat
+  (`Conversations.notice`, no model turn; push/Discord as usual) and the log gets a `Scheduler liveness:` line. Inside
+  the owner's quiet hours the notice waits (logged once) and goes out on the first tick after they end. It is not
+  repeated until a wake has started again (`scheduler_liveness.notified_at`, additive). Nothing is expected while the
+  scheduler is off, own wakes and heartbeats are off, the provider cooldown holds, or the agent runner is not ready.
+
+### Confirming on the server (read-only)
+
+Unit: `personal-agent-account.service`; database: `/home/ubuntu/personal-agent-data/bootstrap.sqlite`. Every query
+below opens the file read-only (`mode=ro`) and changes nothing. Times are UTC.
+
+```sh
+# Which release runs, and when the service restarted since 14 Nov.
+readlink -f ~/personal-agent/current
+journalctl -u personal-agent-account.service --since 2026-11-14 -o short-iso | grep -E 'Started|Stopped|Scheduler' | tail -50
+# Before the fix the refusal was swallowed: expect no Scheduler error lines at all for 14-23 Nov.
+# After deploying the fix, expect "Scheduler catch-up after an outage" once, then normal wakes.
+journalctl -u personal-agent-account.service --since today -o short-iso | grep -E 'Scheduler (catch-up|liveness|.* failed|gave up|tick failed)'
+
+DB='file:/home/ubuntu/personal-agent-data/bootstrap.sqlite?mode=ro'
+# 1. The blocker: the oldest queued wakes. Expect an event:agents-... board wake from about 14 Nov 19:50 with chars > 4000
+#    at the top, never handed to Conversations (in_conv = 0), and everything after it still queued.
+sqlite3 "$DB" "SELECT o.id, o.kind, o.slot_key, o.state, datetime(o.due_at/1000,'unixepoch') AS due, length(o.prompt) AS chars,
+  (SELECT COUNT(*) FROM conv_wakes w WHERE w.companion_id=o.companion_id AND w.id=o.id) AS in_conv
+  FROM scheduler_occurrences o WHERE o.state IN ('queued','admitted') ORDER BY o.due_at LIMIT 20;"
+# 2. Last time any scheduled wake started, per kind of table. Expect all around 14 Nov.
+sqlite3 "$DB" "SELECT 'events/reminders/heartbeats', datetime(MAX(admitted_at)/1000,'unixepoch') FROM scheduler_occurrences
+  UNION ALL SELECT 'routines', datetime(MAX(admitted_at)/1000,'unixepoch') FROM scheduler_routine_occurrences
+  UNION ALL SELECT 'release watches', datetime(MAX(admitted_at)/1000,'unixepoch') FROM scheduler_release_occurrences
+  UNION ALL SELECT 'own wakes', datetime(MAX(admitted_at)/1000,'unixepoch') FROM scheduler_proactive_occurrences;"
+# 3. Watches overdue but never checked. Expect next 15/16 Nov, last 14 Nov.
+sqlite3 "$DB" "SELECT substr(id,1,8), state, datetime(next_at/1000,'unixepoch') AS next, datetime(last_check_at/1000,'unixepoch') AS last
+  FROM scheduler_release_watches WHERE state='active';"
+# 4. Rule out the other suspects: scheduler on, no long cooldown, heartbeat due date.
+sqlite3 "$DB" "SELECT substr(companion_id,1,8), enabled, heartbeat_enabled, datetime(heartbeat_next_at/1000,'unixepoch'),
+  datetime(cooldown_until/1000,'unixepoch') FROM scheduler_settings;"
+# 5. Any wake prompt Conversations would have refused (only possible with the old 4000 limit).
+sqlite3 "$DB" "SELECT kind, state, COUNT(*) FROM scheduler_occurrences WHERE length(prompt) > 4000 GROUP BY kind, state;"
+```
+
+Without the `sqlite3` CLI, the same queries run with the service's Node, read-only:
+`/opt/blackoutburst-platform-runtime/node-v24.22.1 -e "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync('/home/ubuntu/personal-agent-data/bootstrap.sqlite',{readOnly:true});console.table(db.prepare(process.argv[1]).all())" "<SQL>"`.

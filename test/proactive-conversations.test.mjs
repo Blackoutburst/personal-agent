@@ -596,7 +596,7 @@ test('invalid admissions and asynchronous hooks fail closed without user rows or
   const f = fixture(t); let invoked = 0;
   const getter = Object.defineProperty({ id: randomUUID(), kind: 'watch' }, 'prompt', { enumerable: true, get() { invoked++; return PRIVATE; } });
   for (const input of [null, [], wake({ id: 'bad' }), wake({ kind: 'user' }), wake({ prompt: '' }),
-    wake({ prompt: 'x'.repeat(4001) }), wake({ extra: true }), getter]) {
+    wake({ prompt: 'x'.repeat(8001) }), wake({ extra: true }), getter]) {
     assert.throws(() => f.conv.enqueueProactive(f.a, input), ConversationError);
   }
   assert.equal(invoked, 0); assert.equal(f.calls.length, 0);
