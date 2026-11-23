@@ -312,3 +312,43 @@ test('npm dependencies install once per lock file outside the release folder, be
     .release(f.git('rev-parse', 'HEAD')));
   assert.deepEqual(f.trace, []); assert.deepEqual(readdirSync(join(f.rootDir, 'deps')), [key]);
 });
+
+// #106: the smoke check after the health check.
+test('a passing smoke check keeps the new release and is given the release directory, data directory and restart time', async t => {
+  const f = fixture(t), calls = [];
+  const result = await f.tool({ smoke: async input => { calls.push(input); return { ok: true, failures: [] }; } }).release(f.second);
+  assert.equal(result.current, f.second);
+  assert.deepEqual(calls, [{ release: join(f.rootDir, 'releases', f.second), dataDir: f.dataDir, since: new Date('2026-11-03T10:00:00Z').getTime() }]);
+  assert.deepEqual(f.trace, ['stop', 'start', 'health']);
+});
+
+test('a failing smoke check rolls back to the previous release, starts it, and says why (#106)', async t => {
+  const f = fixture(t);
+  const smoke = async () => ({ ok: false, failures: [{ check: 'chat', reason: 'snapshot rejected by the chat client (INVALID_RESPONSE)' },
+    { check: 'scheduler', reason: 'no scheduler tick completed within 120s of the restart (last tick: never)' }] });
+  await assert.rejects(f.tool({ smoke }).release(f.second), error => {
+    assert.equal(error.code, 'SMOKE');
+    assert.match(error.detail, /chat: snapshot rejected by the chat client \(INVALID_RESPONSE\); scheduler: no scheduler tick completed/);
+    return true;
+  });
+  assert.equal(f.current(), join(f.rootDir, 'releases', f.first));
+  assert.equal(existsSync(join(f.rootDir, 'previous')), false);
+  assert.equal(f.running, true);
+  assert.deepEqual(f.trace, ['stop', 'start', 'health', 'stop', 'start', 'health'], 'the previous release is restarted and health-checked, not smoke-checked');
+});
+
+test('a smoke check that throws or returns nothing counts as a failure and rolls back', async t => {
+  for (const smoke of [async () => { throw new Error('boom'); }, async () => undefined]) {
+    const f = fixture(t);
+    await assert.rejects(f.tool({ smoke }).release(f.second), error => error.code === 'SMOKE');
+    assert.equal(f.current(), join(f.rootDir, 'releases', f.first));
+  }
+});
+
+test('rollback and backup never run the smoke check; an invalid smoke option is refused', async t => {
+  const f = fixture(t); let calls = 0;
+  const tool = f.tool({ smoke: async () => { calls++; return { ok: true, failures: [] }; } });
+  await tool.release(f.second); assert.equal(calls, 1);
+  await tool.rollback(); await tool.backup(); assert.equal(calls, 1);
+  assert.throws(() => f.tool({ smoke: 'yes' }), error => error.code === 'INVALID');
+});

@@ -19,6 +19,8 @@ import { BoardReporter } from '../src/agent-runner-board.mjs';
 import { Manager } from '../src/agent-manager.mjs';
 import { Roster } from '../src/agent-roster.mjs';
 import { SandboxOps } from '../src/agent-sandbox-ops.mjs';
+import { run } from '../src/agent-merge.mjs';
+import { seedData, seedRelease } from './fixtures/smoke-data.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ID = ['-c', 'user.name=Setup', '-c', 'user.email=setup@example.test', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null'];
@@ -81,9 +83,15 @@ async function world(t) {
   writeFileSync(join(seed, 'src', 'agent-runner.mjs'), 'export const r = 1;\n');
   writeFileSync(join(seed, 'ops', 'agent-runner', 'runner-service.mjs'), "import { r } from '../../src/agent-runner.mjs';\n");
   writeFileSync(join(seed, 'docs', 'X.md'), 'x\n');
+  // #106: the smoke check imports the release's own chat code, so the seed carries it (the fake runner module stays).
+  seedRelease(seed); writeFileSync(join(seed, 'src', 'agent-runner.mjs'), 'export const r = 1;\n');
   git(seed, 'add', '.'); git(seed, 'commit', '--quiet', '-m', 'first'); git(seed, 'push', '--quiet', 'origin', 'main');
   const first = git(seed, 'rev-parse', 'HEAD');
-  const db = new DatabaseSync(join(data, 'bootstrap.sqlite')); db.exec('CREATE TABLE t (x)'); db.close(); chmodSync(join(data, 'bootstrap.sqlite'), 0o600);
+  // Real chat data and a scheduler that has ticked (far in the future, so any restart time is before it): smoke passes.
+  seedData(data, { tickAt: 32_000_000_000_000 });
+  const database = join(data, 'bootstrap.sqlite');
+  const setTick = at => { const db = new DatabaseSync(database); db.prepare('UPDATE scheduler_ticks SET ticked_at=?').run(at); db.close(); };
+  const breakChat = () => { const db = new DatabaseSync(database); db.exec("UPDATE conv_messages SET role='robot' WHERE id='m2'"); db.close(); };
   const systemctl = sh(join(bin, 'systemctl'), `#!/bin/sh\necho "$*" >> "${log}"\n`);
   let broken = () => existsSync(join(root, 'current', 'BROKEN'));
   const server = createServer((request, response) => {
@@ -106,8 +114,10 @@ async function world(t) {
     return git(seed, 'rev-parse', 'HEAD');
   };
   const options = commit => ({ origin, commit, repo: join(base, 'cache', 'deploy.git'), releaseRoot: root, dataDir: data, releaseTool: join(ROOT, 'ops', 'release.mjs'),
-    systemctl, healthUrl, idleWaitMs: 0 });
-  return { base, root, data, first, push, options, log: () => readFileSync(log, 'utf8').trim().split('\n').filter(Boolean), setBroken: fn => { broken = fn; } };
+    systemctl, healthUrl, idleWaitMs: 0,
+    // The scheduler wait is shortened for the tests (the tool reads COMPANION_SMOKE_WAIT_MS).
+    exec: (command, args, o) => run(command, args, { ...o, env: { ...o.env, COMPANION_SMOKE_WAIT_MS: '0' } }) });
+  return { base, root, data, first, setTick, breakChat, push, options, log: () => readFileSync(log, 'utf8').trim().split('\n').filter(Boolean), setBroken: fn => { broken = fn; } };
 }
 
 test('deploy: a server change is released with the real tool, the companion restarted and health-checked; the runner untouched (#100)', async t => {
@@ -153,6 +163,31 @@ test('deploy: a failed health check rolls back to the previous release (real too
   assert.equal(releaseLink(w.root, 'current'), w.first, 'the previous release is selected again');
   assert.deepEqual(w.log(), ['stop personal-agent-account.service', 'start personal-agent-account.service',
     'stop personal-agent-account.service', 'start personal-agent-account.service']);
+});
+
+test('deploy: a dead scheduler after the restart rolls the release back, with the reason (#106)', async t => {
+  const w = await world(t);
+  w.setTick(1);
+  const commit = w.push({ 'server.mjs': 'export const v = 6;\n' }, 'scheduler stops');
+  const result = await deployServer(w.options(commit));
+  assert.equal(result.status, 'rolled_back', result.output);
+  assert.equal(result.errorCode, 'SMOKE');
+  assert.match(result.output, /smoke check failed/i); assert.match(result.output, /scheduler: no scheduler tick completed/);
+  assert.equal(releaseLink(w.root, 'current'), w.first, 'the previous release is selected again');
+  assert.equal(readFileSync(join(w.root, 'current', 'server.mjs'), 'utf8'), 'export const v = 1;\n');
+  assert.deepEqual(w.log(), ['stop personal-agent-account.service', 'start personal-agent-account.service',
+    'stop personal-agent-account.service', 'start personal-agent-account.service']);
+});
+
+test('deploy: a chat the client cannot read after the restart rolls the release back, with the reason (#106)', async t => {
+  const w = await world(t);
+  w.breakChat();
+  const commit = w.push({ 'server.mjs': 'export const v = 7;\n' }, 'chat breaks');
+  const result = await deployServer(w.options(commit));
+  assert.equal(result.status, 'rolled_back', result.output); assert.equal(result.errorCode, 'SMOKE');
+  assert.match(result.output, /chat: snapshot rejected by the chat client \(INVALID_RESPONSE\)/);
+  assert.doesNotMatch(result.output, /SECRET_/);
+  assert.equal(releaseLink(w.root, 'current'), w.first);
 });
 
 test('deploy: waits for the companion to be idle before stopping it, and the wait is bounded (#100)', async t => {

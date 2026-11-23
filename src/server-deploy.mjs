@@ -106,6 +106,13 @@ export function writeJson(file, value) {
 export const ackFile = stateFile => join(dirname(stateFile), 'deploy-ack.json');
 export function clearDeployState(stateFile) { rmSync(stateFile, { force: true }); rmSync(ackFile(stateFile), { force: true }); }
 
+// The release tool's content-free failure reasons from its stderr ({"detail":...}, #106), or null.
+function releaseDetail(output) {
+  for (const line of String(output ?? '').split('\n').reverse()) {
+    try { const value = JSON.parse(line); if (typeof value?.detail === 'string') return value.detail; } catch { /* not JSON */ }
+  }
+  return null;
+}
 // The release tool's error code from its stderr ({"error":"HEALTH",...}), or null.
 function releaseError(output) {
   for (const line of String(output ?? '').split('\n').reverse()) {
@@ -174,6 +181,7 @@ export async function deployServer({ origin, commit, base = 'main', repo, releas
   }
   const code = releaseError(step.output);
   if (code === 'HEALTH') return fail('rolled_back', `The companion failed its health check on ${commit.slice(0, 10)}; the release tool put ${out.previous?.slice(0, 10) ?? 'the previous release'} back.\n${step.output}`, { errorCode: code });
+  if (code === 'SMOKE') return fail('rolled_back', `The smoke check failed on ${commit.slice(0, 10)} (${releaseDetail(step.output) ?? 'see output'}); the release tool put ${out.previous?.slice(0, 10) ?? 'the previous release'} back.\n${step.output}`, { errorCode: code });
   if (code === 'RECOVERY') return fail('recovery_failed', `The health check failed and putting the previous release back failed too: the companion may be down.\n${step.output}`, { errorCode: code });
   return fail('failed', `The release tool refused or failed (${code ?? (step.timedOut ? 'timed out' : `exit ${step.code}`)}); the previous release is kept.\n${step.output}`, { errorCode: code });
 }
