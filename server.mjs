@@ -571,7 +571,7 @@ export async function startServer({ dataDir, mode = 'unavailable', port = 4318, 
         const allowedIds = () => owners.filter(owner => agentOwners.includes(owner.label)).map(owner => companionIdFor(store, owner)).filter(Boolean);
         agents = { client, allowed: companionId => allowedIds().includes(companionId) };
         agentEvents = new AgentEvents({ store, client, scheduler: schedulerService, companionFor: () => allowedIds()[0] ?? null,
-          log: message => console.error(message) });
+          quiet: companionId => schedulerStore.quietNow(companionId), log: message => console.error(message) });
       }
       // Android push (docs/PUSH.md): on when the FCM service-account key exists. Devices register through /api/companion.
       pushDevices = new PushDevices({ store });
