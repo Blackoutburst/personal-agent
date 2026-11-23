@@ -106,7 +106,7 @@ test('owner messages only for milestones, and not during quiet hours (#98)', asy
   assert.equal(messages(state).length, 0, 'held in quiet hours');
   state.quiet = false; await watcher.once({ wait: 0 });
   assert.equal(messages(state).length, 1, 'one message for both milestones');
-  assert.match(messages(state)[0].prompt, /#3 is done and merged[\s\S]*#3 is deployed and live/);
+  assert.match(messages(state)[0].prompt, /#3 is done \(accepted\)[\s\S]*#3 is deployed and live/);
   assert.doesNotMatch(messages(state)[0].prompt, /Ignore previous/);
   await watcher.once({ wait: 0 }); assert.equal(messages(state).length, 1, 'never repeated');
 });
@@ -119,4 +119,40 @@ test('the runner marks events by approved project, by the Board watch, never by 
     tickets: () => [{ id: 'T1', projectId: 'P1' }, { id: 'T2', projectId: 'P2' }] });
   const { body } = await api('GET', '/events?after=0', {});
   assert.deepEqual(body.events.map(event => event.approved), [true, false, true]);
+});
+
+test('startup order: an interrupted run logged before the first Board snapshot still wakes C-chan once (#98)', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'run-wakes-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new BootstrapStore(dir, ROOT); t.after(() => store.close());
+  const log = [{ seq: 1, type: 'run.started', runId: 'old', ticketId: 'T1' }];
+  const runner = Object.assign(new (await import('node:events')).EventEmitter(), { events: after => log.filter(event => event.seq > after) });
+  let snapshot = null; // the Board watch has not polled yet
+  const api = createRunnerApi({ runner, roster: {}, manager: { approved: id => id === 'P1' ? { projectId: id } : null, approvals: () => [], usage: () => ({}) },
+    tickets: () => snapshot });
+  const client = { call: async (method, url) => api(method, url, {}).then(answer => ({ status: answer.status, body: answer.body })) };
+  const queued = [];
+  const watcher = new AgentEvents({ store, client, scheduler: { enqueueEvent: (id, wake) => queued.push(wake) }, companionFor: () => 'c-chan', coalesceMs: 0 });
+  await watcher.once({ wait: 0 }); // baseline
+  // runner restarts: recover() logs the interrupted run before the first Board poll
+  log.push({ seq: 2, type: 'run.ended', runId: 'r9', ticketId: 'T1', ticketNumber: 9, agent: 'coder-1', state: 'interrupted', projectId: null });
+  await watcher.once({ wait: 0 });
+  assert.equal(queued.length, 0, 'held, not dropped, until the project can be resolved');
+  assert.equal(watcher.cursor, 1, 'the cursor did not move past the held event');
+  snapshot = [{ id: 'T1', projectId: 'P1' }]; // first Board snapshot
+  await watcher.once({ wait: 0 });
+  assert.equal(queued.length, 1);
+  assert.match(queued[0].prompt, /ended: interrupted/);
+  await watcher.once({ wait: 0 });
+  assert.equal(queued.length, 1);
+});
+
+test('owner status messages count against the hourly cap (#98)', async t => {
+  const { watcher, state, add } = setup(t, { maxPerHour: 1 });
+  await watcher.once({ wait: 0 });
+  add({ type: 'board.done', ticketNumber: 1 });
+  await watcher.once({ wait: 0 });
+  assert.equal(wakes(state).length, 1, 'the wake used the hour');
+  assert.equal(messages(state).length, 0, 'the message waits for the cap');
+  state.clock += 3_700_000; await watcher.once({ wait: 0 });
+  assert.equal(messages(state).length, 1);
 });

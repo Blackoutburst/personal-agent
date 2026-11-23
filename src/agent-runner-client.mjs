@@ -135,7 +135,7 @@ const WAKE = new Set(['run.ended', 'board.ready', 'board.review', 'board.done', 
 // Milestones (#98): the only things worth a message to the owner. Fixed text from ids and numbers, never Board text.
 const n = event => event.ticketNumber ? `#${event.ticketNumber}` : 'a ticket';
 const MILESTONES = {
-  'board.done': event => `${n(event)} is done and merged.`,
+  'board.done': event => `${n(event)} is done (accepted).`,
   'board.needs_you': event => `${n(event)} is waiting on you (a hard limit or a decision only you can make).`,
   'release.ended': event => event.release === 'published' ? `A desktop release${event.version ? ` ${String(event.version).slice(0, 40)}` : ''} (${n(event)}) is published.` : null,
   'manager.attention': event => ({ deployed: `${n(event)} is deployed and live on the server.`,
@@ -208,7 +208,10 @@ export class AgentEvents {
     }
     // Status push: milestones only, one message for all, never during quiet hours (they wait).
     const lines = this.#db.prepare('SELECT seq, text FROM agent_milestone_pending ORDER BY seq LIMIT 10').all();
-    if (companionId && lines.length && !this.#quiet(companionId)) {
+    // Owner messages count against the same hourly cap as the manager wakes.
+    const used = this.#db.prepare('SELECT COUNT(*) AS n FROM agent_wake_log').get().n;
+    if (companionId && lines.length && used < this.#maxPerHour && !this.#quiet(companionId)) {
+      this.#db.prepare('INSERT INTO agent_wake_log (at) VALUES (?)').run(at);
       const requestId = 'agents-ms-' + createHash('sha256').update(lines.map(row => row.seq).join(',')).digest('hex').slice(0, 32);
       this.#scheduler.enqueueEvent(companionId, { requestId, kind: 'watch', prompt: 'Status update for your owner from your agent runner. Send ONE short message'
         + ' (one or two sentences, plain words, no step-by-step) saying what happened:\n' + lines.map(row => `- ${row.text}`).join('\n')

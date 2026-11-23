@@ -91,7 +91,10 @@ export function createRunnerApi({ runner, roster, manager = null, opsBoard = nul
         await new Promise(resolve => { const timer = setTimeout(resolve, wait * 1000); waiters.add(() => { clearTimeout(timer); resolve(); }); });
         events = runner.events(Number.isFinite(after) ? after : 0);
       }
-      events = mark(events);
+      // Before the first Board snapshot no event's project can be resolved, and the client moves its cursor past what it
+      // receives: hold them back (they stay in the runner's log) rather than hand them out as unapproved.
+      events = tickets() === null ? [] : mark(events);
+      if (tickets() === null && wait > 0 && !events.length) await new Promise(resolve => setTimeout(resolve, Math.min(wait, 2) * 1000));
       return ok(200, { events, last: runner.events(0).at(-1)?.seq ?? 0 });
     }
     if (parts[0] === 'roster') {
