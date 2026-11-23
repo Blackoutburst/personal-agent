@@ -78,7 +78,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS scheduler_routine_attempt ON scheduler_routine
 const agentWork = row => row.kind === 'board' && typeof row.slot_key === 'string' && row.slot_key.startsWith('event:agents-');
 
 export class SchedulerStore {
-  #db; #timezone; #now; #spacing; #cap; #release; #proactive; #boardSpacing; #log; #heldLogged = new Set();
+  #db; #timezone; #now; #spacing; #cap; #release; #proactive; #boardSpacing; #log; #heldLogged = new Set(); #tickWritten = new Map();
   // log(line) receives only kinds, reasons and id prefixes: never prompts or private content.
   constructor({ store, timezoneFor = () => 'UTC', now = Date.now, minSpacingMs = 300000, maxTurnsPerDay = 24,
     boardSpacingMs = 30000, log = () => {}, random = Math.random, proactiveByDefault = true }) {
@@ -93,6 +93,9 @@ export class SchedulerStore {
       this.#db.exec('CREATE TABLE IF NOT EXISTS scheduler_board_caps(companion_id TEXT PRIMARY KEY,wake_cap INTEGER)');
       // #105: when the owner was last told that scheduled wakes stopped (additive; older releases ignore it).
       this.#db.exec('CREATE TABLE IF NOT EXISTS scheduler_liveness(companion_id TEXT PRIMARY KEY,notified_at INTEGER NOT NULL)');
+      // #105: when the service last finished a whole tick for the owner. A gap longer than a day means the scheduler
+      // was down or broken (not merely holding wakes for a cooldown, quiet hours or a stopped runner).
+      this.#db.exec('CREATE TABLE IF NOT EXISTS scheduler_ticks(companion_id TEXT PRIMARY KEY,ticked_at INTEGER NOT NULL)');
       this.#release = new ReleaseWatches(this.#db, code => new SchedulerError(code));
       // #54: the companion's own wakes and follow-ups, in their own tables (older releases ignore them).
       this.#proactive = new ProactiveWakes(this.#db, code => new SchedulerError(code), random, proactiveByDefault); });
@@ -408,11 +411,15 @@ export class SchedulerStore {
           this.#db.prepare("UPDATE scheduler_occurrences SET state='missed' WHERE companion_id=? AND slot_key=? AND state='queued'").run(companionId, slot);
         }
       }
-      // #105: server-built event wakes (Board, runner, calendar, connector) that never started within a day are
-      // missed, like reminders, so a restart after an outage catches up on recent ones instead of replaying days.
-      const stale = this.#db.prepare(`UPDATE scheduler_occurrences SET state='missed' WHERE companion_id=? AND state='queued'
-        AND admitted_at IS NULL AND job_id IS NULL AND slot_key LIKE 'event:%' AND due_at<?`).run(companionId, now - GRACE).changes;
-      if (stale) this.#log(`Scheduler marked ${stale} event wake(s) older than a day missed`);
+      // #105 catch-up: only after an outage (no whole tick for more than a day: server down, or a tick failing every
+      // poll as from 14 Nov 2026), server-built event wakes (Board, runner, calendar, connector) due more than a day
+      // before now that never started are missed, so the restart runs recent ones instead of replaying days. Event wakes
+      // held while the scheduler kept ticking (provider cooldown, runner down, quiet hours) are never touched.
+      if (now - this.#lastTick(companionId) > GRACE) {
+        const stale = this.#db.prepare(`UPDATE scheduler_occurrences SET state='missed' WHERE companion_id=? AND state='queued'
+          AND admitted_at IS NULL AND job_id IS NULL AND slot_key LIKE 'event:%' AND due_at<?`).run(companionId, now - GRACE).changes;
+        if (stale) this.#log(`Scheduler catch-up after an outage: ${stale} event wake(s) older than a day marked missed`);
+      }
       if (settings.heartbeat_enabled && settings.heartbeat_next_at <= now) {
         const count = Math.floor((now - settings.heartbeat_next_at) / PERIOD) + 1;
         const dueAt = settings.heartbeat_next_at + (count - 1) * PERIOD;
@@ -449,14 +456,37 @@ export class SchedulerStore {
       if (settings.heartbeat_enabled) gaps.push(PERIOD);
       if (!gaps.length) return null;
       const threshold = Math.max(LIVENESS_MIN, 3 * Math.min(...gaps));
-      const last = Math.max(...['scheduler_occurrences', 'scheduler_routine_occurrences', 'scheduler_release_occurrences',
-        'scheduler_proactive_occurrences', 'scheduler_contact_wakes'].map(table =>
-        this.#db.prepare(`SELECT MAX(admitted_at) AS last FROM ${table} WHERE companion_id=?`).get(companionId)?.last ?? 0));
+      const last = this.#lastStarted(companionId);
       const notified = this.#db.prepare('SELECT notified_at FROM scheduler_liveness WHERE companion_id=?').get(companionId)?.notified_at ?? null;
       const overdue = now - Math.max(last, baseline) > threshold && (notified === null || notified < last);
-      return { overdue, lastStartedAt: last ? iso(last) : null, thresholdMs: threshold, now: iso(now),
+      // Quiet hours hold the notice like any message to the owner: it goes out on the first tick after they end.
+      return { overdue, quiet: this.#quiet(companionId, settings, now), lastStartedAt: last ? iso(last) : null, thresholdMs: threshold, now: iso(now),
         timezone: this.#zone(companionId), notifiedAt: notified === null ? null : iso(notified) };
     });
+  }
+  // The last whole tick, or, before this release recorded ticks, the last wake that started (the only evidence of a
+  // working scheduler older releases left). 0 when neither exists.
+  #lastTick(companionId) {
+    const ticked = this.#db.prepare('SELECT ticked_at FROM scheduler_ticks WHERE companion_id=?').get(companionId)?.ticked_at;
+    return ticked ?? this.#lastStarted(companionId);
+  }
+  #lastStarted(companionId) {
+    return Math.max(...['scheduler_occurrences', 'scheduler_routine_occurrences', 'scheduler_release_occurrences',
+      'scheduler_proactive_occurrences', 'scheduler_contact_wakes'].map(table =>
+      this.#db.prepare(`SELECT MAX(admitted_at) AS last FROM ${table} WHERE companion_id=?`).get(companionId)?.last ?? 0));
+  }
+  // The service finished a whole tick for the owner (every wake tried; single failing wakes do not count against it).
+  // Written at most every 5 minutes: the catch-up only needs to tell a working scheduler from a day-long gap.
+  ticked(companionId) {
+    const now = this.#time();
+    const written = this.#tickWritten.get(companionId);
+    if (written !== undefined && now >= written && now - written < 300000) return;
+    this.#tx(() => {
+      this.#owner(companionId, false);
+      this.#db.prepare('INSERT INTO scheduler_ticks VALUES(?,?) ON CONFLICT(companion_id) DO UPDATE SET ticked_at=excluded.ticked_at').run(companionId, now);
+    });
+    if (this.#tickWritten.size > 200) this.#tickWritten.clear();
+    this.#tickWritten.set(companionId, now);
   }
   livenessNotified(companionId) {
     return this.#tx(() => {
@@ -656,6 +686,8 @@ export class SchedulerService {
           } catch (error) { this.#wakeFailed(companionId, wake, error); }
         }
         this.#ownerErrors.delete(companionId);
+        // #105: a whole tick finished; the catch-up after an outage measures its gap from here.
+        this.#scheduler.ticked?.(companionId);
       } catch (error) { this.#ownerError(companionId, error); /* One unavailable owner never blocks the other owner. */ }
     }
   }
@@ -711,6 +743,11 @@ export class SchedulerService {
     const baseline = Math.max(this.#baseline, this.#configured.get(companionId) ?? 0);
     const state = this.#scheduler.liveness(companionId, baseline);
     if (!state?.overdue) return;
+    if (state.quiet) {
+      this.#logOnce(`liveness-quiet:${companionId}:${state.lastStartedAt}`, `Scheduler liveness: no scheduled wake started for ${short(companionId)}`
+        + ` since ${state.lastStartedAt ?? 'this service started'}; the owner notice waits for quiet hours to end`);
+      return;
+    }
     // Recorded first: a notice that fails to send is logged, never retried every poll.
     this.#scheduler.livenessNotified(companionId);
     const since = state.lastStartedAt ? localText(state.lastStartedAt, state.timezone) : null;

@@ -19,7 +19,7 @@ const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 const iso = value => new Date(value).toISOString();
 const silent = { text: JSON.stringify({ action: 'silent' }), sessionId: 'native' };
 
-function fixture(t, { conversations: wrap = conv => conv, schedulerOptions = {} } = {}) {
+function fixture(t, { conversations: wrap = conv => conv, schedulerOptions = {}, ready = () => true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'scheduler-outage-')), store = new BootstrapStore(dir, ROOT);
   const f = { clock: Date.UTC(2026, 10, 14, 19), turns: [], logs: [], settled: [] };
   f.now = () => f.clock;
@@ -34,7 +34,7 @@ function fixture(t, { conversations: wrap = conv => conv, schedulerOptions = {} 
       recordReleaseCheck: (companionId, id, check, text) => f.scheduler.recordReleaseCheck(companionId, id, check, text),
       releaseDelivered: (companionId, id) => f.scheduler.releaseDelivered(companionId, id) },
     onSettled: event => f.settled.push(event) });
-  f.service = new SchedulerService({ scheduler: f.scheduler, conversations: wrap(f.conv), companions: () => [f.A], ready: () => true,
+  f.service = new SchedulerService({ scheduler: f.scheduler, conversations: wrap(f.conv), companions: () => [f.A], ready: () => ready(),
     pollMs: 60000, now: f.now, log: message => f.logs.push(message), notice: (companionId, text) => f.conv.notice(companionId, text) });
   f.drain = async (rounds = 4) => { for (let i = 0; i < rounds; i++) { await f.service.tick(); await f.conv.idle(); f.clock += 1000; } };
   f.messages = async () => (await f.conv.handle(f.A, { action: 'snapshot' })).messages;
@@ -147,4 +147,63 @@ test('the liveness check survives a broken wake path for one owner (a throwing p
   assert.equal((await f.messages()).length, 1, 'the notice still goes out');
   assert.ok(f.logs.some(line => /tick failed/.test(line)), 'the per-owner failure is logged, not swallowed');
   f.scheduler.prepareDue = real;
+});
+
+const failingWakes = conv => ({
+  enqueueProactive: () => { throw Object.assign(new Error('boom'), { code: 'UNAVAILABLE' }); },
+  proactiveResult: (...args) => conv.proactiveResult(...args), cancelProactive: (...args) => conv.cancelProactive(...args) });
+
+test('liveness: an overdue notice inside quiet hours waits until they end (no message or push at 23:00)', async t => {
+  const f = fixture(t, { conversations: failingWakes });
+  f.scheduler.configure(f.A, { quietStart: '22:00', quietEnd: '08:00', heartbeatEnabled: true, proactive: { enabled: true, perDay: 16 } });
+  await f.drain(1); // 14 Nov 19:00 UTC
+  f.clock = Date.UTC(2026, 10, 15, 23); await f.drain(3);
+  assert.equal((await f.messages()).length, 0, 'overdue at 23:00, inside 22:00-08:00: no message yet');
+  assert.equal(f.settled.length, 0, 'and nothing pushed');
+  assert.ok(f.logs.some(line => /liveness: .*waits for quiet hours/.test(line)), 'the log says it is held');
+  f.clock = Date.UTC(2026, 10, 16, 7, 59); await f.drain(2);
+  assert.equal((await f.messages()).length, 0, 'still quiet at 07:59');
+  f.clock = Date.UTC(2026, 10, 16, 8, 0); await f.drain(2);
+  const messages = await f.messages();
+  assert.equal(messages.length, 1, 'one notice on the first tick after quiet hours end');
+  assert.equal(f.settled.length, 1);
+  f.clock += 2 * DAY; await f.drain(2);
+  assert.equal((await f.messages()).length, 1, 'not repeated');
+});
+
+test('an event wake held more than a day while the scheduler keeps ticking (runner down) still runs, it is not missed', async t => {
+  let up = false;
+  const f = fixture(t, { ready: () => up });
+  f.scheduler.configure(f.A, { quietStart: '08:00', quietEnd: '08:00' });
+  f.scheduler.enqueueEvent(f.A, { requestId: 'held-runner', kind: 'board', prompt: 'Held while the runner was down' });
+  for (let hour = 0; hour < 30; hour++) { await f.drain(1); f.clock += HOUR; }
+  assert.equal(f.db.prepare("SELECT state FROM scheduler_occurrences WHERE slot_key='event:held-runner'").get().state, 'queued');
+  up = true; await f.drain(2);
+  assert.ok(f.turns.some(text => text.includes('Held while the runner was down')), 'it ran once the runner was back');
+  assert.doesNotMatch(f.logs.join('\n'), /catch-up after an outage/);
+});
+
+test('an event wake held more than a day by a provider cooldown still runs when the cooldown ends', async t => {
+  const f = fixture(t);
+  f.scheduler.configure(f.A, { quietStart: '08:00', quietEnd: '08:00' });
+  await f.drain(1);
+  f.db.prepare('UPDATE scheduler_settings SET cooldown_until=? WHERE companion_id=?').run(f.clock + 30 * HOUR, f.A);
+  f.scheduler.enqueueEvent(f.A, { requestId: 'held-cooldown', kind: 'board', prompt: 'Held by the cooldown' });
+  for (let hour = 0; hour < 31; hour++) { await f.drain(1); f.clock += HOUR; }
+  await f.drain(2);
+  assert.ok(f.turns.some(text => text.includes('Held by the cooldown')), 'it ran after the cooldown, not marked missed');
+});
+
+test('catch-up on the first start after the 14 Nov release: no tick recorded yet, last wake started days ago', async t => {
+  const f = fixture(t);
+  f.scheduler.configure(f.A, { quietStart: '08:00', quietEnd: '08:00' });
+  f.scheduler.enqueueEvent(f.A, { requestId: 'before', kind: 'board', prompt: 'Ran before the outage' });
+  await f.drain(1);
+  f.db.exec('DELETE FROM scheduler_ticks'); // older releases never wrote ticks
+  f.scheduler.enqueueEvent(f.A, { requestId: 'stuck', kind: 'board', prompt: 'Queued during the outage' });
+  f.clock += 9 * DAY;
+  const fresh = new SchedulerStore({ store: f.store, now: f.now, random: () => 0.5, timezoneFor: () => 'UTC', minSpacingMs: 0, boardSpacingMs: 0, log: line => f.logs.push(line) });
+  fresh.prepareDue(f.A);
+  assert.equal(f.db.prepare("SELECT state FROM scheduler_occurrences WHERE slot_key='event:stuck'").get().state, 'missed');
+  assert.ok(f.logs.some(line => /catch-up after an outage: 1 event/.test(line)));
 });
