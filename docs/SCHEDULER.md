@@ -189,3 +189,27 @@ legacy table shapes, positional writers and the v1 fixture are unchanged. `conv_
 existing `kind` column. On rollback, own wakes and follow-ups simply stop; a message still held for quiet hours stays
 undelivered (older code cannot find its occurrence) until forward code returns. Keep the tables; do not delete them.
 
+
+## Failure isolation and liveness (#105)
+
+From 14 to 23 Nov 2026 no scheduled wake ran for C-chan: the scheduler started taking event wakes up to 8000 characters
+(5322a44) while `Conversations.enqueueProactive` still refused wake prompts over 4000. A long runner event wake was
+stored, then refused on every tick. The refusal was swallowed by the per-owner catch, which also skipped every wake queued
+after it (own wakes, heartbeats, watches, reminders), and nothing was logged. Now:
+
+- `Conversations` admits wake prompts up to `LIMITS.wakeChars` (8000), at least the scheduler's `EVENT_TEXT`; a test
+  pins the two together.
+- Each pending wake runs in its own try/catch. A failing wake is logged once (kind, id prefix and error code, never the
+  prompt), the wakes behind it still run, and after three failed ticks in a row it is retired as `error`. A failing owner
+  tick is logged when it starts failing and when its error code changes.
+- Catch-up after downtime: server-built event wakes (`event:` slots: Board, runner, calendar, connector) that never
+  started within 24 hours become `missed`, like reminders. Heartbeats, own wakes and watch checks already coalesce to
+  one.
+- Liveness: before each owner's wakes, the service checks when any scheduled wake last started. When nothing has started
+  for three expected gaps (own wakes: 1.5 × 24 h / per day; heartbeats: 6 h), and never less than 24 hours, counted from
+  the service start or last settings change at the latest, the owner gets one plain server message in the ongoing chat
+  (`Conversations.notice`, no model turn; push/Discord as usual) and the log gets a `Scheduler liveness:` line. It is not
+  repeated until a wake has started again (`scheduler_liveness.notified_at`, additive table; older releases ignore it).
+  Nothing is expected while the scheduler is off, own wakes and heartbeats are off, or a provider cooldown holds.
+
+Server checks: `journalctl -u personal-agent-account.service | grep Scheduler`.

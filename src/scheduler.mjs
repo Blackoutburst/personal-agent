@@ -5,7 +5,9 @@ import { ProactiveWakes, validPerDay } from './proactive.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/, HASH = /^[a-f0-9]{64}$/, CLOCK = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
-const EVENT_TEXT = 8000;
+export const EVENT_TEXT = 8000;
+// #105 liveness: no scheduled wake for 3 expected gaps, and never less than a day, sends the owner one notice.
+const LIVENESS_MIN = 24 * 3600000;
 const PERIOD = 6 * 3600000, GRACE = 24 * 3600000, DAY_MS = 24 * 3600000, BOARD_WAKE_CAP = 200, MAX_BOARD_WAKE_CAP = 10000;
 const TERMINAL = new Set(['message', 'silent', 'cancelled', 'interrupted', 'error', 'missed']);
 const ROUTINES = ['dailyDigest', 'weeklyCheckin'];
@@ -89,6 +91,8 @@ export class SchedulerStore {
       // #51: the owner's cap on Board wakes per rolling 24 h. A separate table keeps scheduler_settings unchanged for
       // older releases after a rollback. No row means the default; a NULL cap means no cap.
       this.#db.exec('CREATE TABLE IF NOT EXISTS scheduler_board_caps(companion_id TEXT PRIMARY KEY,wake_cap INTEGER)');
+      // #105: when the owner was last told that scheduled wakes stopped (additive; older releases ignore it).
+      this.#db.exec('CREATE TABLE IF NOT EXISTS scheduler_liveness(companion_id TEXT PRIMARY KEY,notified_at INTEGER NOT NULL)');
       this.#release = new ReleaseWatches(this.#db, code => new SchedulerError(code));
       // #54: the companion's own wakes and follow-ups, in their own tables (older releases ignore them).
       this.#proactive = new ProactiveWakes(this.#db, code => new SchedulerError(code), random, proactiveByDefault); });
@@ -404,6 +408,11 @@ export class SchedulerStore {
           this.#db.prepare("UPDATE scheduler_occurrences SET state='missed' WHERE companion_id=? AND slot_key=? AND state='queued'").run(companionId, slot);
         }
       }
+      // #105: server-built event wakes (Board, runner, calendar, connector) that never started within a day are
+      // missed, like reminders, so a restart after an outage catches up on recent ones instead of replaying days.
+      const stale = this.#db.prepare(`UPDATE scheduler_occurrences SET state='missed' WHERE companion_id=? AND state='queued'
+        AND admitted_at IS NULL AND job_id IS NULL AND slot_key LIKE 'event:%' AND due_at<?`).run(companionId, now - GRACE).changes;
+      if (stale) this.#log(`Scheduler marked ${stale} event wake(s) older than a day missed`);
       if (settings.heartbeat_enabled && settings.heartbeat_next_at <= now) {
         const count = Math.floor((now - settings.heartbeat_next_at) / PERIOD) + 1;
         const dueAt = settings.heartbeat_next_at + (count - 1) * PERIOD;
@@ -428,6 +437,34 @@ export class SchedulerStore {
     return [...legacy, ...routines, ...this.#release.pending(companionId), ...this.#proactive.pending(companionId)].sort((a, b) => a.due_at - b.due_at || a.id.localeCompare(b.id)).slice(0, 250).map(occurrence);
   }
   pending(companionId) { return this.#tx(() => { this.#owner(companionId); return this.#pending(companionId); }); }
+  // #105: is the owner overdue a liveness notice? baseline: the earliest time a wake could be expected (service start,
+  // last settings change). Null when nothing is expected to run (scheduler off, own wakes and heartbeats off, provider
+  // cooldown). One notice per outage: a new notice needs a wake to have started after the last one.
+  liveness(companionId, baseline = 0) {
+    return this.#tx(() => {
+      const settings = this.#owner(companionId, false), now = this.#time();
+      if (!settings?.enabled || now < settings.cooldown_until) return null;
+      const own = this.#proactive.settings(companionId, settings.identity_key), gaps = [];
+      if (own.enabled) gaps.push(1.5 * DAY_MS / own.perDay);
+      if (settings.heartbeat_enabled) gaps.push(PERIOD);
+      if (!gaps.length) return null;
+      const threshold = Math.max(LIVENESS_MIN, 3 * Math.min(...gaps));
+      const last = Math.max(...['scheduler_occurrences', 'scheduler_routine_occurrences', 'scheduler_release_occurrences',
+        'scheduler_proactive_occurrences', 'scheduler_contact_wakes'].map(table =>
+        this.#db.prepare(`SELECT MAX(admitted_at) AS last FROM ${table} WHERE companion_id=?`).get(companionId)?.last ?? 0));
+      const notified = this.#db.prepare('SELECT notified_at FROM scheduler_liveness WHERE companion_id=?').get(companionId)?.notified_at ?? null;
+      const overdue = now - Math.max(last, baseline) > threshold && (notified === null || notified < last);
+      return { overdue, lastStartedAt: last ? iso(last) : null, thresholdMs: threshold, now: iso(now),
+        timezone: this.#zone(companionId), notifiedAt: notified === null ? null : iso(notified) };
+    });
+  }
+  livenessNotified(companionId) {
+    return this.#tx(() => {
+      this.#owner(companionId, false);
+      this.#db.prepare('INSERT INTO scheduler_liveness VALUES(?,?) ON CONFLICT(companion_id) DO UPDATE SET notified_at=excluded.notified_at')
+        .run(companionId, this.#time());
+    });
+  }
   #eligible(companionId, row, settings, time, starting = false) {
     if (!row || !settings?.enabled || TERMINAL.has(row.state)
       || !(starting && (row.release_watch || row.proactive || agentWork(row))) && this.#quiet(companionId, settings, time)) return false;
@@ -555,17 +592,31 @@ export class SchedulerStore {
   }
 }
 
+const short = id => String(id).slice(0, 8);
+// Error codes only: messages may carry private text.
+const code = error => String(error?.code ?? error?.name ?? 'Error').slice(0, 80);
+const localText = (value, timeZone) => {
+  try { return new Intl.DateTimeFormat('en-GB', { timeZone, dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)); }
+  catch { return value; }
+};
+
 export class SchedulerService {
   #scheduler; #conversations; #companions; #ready; #poll; #timer = null; #running = null; #stopped = false; #again = false;
-  #prepare;
+  #prepare; #log; #notice; #now; #baseline; #configured = new Map(); #failures = new Map(); #ownerErrors = new Map();
   // prepare(companionId) runs first on every tick for each owner (calendar reminders queue their event wakes there).
-  constructor({ scheduler, conversations, companions = () => [], ready = () => true, pollMs = 30000, prepare = () => {} }) {
+  // log(line): codes, kinds and id prefixes only, never prompts. notice(companionId, text): a plain owner message
+  // without a model turn (#105 liveness; Conversations.notice in the server).
+  constructor({ scheduler, conversations, companions = () => [], ready = () => true, pollMs = 30000, prepare = () => {},
+    log = () => {}, notice = null, now = Date.now }) {
     this.#prepare = prepare;
-    requireSchedule(scheduler && conversations && typeof companions === 'function' && typeof ready === 'function' && integer(pollMs, 1, 3600000));
+    requireSchedule(scheduler && conversations && typeof companions === 'function' && typeof ready === 'function' && integer(pollMs, 1, 3600000)
+      && typeof log === 'function' && (notice === null || typeof notice === 'function') && typeof now === 'function');
     this.#scheduler = scheduler; this.#conversations = conversations; this.#companions = companions; this.#ready = ready; this.#poll = pollMs;
+    this.#log = log; this.#notice = notice; this.#now = now; this.#baseline = now();
   }
   start() {
     if (this.#timer) return;
+    this.#baseline = this.#now();
     this.#stopped = false; this.#timer = setInterval(() => { void this.tick().catch(() => {}); }, this.#poll); this.#timer.unref?.();
     void this.tick().catch(() => {});
   }
@@ -581,9 +632,14 @@ export class SchedulerService {
     return this.#running;
   }
   async #tick() {
-    const owners = this.#companions(); requireSchedule(Array.isArray(owners) && owners.length <= 100, 'UNAVAILABLE');
+    let owners;
+    try {
+      owners = this.#companions(); requireSchedule(Array.isArray(owners) && owners.length <= 100, 'UNAVAILABLE');
+    } catch (error) { this.#ownerError('*', error); return; }
     for (const companionId of new Set(owners)) {
       if (this.#stopped) break;
+      // #105: the liveness check runs on its own, before and whatever happens to this owner's wakes.
+      try { await this.#liveness(companionId); } catch (error) { this.#logOnce(`liveness:${companionId}`, `Scheduler liveness check failed for ${short(companionId)}: ${code(error)}`); }
       try {
         try { this.#prepare(companionId); } catch { /* A calendar problem never blocks reminders. */ }
         this.#scheduler.prepareDue(companionId);
@@ -592,27 +648,80 @@ export class SchedulerService {
         this.#cancelProactiveWakes(companionId);
         for (const wake of this.#scheduler.pending(companionId)) {
           if (this.#stopped) break;
-          let result = await this.#conversations.proactiveResult(companionId, wake.id);
-          if (wake.kind === 'release_watch' && ['error', 'interrupted'].includes(result?.state) && !result.releaseCheck) {
-            this.#conversations.reconcileReleaseFailure?.(companionId, wake.id);
-            result = await this.#conversations.proactiveResult(companionId, wake.id);
-          }
-          if (!result || result.state === 'queued' || result.state === 'waiting_delivery') {
-            if (wake.kind !== 'release_watch' && result?.state !== 'waiting_delivery' && !await this.#ready(companionId)) continue;
-            if (this.#stopped) break;
-            result = await this.#conversations.enqueueProactive(companionId, { id: wake.id, kind: wake.kind, prompt: wake.prompt });
-            if (!this.#scheduler.pending(companionId).some(current => current.id === wake.id)) {
-              await this.#conversations.cancelProactive(companionId, wake.id);
-              continue;
-            }
-          }
-          if (TERMINAL.has(result?.state) || result?.state === 'complete') {
-            const resetsAt = result.error?.resetsAt ?? result.resetsAt;
-            this.#scheduler.finishOccurrence(companionId, wake.id, result.state, resetsAt === undefined ? {} : { resetsAt });
-          }
+          // #105: one wake that throws (a prompt Conversations refuses, a bad row) is logged and skipped; the wakes
+          // behind it still run. Once it failed three ticks in a row it is retired as an error instead of retried forever.
+          try {
+            if (await this.#runWake(companionId, wake) === 'stop') break;
+            this.#failures.delete(wake.id);
+          } catch (error) { this.#wakeFailed(companionId, wake, error); }
         }
-      } catch { /* One unavailable owner never blocks the other owner or leaks private errors. */ }
+        this.#ownerErrors.delete(companionId);
+      } catch (error) { this.#ownerError(companionId, error); /* One unavailable owner never blocks the other owner. */ }
     }
+  }
+  async #runWake(companionId, wake) {
+    let result = await this.#conversations.proactiveResult(companionId, wake.id);
+    if (wake.kind === 'release_watch' && ['error', 'interrupted'].includes(result?.state) && !result.releaseCheck) {
+      this.#conversations.reconcileReleaseFailure?.(companionId, wake.id);
+      result = await this.#conversations.proactiveResult(companionId, wake.id);
+    }
+    if (!result || result.state === 'queued' || result.state === 'waiting_delivery') {
+      if (wake.kind !== 'release_watch' && result?.state !== 'waiting_delivery' && !await this.#ready(companionId)) return 'skip';
+      if (this.#stopped) return 'stop';
+      result = await this.#conversations.enqueueProactive(companionId, { id: wake.id, kind: wake.kind, prompt: wake.prompt });
+      if (!this.#scheduler.pending(companionId).some(current => current.id === wake.id)) {
+        await this.#conversations.cancelProactive(companionId, wake.id);
+        return 'cancelled';
+      }
+    }
+    if (TERMINAL.has(result?.state) || result?.state === 'complete') {
+      const resetsAt = result.error?.resetsAt ?? result.resetsAt;
+      this.#scheduler.finishOccurrence(companionId, wake.id, result.state, resetsAt === undefined ? {} : { resetsAt });
+    }
+    return 'ok';
+  }
+  #wakeFailed(companionId, wake, error) {
+    const count = (this.#failures.get(wake.id) ?? 0) + 1;
+    if (this.#failures.size > 2000) this.#failures.clear();
+    this.#failures.set(wake.id, count);
+    if (count === 1) this.#log(`Scheduler ${wake.kind} wake ${short(wake.id)} for ${short(companionId)} failed: ${code(error)}`);
+    if (count < 3) return;
+    try {
+      this.#scheduler.finishOccurrence(companionId, wake.id, 'error');
+      this.#failures.delete(wake.id);
+      this.#log(`Scheduler gave up on ${wake.kind} wake ${short(wake.id)} for ${short(companionId)} after ${count} failed tries: ${code(error)}`);
+    } catch (finish) { this.#logOnce(`finish:${wake.id}`, `Scheduler could not retire ${wake.kind} wake ${short(wake.id)}: ${code(finish)}`); }
+  }
+  // A failing owner tick is logged when it starts failing and when its error changes, not on every poll.
+  #ownerError(companionId, error) {
+    const value = code(error);
+    if (this.#ownerErrors.get(companionId) === value) return;
+    if (this.#ownerErrors.size > 200) this.#ownerErrors.clear();
+    this.#ownerErrors.set(companionId, value);
+    this.#log(`Scheduler tick failed for ${companionId === '*' ? 'all owners' : short(companionId)}: ${value}`);
+  }
+  #logged = new Set();
+  #logOnce(key, line) {
+    if (this.#logged.has(key)) return;
+    if (this.#logged.size > 2000) this.#logged.clear();
+    this.#logged.add(key); this.#log(line);
+  }
+  async #liveness(companionId) {
+    if (!this.#notice || !await this.#ready(companionId)) return;
+    const baseline = Math.max(this.#baseline, this.#configured.get(companionId) ?? 0);
+    const state = this.#scheduler.liveness(companionId, baseline);
+    if (!state?.overdue) return;
+    // Recorded first: a notice that fails to send is logged, never retried every poll.
+    this.#scheduler.livenessNotified(companionId);
+    const since = state.lastStartedAt ? localText(state.lastStartedAt, state.timezone) : null;
+    this.#log(`Scheduler liveness: no scheduled wake started for ${short(companionId)} since ${state.lastStartedAt ?? 'this service started'}`
+      + ` (expected within ${Math.round(state.thresholdMs / 3600000)} h); owner notified`);
+    try {
+      this.#notice(companionId, `A note from the server, not a chat reply: my background wakes (my own wakes, heartbeats, watches, `
+        + `reminders) have not run ${since ? `since ${since}` : 'since the server last started'}, which is much longer than your settings `
+        + `expect. Chat still works. The server log says why: journalctl -u personal-agent-account.service | grep Scheduler. `
+        + `I will not repeat this until they run again.`);
+    } catch (error) { this.#log(`Scheduler liveness notice could not be sent: ${code(error)}`); }
   }
   #cancelReleaseWakes(companionId) {
     for (const id of this.#scheduler.releaseCancellations?.(companionId) ?? []) {
@@ -658,6 +767,8 @@ export class SchedulerService {
     const value = shape(input, [], ['enabled', 'quietStart', 'quietEnd', 'heartbeatEnabled', 'boardWakeCap', 'proactive', ...ROUTINES]);
     const prior = value.heartbeatEnabled === false ? this.#scheduler.pending(companionId).filter(wake => wake.kind === 'heartbeat') : [];
     const result = this.#scheduler.configure(companionId, value);
+    // #105: switching wakes on starts the liveness clock now, not at the last wake before they were off.
+    this.#configured.set(companionId, this.#now());
     this.#cancelRoutineWakes(companionId); this.#cancelProactiveWakes(companionId);
     for (const wake of prior) {
       try { Promise.resolve(this.#conversations.cancelProactive(companionId, wake.id)).catch(() => {}); }
