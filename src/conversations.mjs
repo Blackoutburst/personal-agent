@@ -309,6 +309,13 @@ export class Conversations {
     const digest = createHash('sha256').update(JSON.stringify(value)).digest('hex');
     const wake = this.#tx(() => {
       const prior = this.#wake(companionId, value.id);
+      if (prior && prior.fingerprint !== digest && prior.kind === value.kind && TALKING_WAKES.includes(value.kind)) {
+        // #107: an own wake's date and quiet-hours line are built again each time the scheduler hands it out. Before it
+        // starts the waiting prompt is replaced; once it ran, the prompt it ran with stays and the later hand-out is the same wake.
+        if (prior.state === 'queued') this.#db.prepare("UPDATE conv_wakes SET prompt=?,fingerprint=?,updated_at=? WHERE companion_id=? AND id=? AND state='queued'")
+          .run(value.prompt, digest, this.#now(), companionId, value.id);
+        return this.#wake(companionId, value.id);
+      }
       if (prior) { if (prior.fingerprint !== digest) throw new ConversationError('CONFLICT', 409); return prior; }
       const requestId = 'wake-' + value.id;
       if (this.#db.prepare('SELECT 1 FROM conv_requests WHERE companion_id=? AND request_id=?').get(companionId, requestId)) {

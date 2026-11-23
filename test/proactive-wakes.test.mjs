@@ -286,3 +286,23 @@ test('#58 contact wakes start at any hour, hold owner delivery at night, are ide
   const other = enqueue(randomUUID(), f.b);
   assert.equal(f.scheduler.contactExchange(f.a, other.id), null);
 });
+
+test('#107: a wake queued days ago is shown the time and quiet-hours state of the moment it runs', t => {
+  const f = fixture(t); f.scheduler.configure(f.a, { quietStart: '22:00', quietEnd: '08:00' });
+  f.clock = Date.UTC(2026, 10, 14, 23, 26); f.scheduler.prepareDue(f.a);
+  f.followup('old-note', { at: iso(Date.UTC(2026, 10, 14, 23, 30)) });
+  f.clock = Date.UTC(2026, 10, 15, 5, 30);
+  const queued = f.scheduler.prepareDue(f.a);
+  const own = queued.find(item => item.kind === 'proactive'), followup = queued.find(item => item.kind === 'followup');
+  assert.match(own.prompt, /Sunday,? 15 November 2026 at 05:30/);
+  assert.match(own.prompt, /inside their quiet hours/);
+  f.clock = Date.UTC(2026, 10, 23, 15, 49); // 9 days later, outside quiet hours
+  const later = f.scheduler.pending(f.a);
+  for (const [id, wake] of [[own.id, own], [followup.id, followup]]) {
+    const run = later.find(item => item.id === id);
+    assert.ok(run, `${wake.kind} still pending`);
+    assert.match(run.prompt, /It is Monday,? 23 November 2026 at 15:49 \(UTC\) for your owner\./);
+    assert.doesNotMatch(run.prompt, /quiet hours|14 November/);
+  }
+  assert.match(later.find(item => item.id === followup.id).prompt, /Follow up old-note/);
+});

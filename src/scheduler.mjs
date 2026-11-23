@@ -437,11 +437,27 @@ export class SchedulerStore {
       return this.#pending(companionId);
     });
   }
+  // #107: a wake can wait (outage, held, queued days ago) and its stored prompt then names the time it was queued.
+  // The "It is <local time> for your owner[, inside their quiet hours...]." sentence is rebuilt from the clock and the
+  // quiet-hours state when the wake is read to run, keeping the rest of the stored prompt (the stored row is unchanged).
+  #refreshWhen(companionId, row) {
+    if (typeof row.prompt !== 'string') return row;
+    const settings = this.#db.prepare('SELECT * FROM scheduler_settings WHERE companion_id=?').get(companionId);
+    if (!settings) return row;
+    const now = this.#time(), quiet = this.#quiet(companionId, settings, now);
+    const note = row.kind === 'contact'
+      ? ', inside their quiet hours: talking with the other companion is fine, but any message to your owner waits until their quiet hours end'
+      : ', inside their quiet hours: prefer quiet work, and any message waits until their quiet hours end';
+    const when = `It is ${this.#localText(companionId, now)} for your owner${quiet ? note : ''}.`;
+    const prompt = row.prompt.replace(/It is [^.]*? for your owner(?:, inside their quiet hours: [^.]*)?\./, () => when);
+    return { ...row, prompt };
+  }
   #pending(companionId) {
     const legacy = this.#db.prepare("SELECT * FROM scheduler_occurrences WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250").all(companionId);
     const routines = this.#db.prepare("SELECT * FROM scheduler_routine_occurrences WHERE companion_id=? AND state IN ('queued','admitted') ORDER BY due_at,id LIMIT 250")
       .all(companionId).map(row => this.#routineRow(row));
-    return [...legacy, ...routines, ...this.#release.pending(companionId), ...this.#proactive.pending(companionId)].sort((a, b) => a.due_at - b.due_at || a.id.localeCompare(b.id)).slice(0, 250).map(occurrence);
+    const own = this.#proactive.pending(companionId).map(row => this.#refreshWhen(companionId, row));
+    return [...legacy, ...routines, ...this.#release.pending(companionId), ...own].sort((a, b) => a.due_at - b.due_at || a.id.localeCompare(b.id)).slice(0, 250).map(occurrence);
   }
   pending(companionId) { return this.#tx(() => { this.#owner(companionId); return this.#pending(companionId); }); }
   // #105: is the owner overdue a liveness notice? baseline: the earliest time a wake could be expected (service start,
