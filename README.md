@@ -17,6 +17,8 @@ The companion works as a project manager for this very repository:
 
 Most commits on `main` since November 2026 were written, reviewed and merged this way.
 
+## Setup
+
 > **Restructured 2 November 2026.** The current plan is [docs/PLAN.md](docs/PLAN.md); the original v1 plan is archived in [docs/PLAN-V1-CODEX-ARCHIVE.md](docs/PLAN-V1-CODEX-ARCHIVE.md). Retained foundation interfaces and prototype pages are distinguished below from the current companion.
 
 
