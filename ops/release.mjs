@@ -19,12 +19,14 @@ const MESSAGES = { INVALID: 'Invalid release operation or configuration.', UNSAF
   LOCKED: 'Another operation is active; inspect a stale lock before removing it.', SOURCE: 'The source revision or archive is invalid.',
   BACKUP: 'The private snapshot could not be completed.', SET: 'The backup set is invalid or has changed.',
   SERVICE: 'The service command failed.', HEALTH: 'Health verification failed; the prior state was recovered.',
+  SMOKE: 'The smoke check failed; the previous release was put back.',
   RECOVERY: 'Recovery failed; stop was attempted. Inspect service state and preserved files before retrying.', FAILED: 'The operation failed; inspect the preserved state.' };
 
 class OperationError extends Error {
-  constructor(code) { super(MESSAGES[code]); this.name = 'OperationError'; this.code = code; }
+  // detail: short, content-free reasons (the smoke check's failures), printed with the error.
+  constructor(code, detail = null) { super(MESSAGES[code]); this.name = 'OperationError'; this.code = code; if (detail) this.detail = detail; }
 }
-const refuse = (code = 'UNSAFE') => { throw new OperationError(code); };
+const refuse = (code = 'UNSAFE', detail = null) => { throw new OperationError(code, detail); };
 const present = path => { try { return lstatSync(path); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 const inside = (path, root) => { const part = relative(root, path); return part !== '' && part !== '..' && !part.startsWith('..' + sep) && !isAbsolute(part); };
 
@@ -177,9 +179,9 @@ const npmBinary = () => process.env.COMPANION_NPM
 export const npmInstall = dir => execute(npmBinary(), ['ci', '--omit=dev', '--ignore-scripts', '--no-bin-links', '--no-audit', '--no-fund'],
   { cwd: dir, maxBuffer: 16 * 1024 * 1024, timeout: 15 * 60_000 });
 
-export function createReleaseTool({ repoDir = process.cwd(), rootDir, dataDir, runtimeDir, service, health, now = () => new Date(), install = npmInstall } = {}) {
+export function createReleaseTool({ repoDir = process.cwd(), rootDir, dataDir, runtimeDir, service, health, smoke = null, now = () => new Date(), install = npmInstall } = {}) {
   if (![repoDir, rootDir, dataDir, runtimeDir].every(path => typeof path === 'string' && isAbsolute(path))
-      || typeof service !== 'function' || typeof health !== 'function' || typeof now !== 'function' || typeof install !== 'function') refuse('INVALID');
+      || typeof service !== 'function' || typeof health !== 'function' || typeof now !== 'function' || typeof install !== 'function' || smoke !== null && typeof smoke !== 'function') refuse('INVALID');
   repoDir = resolve(repoDir); rootDir = resolve(rootDir); dataDir = resolve(dataDir); runtimeDir = resolve(runtimeDir);
   const releases = join(rootDir, 'releases'), backups = join(rootDir, 'backups'), lock = join(rootDir, '.release-lock'), deps = join(rootDir, 'deps');
   if (dataDir === rootDir || runtimeDir === rootDir || dataDir === runtimeDir || inside(rootDir, dataDir)
@@ -331,12 +333,26 @@ export function createReleaseTool({ repoDir = process.cwd(), rootDir, dataDir, r
     return key;
   };
 
-  const changeRelease = async target => {
+  // #106: after the health check, read the real chat and the scheduler's last tick. Any failure throws SMOKE, which the
+  // caller below answers like a failed health check: the previous release goes back.
+  const runSmoke = async (target, since) => {
+    if (!smoke) return;
+    let result;
+    try { result = await smoke({ release: join(releases, target), dataDir, since }); }
+    catch { result = { ok: false, failures: [{ check: 'smoke', reason: 'the smoke check could not run' }] }; }
+    if (result?.ok === true) return;
+    const failures = Array.isArray(result?.failures) && result.failures.length ? result.failures : [{ check: 'smoke', reason: 'no result' }];
+    refuse('SMOKE', failures.map(item => `${String(item?.check ?? 'smoke').slice(0, 20)}: ${String(item?.reason ?? 'failed').slice(0, 200)}`).join('; '));
+  };
+
+  const changeRelease = async (target, { verify = false } = {}) => {
     const original = links(); let stopped = false, started = false, backup;
     try {
       stopped = true; await callService('stop'); backup = snapshot();
       const previous = target === original.current ? original.previous : original.current;
-      setLinks({ current: target, previous }); started = true; await start();
+      setLinks({ current: target, previous }); started = true;
+      const since = now().getTime(); await start();
+      if (verify) await runSmoke(target, since);
       return { current: target, previous, backup };
     } catch (error) {
       if (stopped) {
@@ -406,7 +422,7 @@ export function createReleaseTool({ repoDir = process.cwd(), rootDir, dataDir, r
       let sha;
       try { directory(repoDir); const result = await execute('git', ['-C', repoDir, 'rev-parse', '--verify', '--end-of-options', rev + '^{commit}'], { maxBuffer: 1024 * 1024 }); sha = result.stdout.trim(); }
       catch { refuse('SOURCE'); }
-      if (!SHA.test(sha)) refuse('SOURCE'); await archive(sha); await dependencies(sha); return changeRelease(sha);
+      if (!SHA.test(sha)) refuse('SOURCE'); await archive(sha); await dependencies(sha); return changeRelease(sha, { verify: true });
     }),
     rollback: () => locked(async () => { const target = linkValue('previous'); if (!target) refuse('INVALID'); await archive(target); await dependencies(target); return changeRelease(target); }),
     backup: () => locked(async () => {
@@ -460,6 +476,8 @@ async function main() {
   const tool = createReleaseTool({ repoDir: process.env.COMPANION_RELEASE_REPO ?? dirname(dirname(fileURLToPath(import.meta.url))), rootDir,
     dataDir: process.env.COMPANION_DATA_DIR ?? join(homedir(), 'personal-agent-data'),
     runtimeDir: process.env.COMPANION_RUNTIME_DIR ?? join(process.env.COMPANION_DATA_DIR ?? join(homedir(), 'personal-agent-data'), 'runtimes'),
+    // #106: how long to wait for the scheduler's first tick after the restart (its loop runs every 30 s).
+    smoke: async input => (await import('./release-smoke.mjs')).smokeCheck({ ...input, ...(/^[0-9]{1,6}$/.test(process.env.COMPANION_SMOKE_WAIT_MS ?? '') ? { waitMs: Number(process.env.COMPANION_SMOKE_WAIT_MS) } : {}) }),
     service: action => execute(executable, [action, 'personal-agent-account.service'], { maxBuffer: 1024 * 1024 }),
     health: async () => {
       // Poll briefly for ordinary startup, without following a redirect off loopback.
@@ -481,5 +499,5 @@ async function main() {
 
 if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {
   main().catch(error => { const known = error instanceof OperationError ? error : new OperationError('FAILED');
-    console.error(JSON.stringify({ error: known.code, message: known.message })); process.exitCode = 1; });
+    console.error(JSON.stringify({ error: known.code, message: known.message, ...(known.detail ? { detail: known.detail } : {}) })); process.exitCode = 1; });
 }

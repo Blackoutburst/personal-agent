@@ -79,6 +79,7 @@ node ops/release.mjs restore <set>
 | `COMPANION_RELEASE_REPO` | Checkout containing the tool; set explicitly if using another source repository. |
 | `COMPANION_SYSTEMCTL` | `/usr/bin/systemctl`; an absolute executable receiving only `stop`/`start` and `personal-agent-account.service`. |
 | `COMPANION_HEALTH_URL` | `http://127.0.0.1:4318/api/status`; only literal-loopback HTTP with that exact path and no credentials/query/fragment. |
+| `COMPANION_SMOKE_WAIT_MS` | Optional, `release` only: seconds-scale wait (default 120000 ms) for the scheduler's first tick after the restart. |
 
 Use the data-owning service account and explicit paths matching the installed unit. The
 tool requires current-user-owned regular files and refuses linked/shared/unsafe objects;
@@ -123,7 +124,21 @@ before either command. An existing cached release is compared with its canonical
 archive before use; that byte check does not establish semantic/client compatibility.
 The tool does not run the source gates for you.
 
-On a release/start/health failure, it stops the attempted process, restores the original
+After the health check, `release` runs the smoke check (`ops/release-smoke.mjs`, #106), the same for a
+manual run and for the server deploy after a merge (#100), which calls this tool. Read-only against the real
+`bootstrap.sqlite` (opened with SQLite's read-only flag; it writes no message and wakes no one): (1) for each
+companion, the new release's own conversation code serves a snapshot and an events page and
+`public/conversation-client.mjs` validates them, the way the app does; (2) the scheduler's `scheduler_ticks`
+(#105) shows a whole tick completed after the restart (it waits up to the limit above; skipped, and said so,
+when no owner has the scheduler on). Any failure is handled like a failed health check: the previous release is
+selected and started again, and the error carries `SMOKE` plus a content-free reason (the deploy reports it as
+`rolled_back`). `rollback` and `backup` do not run it. Not covered: the HTTP/session layer in front of the
+conversation code, a companion without a conversation yet, and Board activity lines (they are not part of the
+validation). A read that meets the running server's write lock waits (SQLite busy timeout) and is retried a few times on
+busy/locked only; any other error still fails the check. **The smoke check has never been run against a real service
+or real data**: it is covered only by tests on seeded data, so treat its first live release as the real trial.
+
+On a release/start/health/smoke failure, it stops the attempted process, restores the original
 links, and starts/checks the original release. This recovery restores **code selection**,
 not a SQLite/workspace snapshot; retain the pre-change set and require compatible readers.
 An initial release with no original `current` has no invented fallback: a failed attempt
