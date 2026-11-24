@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { smokeCheck } from '../ops/release-smoke.mjs';
@@ -88,4 +88,33 @@ test('smoke tolerates a brief exclusive lock held by the running server (busy ti
   await new Promise(resolve => holder.stdout.once('data', resolve));
   const result = await smokeCheck({ release: ROOT, dataDir, since: 5_000_000_000_000, ...clock() });
   assert.deepEqual(result.failures, []); assert.equal(result.ok, true);
+});
+
+test('smoke rides out a lock held longer than the busy timeout, using real sleeps and the retries', async t => {
+  const { spawn } = await import('node:child_process');
+  const dataDir = world(t, { tickAt: 5_000_000_000_500 });
+  const holder = spawn(process.execPath, ['-e', `
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(process.argv[1]); db.exec('BEGIN EXCLUSIVE'); console.log('locked');
+    setTimeout(() => { db.exec('COMMIT'); process.exit(0); }, 1500);`, join(dataDir, 'bootstrap.sqlite')], { stdio: ['ignore', 'pipe', 'inherit'] });
+  t.after(() => holder.kill());
+  await new Promise(resolve => holder.stdout.once('data', resolve));
+  const started = Date.now(); let pauses = 0;
+  const sleep = async ms => { pauses++; await new Promise(resolve => setTimeout(resolve, ms)); };
+  // Busy timeout 300 ms, lock 1500 ms: no single wait outlasts the lock, so only the retries (real pauses) get through.
+  const result = await smokeCheck({ release: ROOT, dataDir, since: Date.now() - 1000, busyMs: 300, sleep });
+  assert.ok(Date.now() - started > 1000, 'the lock was really waited out');
+  assert.ok(pauses >= 1, 'a retry pause happened');
+  assert.deepEqual(result.failures.filter(f => f.check === 'chat'), []);
+});
+
+test('smoke fails at once, without retrying, on a non-busy error while setting up Conversations', async t => {
+  const release = mkdtempSync(join(tmpdir(), 'release-smoke-broken-')); t.after(() => rmSync(release, { recursive: true, force: true }));
+  mkdirSync(join(release, 'src')); mkdirSync(join(release, 'public'));
+  writeFileSync(join(release, 'src', 'conversations.mjs'), "export class Conversations { constructor() { throw Object.assign(new Error('boom'), { code: 'BROKEN_SCHEMA' }); } }");
+  writeFileSync(join(release, 'public', 'conversation-client.mjs'), 'export const createConversationClient = () => ({});');
+  const dataDir = world(t, { tickAt: 5_000_000_000_500 }); let chatPauses = 0;
+  const result = await smokeCheck({ release, dataDir, since: 5_000_000_000_000, waitMs: 0, sleep: async () => { chatPauses++; } });
+  assert.equal(chatPauses, 0);
+  assert.match(result.failures[0].reason, /chat check could not run \(BROKEN_SCHEMA\)/);
 });

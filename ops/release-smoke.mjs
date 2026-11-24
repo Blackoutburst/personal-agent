@@ -42,7 +42,8 @@ async function chatCheck(db, release, sleep) {
   const failures = [];
   const { Conversations } = await import(pathToFileURL(join(release, 'src', 'conversations.mjs')).href);
   const { createConversationClient } = await import(pathToFileURL(join(release, 'public', 'conversation-client.mjs')).href);
-  const conversations = new Conversations({ store: readOnly(db) });
+  // Construction reads the schema, so it can meet the server's lock too.
+  const conversations = await retryBusy(() => new Conversations({ store: readOnly(db) }), sleep);
   const ids = await retryBusy(() => companions(db), sleep);
   let opened = 0, pages = 0;
   for (const companionId of ids) {
@@ -99,10 +100,10 @@ async function schedulerCheck(db, since, { waitMs, intervalMs, sleep, now }) {
 }
 
 // release: the directory of the release just started; since: epoch ms taken before the service was started.
-export async function smokeCheck({ release, dataDir, since, waitMs = 120000, intervalMs = 2000, sleep = sleepFor, now = Date.now } = {}) {
+export async function smokeCheck({ release, dataDir, since, waitMs = 120000, intervalMs = 2000, sleep = sleepFor, now = Date.now, busyMs = BUSY_MS } = {}) {
   const failures = [], notes = [];
   let db;
-  try { db = await retryBusy(() => { const handle = new DatabaseSync(join(dataDir, 'bootstrap.sqlite'), { readOnly: true }); handle.exec(`PRAGMA busy_timeout = ${BUSY_MS}`); return handle; }, sleep); }
+  try { db = await retryBusy(() => { const handle = new DatabaseSync(join(dataDir, 'bootstrap.sqlite'), { readOnly: true }); handle.exec(`PRAGMA busy_timeout = ${busyMs}`); return handle; }, sleep); }
   catch (error) { return { ok: false, failures: [{ check: 'chat', reason: `the private database could not be opened read-only (${codeOf(error)})` }], notes }; }
   try {
     for (const [check, run] of [['chat', () => chatCheck(db, release, sleep)], ['scheduler', () => schedulerCheck(db, since, { waitMs, intervalMs, sleep, now })]]) {
