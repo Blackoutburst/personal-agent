@@ -19,15 +19,6 @@ Most commits on `main` since November 2026 were written, reviewed and merged thi
 
 ## Setup
 
-> **Restructured 2 November 2026.** The current plan is [docs/PLAN.md](docs/PLAN.md); the original v1 plan is archived in [docs/PLAN-V1-CODEX-ARCHIVE.md](docs/PLAN-V1-CODEX-ARCHIVE.md). Retained foundation interfaces and prototype pages are distinguished below from the current companion.
-
-
-A private Blackoutburst companion with web and Android clients, authenticated conversations and each owner's own Claude Code or Codex runtime. See [the companion](docs/COMPANION.md), [runtime configuration](docs/RUNTIME.md) and the current [operations runbook](docs/OPERATIONS.md).
-
-The default mode is `unavailable`. An explicit `demo` mode displays synthetic preview data and labels the account and Board adapters `development-double`. Neither mode contacts an account authority. Explicit `account` mode enables fresh platform-session checks, invited-user provisioning, private APIs and native turns when an owner runtime is configured. Missing runtime configuration remains explicitly unavailable. Local startup does not deploy or sign anyone into a provider.
-
-## Run locally
-
 Use **Node.js 24.22.1** and its bundled npm. There are no npm dependencies to install and no bundler or build step. HTML, CSS and JavaScript are served directly. Verify the operator's deployed interpreter separately as described in the runbook.
 
 From this directory, set an absolute data directory **outside the checkout**, then start the server. `npm run dev` runs the root `server.mjs`. The server binds only to `127.0.0.1`, using port 4318 by default; open the loopback URL printed at startup.
@@ -149,3 +140,12 @@ This identity is separate from the companion’s name, look and private workspac
 raster images; edits use revisions and remain bound to the current platform session. This is the first
 owner-profile increment of #53. Group conversations, mentions, proactive group replies, group attachments,
 notifications and the iOS client remain separate unfinished parts of that ticket.
+
+> **Restructured 2 November 2026.** The current plan is [docs/PLAN.md](docs/PLAN.md); the original v1 plan is archived in [docs/PLAN-V1-CODEX-ARCHIVE.md](docs/PLAN-V1-CODEX-ARCHIVE.md). Retained foundation interfaces and prototype pages are distinguished below from the current companion.
+
+
+A private Blackoutburst companion with web and Android clients, authenticated conversations and each owner's own Claude Code or Codex runtime. See [the companion](docs/COMPANION.md), [runtime configuration](docs/RUNTIME.md) and the current [operations runbook](docs/OPERATIONS.md).
+
+The default mode is `unavailable`. An explicit `demo` mode displays synthetic preview data and labels the account and Board adapters `development-double`. Neither mode contacts an account authority. Explicit `account` mode enables fresh platform-session checks, invited-user provisioning, private APIs and native turns when an owner runtime is configured. Missing runtime configuration remains explicitly unavailable. Local startup does not deploy or sign anyone into a provider.
+
+## Run locally
