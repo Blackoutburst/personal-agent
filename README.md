@@ -1,5 +1,22 @@
 # Personal Agent
 
+A persistent AI companion that lives on a home server. Each owner talks to their own companion from the web, Android or a Windows desktop app, and it runs on the owner's own Claude Code runtime.
+
+It remembers things across conversations, keeps a calendar and reminders, follows topics and releases on the web, and writes first when it has a reason to.
+
+## It also runs its own engineering team
+
+The companion works as a project manager for this very repository:
+
+- it turns an idea into tickets with acceptance criteria on an [Agent Board](https://github.com/Blackoutburst/agent-board)
+- it dispatches coder agents, each in a sandboxed Git worktree on its own branch
+- every change is checked by an independent reviewer agent before it can be accepted
+- accepted branches are merged only after the full test suite passes on the result
+- releases run a smoke check and roll back on their own if it fails
+- deployments, spending, credentials and deletions always go back to the human
+
+Most commits on `main` since November 2026 were written, reviewed and merged this way.
+
 > **Restructured 2 November 2026.** The current plan is [docs/PLAN.md](docs/PLAN.md); the original v1 plan is archived in [docs/PLAN-V1-CODEX-ARCHIVE.md](docs/PLAN-V1-CODEX-ARCHIVE.md). Retained foundation interfaces and prototype pages are distinguished below from the current companion.
 
 
