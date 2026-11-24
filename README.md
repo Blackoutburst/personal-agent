@@ -147,5 +147,3 @@ notifications and the iOS client remain separate unfinished parts of that ticket
 A private Blackoutburst companion with web and Android clients, authenticated conversations and each owner's own Claude Code or Codex runtime. See [the companion](docs/COMPANION.md), [runtime configuration](docs/RUNTIME.md) and the current [operations runbook](docs/OPERATIONS.md).
 
 The default mode is `unavailable`. An explicit `demo` mode displays synthetic preview data and labels the account and Board adapters `development-double`. Neither mode contacts an account authority. Explicit `account` mode enables fresh platform-session checks, invited-user provisioning, private APIs and native turns when an owner runtime is configured. Missing runtime configuration remains explicitly unavailable. Local startup does not deploy or sign anyone into a provider.
-
-## Run locally
