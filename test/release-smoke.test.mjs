@@ -76,3 +76,16 @@ test('smoke is read-only: the database is byte-identical afterwards and writes t
   assert.equal(result.ok, false); assert.match(result.failures[0].reason, /could not be opened read-only/);
   assert.deepEqual((await import('node:fs')).readdirSync(empty), []);
 });
+
+test('smoke tolerates a brief exclusive lock held by the running server (busy timeout and retry), and still passes', async t => {
+  const { spawn } = await import('node:child_process');
+  const dataDir = world(t, { tickAt: 5_000_000_000_500 });
+  const holder = spawn(process.execPath, ['-e', `
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(process.argv[1]); db.exec('BEGIN EXCLUSIVE'); console.log('locked');
+    setTimeout(() => { db.exec('COMMIT'); process.exit(0); }, 300);`, join(dataDir, 'bootstrap.sqlite')], { stdio: ['ignore', 'pipe', 'inherit'] });
+  t.after(() => holder.kill());
+  await new Promise(resolve => holder.stdout.once('data', resolve));
+  const result = await smokeCheck({ release: ROOT, dataDir, since: 5_000_000_000_000, ...clock() });
+  assert.deepEqual(result.failures, []); assert.equal(result.ok, true);
+});

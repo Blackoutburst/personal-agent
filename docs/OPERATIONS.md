@@ -133,7 +133,10 @@ companion, the new release's own conversation code serves a snapshot and an even
 when no owner has the scheduler on). Any failure is handled like a failed health check: the previous release is
 selected and started again, and the error carries `SMOKE` plus a content-free reason (the deploy reports it as
 `rolled_back`). `rollback` and `backup` do not run it. Not covered: the HTTP/session layer in front of the
-conversation code, and a companion without a conversation yet.
+conversation code, a companion without a conversation yet, and Board activity lines (they are not part of the
+validation). A read that meets the running server's write lock waits (SQLite busy timeout) and is retried a few times on
+busy/locked only; any other error still fails the check. **The smoke check has never been run against a real service
+or real data**: it is covered only by tests on seeded data, so treat its first live release as the real trial.
 
 On a release/start/health/smoke failure, it stops the attempted process, restores the original
 links, and starts/checks the original release. This recovery restores **code selection**,

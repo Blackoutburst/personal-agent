@@ -15,6 +15,17 @@ const MAX_COMPANIONS = 20, REWIND = 50;
 const sleepFor = ms => new Promise(resolve => setTimeout(resolve, ms));
 const codeOf = error => (typeof error?.code === 'string' && /^[A-Z_]{1,40}$/.test(error.code) ? error.code : /^\w{1,40}$/.test(error?.name ?? '') ? error.name : 'ERROR');
 
+// The running server writes in rollback-journal mode, so a read can meet its lock. Wait in SQLite (busy_timeout), then retry a
+// bounded number of times on busy/locked only: any other error is a real failure and is returned at once.
+const BUSY_MS = 5000, BUSY_RETRIES = 6, BUSY_PAUSE_MS = 250;
+const isBusy = error => [error, error?.cause].some(e => e && (e.errcode === 5 || e.errcode === 6 || /database (table )?is (locked|busy)|SQLITE_(BUSY|LOCKED)/i.test(`${e.message ?? ''} ${e.code ?? ''}`)));
+async function retryBusy(fn, sleep = sleepFor) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await fn(); }
+    catch (error) { if (!isBusy(error) || attempt >= BUSY_RETRIES) throw error; await sleep(BUSY_PAUSE_MS); }
+  }
+}
+
 // A read-only handle shaped like the store Conversations uses. BEGIN IMMEDIATE (its read transactions) becomes a plain BEGIN.
 const readOnly = db => ({ db: { prepare: sql => db.prepare(sql), exec: sql => db.exec(/^\s*BEGIN\b/i.test(sql) ? 'BEGIN' : sql) } });
 
@@ -27,12 +38,12 @@ function companions(db) {
   return ids.slice(0, MAX_COMPANIONS);
 }
 
-async function chatCheck(db, release) {
+async function chatCheck(db, release, sleep) {
   const failures = [];
   const { Conversations } = await import(pathToFileURL(join(release, 'src', 'conversations.mjs')).href);
   const { createConversationClient } = await import(pathToFileURL(join(release, 'public', 'conversation-client.mjs')).href);
   const conversations = new Conversations({ store: readOnly(db) });
-  const ids = companions(db);
+  const ids = await retryBusy(() => companions(db), sleep);
   let opened = 0, pages = 0;
   for (const companionId of ids) {
     const seen = []; let rewound = false, served = null;
@@ -43,7 +54,7 @@ async function chatCheck(db, release) {
       // Read an events page that holds real events: start a little before the snapshot's cursor (the client keeps
       // only what is newer than its own cursor, so its state is unchanged).
       if (action === 'events') { rewound = true; payload = { ...payload, cursor: String(Math.max(0, Number(payload.cursor) - REWIND)) }; }
-      try { return await conversations.handle(companionId, { action, ...payload }); }
+      try { return await retryBusy(() => conversations.handle(companionId, { action, ...payload }), sleep); }
       catch (error) { served = codeOf(error); throw error; }
     };
     const client = createConversationClient({ transport, requestId: () => { throw new Error('read-only'); } });
@@ -76,7 +87,7 @@ async function schedulerCheck(db, since, { waitMs, intervalMs, sleep, now }) {
   const deadline = now() + waitMs;
   for (;;) {
     let seen;
-    try { seen = read(); } catch (error) { return { failures: [{ check: 'scheduler', reason: `the scheduler tick record is unreadable (${codeOf(error)})` }] }; }
+    try { seen = await retryBusy(read, sleep); } catch (error) { return { failures: [{ check: 'scheduler', reason: `the scheduler tick record is unreadable (${codeOf(error)})` }] }; }
     if (seen.none) return { failures: [], note: 'no scheduler-enabled owner; liveness not checked' };
     if (seen.latest !== null && seen.latest >= since) return { failures: [], note: 'a scheduler tick completed after the restart' };
     if (now() >= deadline) {
@@ -91,10 +102,10 @@ async function schedulerCheck(db, since, { waitMs, intervalMs, sleep, now }) {
 export async function smokeCheck({ release, dataDir, since, waitMs = 120000, intervalMs = 2000, sleep = sleepFor, now = Date.now } = {}) {
   const failures = [], notes = [];
   let db;
-  try { db = new DatabaseSync(join(dataDir, 'bootstrap.sqlite'), { readOnly: true }); }
+  try { db = await retryBusy(() => { const handle = new DatabaseSync(join(dataDir, 'bootstrap.sqlite'), { readOnly: true }); handle.exec(`PRAGMA busy_timeout = ${BUSY_MS}`); return handle; }, sleep); }
   catch (error) { return { ok: false, failures: [{ check: 'chat', reason: `the private database could not be opened read-only (${codeOf(error)})` }], notes }; }
   try {
-    for (const [check, run] of [['chat', () => chatCheck(db, release)], ['scheduler', () => schedulerCheck(db, since, { waitMs, intervalMs, sleep, now })]]) {
+    for (const [check, run] of [['chat', () => chatCheck(db, release, sleep)], ['scheduler', () => schedulerCheck(db, since, { waitMs, intervalMs, sleep, now })]]) {
       try { const result = await run(); failures.push(...result.failures); if (result.note) notes.push(`${check}: ${result.note}`); }
       catch (error) { failures.push({ check, reason: `the ${check} check could not run (${codeOf(error)})` }); }
     }
