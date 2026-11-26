@@ -235,22 +235,55 @@ export class Manager {
   }
 
   // The findings worth a wake now: new ones, and ones still open after renudgeMinutes. Remembers what it sent.
+  // A finding may carry backoff: [minutes, ...] (t109): the wait after the 1st, 2nd, ... wake, the last one repeating.
   due(findings, { renudgeMinutes = 120 } = {}) {
     const now = this.#now(), open = new Set(findings.map(item => item.key)), out = [];
-    for (const key of Object.keys(this.#state.nudged)) if (!open.has(key)) delete this.#state.nudged[key];
-    for (const finding of findings) {
-      const last = this.#state.nudged[finding.key];
-      if (last && now - last < renudgeMinutes * MINUTE) continue;
-      this.#state.nudged[finding.key] = now; out.push(finding);
+    const counts = this.#state.nudgeCount ??= {};
+    for (const key of Object.keys(this.#state.nudged)) if (!open.has(key)) { delete this.#state.nudged[key]; delete counts[key]; }
+    for (const { backoff, ...finding } of findings) {
+      const last = this.#state.nudged[finding.key], sent = counts[finding.key] ?? 1;
+      const wait = Array.isArray(backoff) && backoff.length ? backoff[Math.min(sent, backoff.length) - 1] : renudgeMinutes;
+      if (last && now - last < wait * MINUTE) continue;
+      this.#state.nudged[finding.key] = now; counts[finding.key] = last ? sent + 1 : 1; out.push(finding);
     }
     this.#save();
     return out;
   }
 
+  // Blocked tickets held on purpose (t109), over the approved projects.
+  held({ tickets }) {
+    const approved = new Set(this.approvals().map(item => item.projectId));
+    return heldTickets({ tickets: tickets.filter(ticket => approved.has(ticket.projectId)), decisions: this.#state.decisions });
+  }
+
   view({ tickets = null, runs = [] } = {}) {
     return { approvals: this.approvals(), usage: this.usage(), decisions: this.decisions({ limit: 50 }),
-      attention: tickets ? this.attention({ tickets, runs }) : null };
+      attention: tickets ? this.attention({ tickets, runs }) : null, held: tickets ? this.held({ tickets }) : null };
   }
+}
+
+// A blocked (or waiting) ticket is held on purpose (t109) when the manager logged a "pause" decision after the current
+// block began (ticket.since moves on a new block and on a new blocked reason, so either ends the hold), or when the Board
+// marks it an owner hold (ticket.ownerHold). Returns the hold: { at, decisionId, by } or null.
+const HOLD_REMINDER_MINUTES = 7 * 24 * 60;
+const STUCK_BACKOFF = Object.freeze([120, 360, 1440]);
+function holdOf(ticket, decisions) {
+  if (ticket.status !== 'blocked' && !ticket.waiting) return null;
+  const pause = decisions.filter(item => item.kind === 'pause' && item.ticketId === ticket.id && item.at > (ticket.since ?? 0)).at(-1);
+  if (pause) return { at: pause.at, decisionId: pause.id, by: 'manager' };
+  return ticket.ownerHold === true ? { at: ticket.since ?? 0, decisionId: null, by: 'owner' } : null;
+}
+
+// The held tickets for agents_manager, shown apart from attention. remindAt: when the 7-day reminder is first due.
+export function heldTickets({ tickets, decisions = [] }) {
+  const out = [];
+  for (const ticket of tickets) {
+    const hold = holdOf(ticket, decisions);
+    if (!hold) continue;
+    out.push({ ticketId: ticket.id, ticketNumber: ticket.number ?? null, projectId: ticket.projectId ?? null, since: ticket.since ?? null,
+      heldBy: hold.by, decisionId: hold.decisionId, heldSince: hold.at, remindAt: hold.at + HOLD_REMINDER_MINUTES * MINUTE, status: ticket.status });
+  }
+  return out;
 }
 
 // The sweep. tickets: [{ id, number, status, ready, waiting, projectId, since }] (since: when the watch first saw this
@@ -312,10 +345,19 @@ export function attention({ tickets, runs, decisions = [], usage = { premiumAllo
       continue;
     }
     if ((ticket.status === 'blocked' || ticket.waiting) && ticket.since && now - ticket.since >= stuckMinutes * MINUTE) {
+      const hold = holdOf(ticket, decisions);
+      if (hold) {
+        // A deliberate hold: silent, except one reminder at most every 7 days so it is never forgotten.
+        if (now - hold.at >= HOLD_REMINDER_MINUTES * MINUTE) {
+          out.push({ ...base, key: `held:${ticket.id}:${ticket.since}:${hold.decisionId ?? 'owner'}`, kind: 'held', agent: lastWork?.agent ?? null, backoff: [HOLD_REMINDER_MINUTES],
+            suggestion: `${n} is still on hold (${hold.by === 'owner' ? 'owner hold' : `your pause decision ${hold.decisionId}`}) after ${Math.round((now - hold.at) / DAY)} days. Reminder only: keep it held, or unblock it.` });
+        }
+        continue;
+      }
       const minutes = Math.round((now - ticket.since) / MINUTE);
       out.push({ ...base, key: `stuck:${ticket.id}:${ticket.since}`, kind: 'stuck', agent: lastWork?.agent ?? null,
         suggestion: `${n} has been ${ticket.status === 'blocked' ? 'blocked' : 'waiting on a human'} for ${minutes} min. Read why, then unblock, reassign, split`
-          + `${lastWork && nextModel(lastWork.modelAlias) ? `, escalate the model (now ${lastWork.modelAlias})` : ''}, or escalate to the owner only if it is a hard limit or a scope change.` });
+          + `${lastWork && nextModel(lastWork.modelAlias) ? `, escalate the model (now ${lastWork.modelAlias})` : ''}, or escalate to the owner only if it is a hard limit or a scope change.`, backoff: STUCK_BACKOFF });
     }
   }
   return out;

@@ -350,9 +350,11 @@ export class BoardWatch {
       for (let page = 0; page < 10; page++) {
         const listed = await this.#client.call('list_tickets', { project_id: projectId, limit: 100, ...(cursor ? { cursor } : {}) });
         for (const ticket of listed?.items ?? []) {
-          const now = { status: ticket.status, ready: ticket.ready === true, waiting: ticket.waiting_on_human === true };
+          const now = { status: ticket.status, ready: ticket.ready === true, waiting: ticket.waiting_on_human === true,
+            reason: String(ticket.blocked_reason ?? ticket.blockedReason ?? '').slice(0, 500) };
           const before = this.#seen.get(ticket.id);
-          now.since = before && before.status === now.status && before.waiting === now.waiting ? before.since : at;
+          // A new blocked reason restarts since like a new block does (t109): it ends a hold and re-arms the alerts.
+          now.since = before && before.status === now.status && before.waiting === now.waiting && before.reason === now.reason ? before.since : at;
           this.#seen.set(ticket.id, now);
           snapshot.push({ id: ticket.id, number: ticket.number ?? null, status: now.status, ready: now.ready, waiting: now.waiting, projectId, since: now.since });
           if (!this.#primed || !before) continue;

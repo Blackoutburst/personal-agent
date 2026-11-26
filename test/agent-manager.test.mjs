@@ -205,3 +205,70 @@ test('checkReview needs the reviewer role and the reviewed head (#76 review)', a
   assert.throws(() => checkReview([work, review({ role: 'coder' })], { ticketId: 'T', reviewRunId: 'r1' }), { code: 'NOT_INDEPENDENT' });
   assert.throws(() => checkReview([work, review({ reviewHead: undefined })], { ticketId: 'T', reviewRunId: 'r1' }), { code: 'STALE_REVIEW' });
 });
+
+// t109: tickets held on purpose do not repeat "stuck" wakes; other blocked tickets back off.
+function stuckHarness(t) {
+  const clock = { now: 100 * HOUR };
+  const m = new Manager({ projects: [P], now: () => clock.now });
+  m.approve({ projectId: P, direction: 'go' });
+  const notes = [];
+  const runner = { list: () => [], note: event => { notes.push(event); return event; } };
+  const sweep = tickets => managerSweep({ manager: m, runner, tickets });
+  return { clock, m, notes, sweep };
+}
+const blockedTicket = (since, over = {}) => [{ id: 'T', number: 77, status: 'blocked', ready: false, waiting: false, projectId: P, since, ...over }];
+
+test('t109: a pause decision newer than the block silences the stuck line; a new block or reason alerts again', t => {
+  const { clock, m, notes, sweep } = stuckHarness(t);
+  const since = clock.now - 2 * HOUR;
+  sweep(blockedTicket(since));
+  assert.deepEqual(notes.map(item => item.kind), ['stuck']);
+  m.decide({ kind: 'pause', ticketId: 'T', reason: 'owner hold' });
+  for (let i = 0; i < 20; i++) { clock.now += 3 * HOUR; sweep(blockedTicket(since)); }
+  assert.equal(notes.length, 1);
+  assert.deepEqual(m.held({ tickets: blockedTicket(since) }).map(item => [item.ticketNumber, item.heldBy]), [[77, 'manager']]);
+  assert.equal(m.attention({ tickets: blockedTicket(since), runs: [] }).length, 0);
+  // Unblocked and blocked again (since moves on; the same happens on a new blocked reason): the old pause is older than the block.
+  const again = clock.now - HOUR;
+  sweep(blockedTicket(again));
+  assert.equal(notes.length, 2); assert.equal(notes[1].kind, 'stuck');
+  assert.deepEqual(m.held({ tickets: blockedTicket(again) }), []);
+  // A pause decision about another ticket holds nothing.
+  m.decide({ kind: 'pause', ticketId: 'OTHER', reason: 'x' });
+  assert.deepEqual(m.held({ tickets: blockedTicket(again) }), []);
+});
+
+test('t109: a held ticket gets one reminder after 7 days and then at most one every 7 days (fake clock)', t => {
+  const { clock, m, notes, sweep } = stuckHarness(t);
+  const since = clock.now - HOUR;
+  m.decide({ kind: 'pause', ticketId: 'T', reason: 'owner hold' });
+  const pausedAt = clock.now, day = 24 * HOUR;
+  const run = days => { while (clock.now < pausedAt + days * day) { clock.now += 2 * HOUR; sweep(blockedTicket(since)); } };
+  run(6.9); assert.equal(notes.length, 0);
+  run(7.2); assert.deepEqual(notes.map(item => item.kind), ['held']); assert.match(notes[0].suggestion, /still on hold/);
+  run(13.9); assert.equal(notes.length, 1);
+  run(14.2); assert.equal(notes.length, 2);
+  assert.ok(!('backoff' in notes[0]));
+});
+
+test('t109: an owner hold flagged on the ticket is held too', t => {
+  const { clock, m, notes, sweep } = stuckHarness(t);
+  const tickets = blockedTicket(clock.now - 5 * HOUR, { ownerHold: true });
+  sweep(tickets);
+  assert.equal(notes.length, 0);
+  assert.equal(m.held({ tickets })[0].heldBy, 'owner');
+  assert.equal(m.view({ tickets, runs: [] }).held.length, 1);
+  assert.deepEqual(m.view({ tickets, runs: [] }).attention, []);
+});
+
+test('t109: a blocked ticket without a hold alerts with a backoff of 2 h, 6 h, then daily', t => {
+  const { clock, notes, sweep } = stuckHarness(t);
+  const since = clock.now - HOUR, start = clock.now, at = [];
+  while (clock.now < start + 4 * 24 * HOUR) {
+    const before = notes.length; sweep(blockedTicket(since));
+    if (notes.length > before) at.push((clock.now - start) / HOUR);
+    clock.now += 30 * 60_000;
+  }
+  const gaps = at.slice(1).map((value, i) => value - at[i]);
+  assert.deepEqual(gaps, [2, 6, 24, 24, 24]);
+});

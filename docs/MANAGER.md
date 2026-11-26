@@ -138,6 +138,12 @@ event (one wake line, fixed text with ids, numbers, agent names and models only,
 | `quota_reset` | the last run stopped on `USAGE_LIMIT`/`RATE_LIMITED` and its `retryAt` has passed | relaunch |
 | `stuck` | blocked, or waiting on a human, for 30+ min | unblock, reassign, split, escalate; the owner only for a hard limit or a scope change |
 
+**Stuck backoff and holds (t109).** A `stuck` ticket wakes C-chan after 2 h, then 6 h, then once a day (not every 2 h).
+A blocked ticket is **held on purpose** when she logged an `agents_decide` of kind `pause` for it *after* the current
+block began (or the ticket carries `ownerHold`): it raises no `stuck` line and shows under `held` in `agents_manager`,
+apart from `attention`. A new block after an unblock, or a new blocked reason (the watch restarts `since`), ends the
+hold, so it alerts again. A held ticket gets one `held` reminder 7 days after the pause, then at most one every 7 days.
+
 A ticket with an active run is skipped. A ticket waiting for a quota reset raises nothing until `retryAt` (it is not a
 code failure, #72). Each finding wakes C-chan once. If it is still open after 2 h, it wakes her again.
 
