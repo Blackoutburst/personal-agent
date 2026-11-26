@@ -421,3 +421,13 @@ test('a coder is not run on a ticket in review: the launch ends with a clear err
   await until(() => ['failed', 'cancelled'].includes(r.get(run.id).state));
   assert.equal(r.get(run.id).errorCode, 'TICKET_IN_REVIEW'); assert.equal(children.length, 0);
 });
+
+test('Board watch restarts since when the blocked reason changes (t109)', async () => {
+  let at = 1000, reason = 'waiting for the owner';
+  const watch = new BoardWatch({ client: { async call() { return { items: [{ id: 'a', number: 1, status: 'blocked', blocked_reason: reason }] }; } }, projects: ['P'], now: () => at });
+  await watch.poll();
+  at = 2000; await watch.poll();
+  assert.equal(watch.tickets()[0].since, 1000);
+  at = 3000; reason = 'new question'; await watch.poll();
+  assert.equal(watch.tickets()[0].since, 3000);
+});
