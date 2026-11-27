@@ -29,6 +29,19 @@ async function retryBusy(fn, sleep = sleepFor) {
 // A read-only handle shaped like the store Conversations uses. BEGIN IMMEDIATE (its read transactions) becomes a plain BEGIN.
 const readOnly = db => ({ db: { prepare: sql => db.prepare(sql), exec: sql => db.exec(/^\s*BEGIN\b/i.test(sql) ? 'BEGIN' : sql) } });
 
+// #111: the real server gives Conversations its FileStore, which is where a message's attachments come from; a user message sent
+// with only a file has empty text and is valid only with them. FileStore's constructor creates tables, so it is not built here:
+// the release's own list() and dto() run on the same read-only handle, over the same conv_files table, and nothing else
+// (no file content, no path) is touched. Without that table (data from before files existed) no message has attachments.
+async function readOnlyFiles(db, release) {
+  const { FileStore } = await import(pathToFileURL(join(release, 'src', 'files.mjs')).href);
+  const files = Object.create(FileStore.prototype);
+  files.db = db;
+  const present = () => db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conv_files'").get() !== undefined;
+  const list = FileStore.prototype.list;
+  return { list: messageId => present() ? list.call(files, messageId) : [] };
+}
+
 function companions(db) {
   const rows = db.prepare("SELECT value_json FROM bootstrap_record WHERE namespace='companion-identity-v1'").all();
   const ids = [];
@@ -43,7 +56,10 @@ async function chatCheck(db, release, sleep) {
   const { Conversations } = await import(pathToFileURL(join(release, 'src', 'conversations.mjs')).href);
   const { createConversationClient, diagnoseResponse } = await import(pathToFileURL(join(release, 'public', 'conversation-client.mjs')).href);
   // Construction reads the schema, so it can meet the server's lock too.
-  const conversations = await retryBusy(() => new Conversations({ store: readOnly(db) }), sleep);
+  // Server-only inputs (runner, board lines, push, links, wake tools, group wakes, turn notes, web budget) only act when a
+  // turn or wake runs; board inbox lines are not wired by the server since #75. Attachments are the one that shapes a response.
+  const files = await readOnlyFiles(db, release);
+  const conversations = await retryBusy(() => new Conversations({ store: readOnly(db), files }), sleep);
   const ids = await retryBusy(() => companions(db), sleep);
   let opened = 0, pages = 0;
   for (const [index, companionId] of ids.entries()) {
