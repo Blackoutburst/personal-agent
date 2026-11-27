@@ -27,7 +27,7 @@ export function seedData(dataDir, { tickAt = null, bad = false, extra = null } =
   event.run(THREAD, 3, JSON.stringify({ type: 'turn', requestId: 'r1', state: 'complete' }));
   db.exec('CREATE TABLE IF NOT EXISTS scheduler_ticks(companion_id TEXT PRIMARY KEY,ticked_at INTEGER NOT NULL)');
   if (tickAt !== null) db.prepare('INSERT INTO scheduler_ticks VALUES (?,?)').run(COMPANION, tickAt);
-  extra?.(db, { THREAD, COMPANION, now });
+  extra?.(db, { THREAD, COMPANION, now, dataDir });
   db.close();
 }
 

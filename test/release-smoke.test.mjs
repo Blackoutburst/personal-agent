@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { smokeCheck } from '../ops/release-smoke.mjs';
+import { FileStore } from '../src/files.mjs';
 import { ROOT, seedData } from './fixtures/smoke-data.mjs';
 
 const world = (t, options) => {
@@ -113,6 +114,7 @@ test('smoke fails at once, without retrying, on a non-busy error while setting u
   mkdirSync(join(release, 'src')); mkdirSync(join(release, 'public'));
   writeFileSync(join(release, 'src', 'conversations.mjs'), "export class Conversations { constructor() { throw Object.assign(new Error('boom'), { code: 'BROKEN_SCHEMA' }); } }");
   writeFileSync(join(release, 'public', 'conversation-client.mjs'), 'export const createConversationClient = () => ({});');
+  writeFileSync(join(release, 'src', 'files.mjs'), 'export class FileStore { list() { return []; } }');
   const dataDir = world(t, { tickAt: 5_000_000_000_500 }); let chatPauses = 0;
   const result = await smokeCheck({ release, dataDir, since: 5_000_000_000_000, waitMs: 0, sleep: async () => { chatPauses++; } });
   assert.equal(chatPauses, 0);
@@ -154,4 +156,40 @@ test('smoke names the failing field and rule, with counts, and never conversatio
   assert.equal(diagnoseResponse('events', { version: 1, synthetic: false, threadId: thread, cursor: '1', lastSeq: 1, hasMore: false,
     events: [{ seq: 1, threadId: thread, type: 'message', message: { ...ok, text: 'SECRET\u0001' } }] }, { threadId: thread, cursor: 0 }).rule, 'eventsPage.events[].message[assistant] text has a control character');
   for (const bad of [rule({ ...ok, text: 'SECRET\u0000' }), rule({ ...ok, text: 'SECRET'.repeat(20000) })]) assert.doesNotMatch(JSON.stringify(bad), /SECRET/);
+});
+
+// #111: the real server serves attachments, and a user message with only a file has empty text. The smoke check must too.
+const withFile = (db, { THREAD, COMPANION, now, dataDir }, { text = '', attach = true } = {}) => {
+  const files = new FileStore({ store: { db }, dataDir });
+  const id = '8b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e';
+  db.prepare('INSERT INTO conv_messages(id,thread_id,role,text,request_id,created_at) VALUES (?,?,?,?,?,?)').run('m3', THREAD, 'user', text, 'r3', now + 3);
+  db.prepare('INSERT INTO conv_events VALUES (?,?,?)').run(THREAD, 4, JSON.stringify({ type: 'message', messageId: 'm3' }));
+  db.prepare('UPDATE conv_threads SET last_seq=4').run();
+  if (attach) db.prepare(`INSERT INTO conv_files(id,companion_id,thread_id,message_id,request_id,name,mime,size,sha256,direction,caption,state,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, COMPANION, THREAD, 'm3', 'f1', 'SECRET_NAME.png', 'image/png', 10, 'a'.repeat(64), 'user', 'SECRET_CAPTION', 'ready', now + 3);
+  return files;
+};
+
+test('smoke passes on a user message that has only an attachment (empty text), in the snapshot and the events page', async t => {
+  const dataDir = sealed(t, (db, context) => withFile(db, context));
+  const before = digest(dataDir);
+  const result = await runChat(dataDir);
+  assert.deepEqual(result.failures, []); assert.equal(result.ok, true);
+  assert.match(result.notes.join('\n'), /1\/1 companion\(s\) opened, 1 events page\(s\) read/);
+  assert.equal(digest(dataDir), before);
+});
+
+test('smoke still fails, naming the rule and no content, on an empty user message without an attachment', async t => {
+  const dataDir = sealed(t, (db, context) => withFile(db, context, { attach: false }));
+  const result = await runChat(dataDir);
+  assert.equal(result.ok, false);
+  assert.match(result.failures[0].reason, /INVALID_RESPONSE: snapshot\.messages\[user\] text is empty/);
+  assert.doesNotMatch(JSON.stringify(result), /SECRET_/);
+});
+
+test('smoke ignores a file that is not ready and works on data without a conv_files table', async t => {
+  const dataDir = sealed(t, (db, context) => { withFile(db, context, { text: 'hi' }); db.exec("UPDATE conv_files SET state='uploading'"); });
+  assert.equal((await runChat(dataDir)).ok, true);
+  const bare = sealed(t, () => {});
+  assert.equal((await runChat(bare)).ok, true);
 });
