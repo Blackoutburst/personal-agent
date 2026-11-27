@@ -2,6 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, lstatSync, realpathSync, openSync, closeSync, fstatSync, readSync, writeSync,
   renameSync, unlinkSync, readdirSync, rmSync, constants } from 'node:fs';
 import { execFile } from 'node:child_process';
+import { clientText } from './client-text.mjs';
 import { join, resolve, relative, isAbsolute, sep, basename, dirname } from 'node:path';
 
 export const FILE_LIMITS = Object.freeze({ normal: 25 * 1024 ** 2, video: 100 * 1024 ** 2,
@@ -9,7 +10,7 @@ export const FILE_LIMITS = Object.freeze({ normal: 25 * 1024 ** 2, video: 100 * 
 export const FILE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const KEY = /^[A-Za-z0-9._-]{1,80}$/;
 // The longest voice message accepted (the apps stop recording at 5 minutes).
-const VOICE_MS = 10 * 60_000;
+const VOICE_MS = 10 * 60_000, CLIENT_VOICE_MS = 3_600_000; // what the chat client accepts (public/conversation-client.mjs)
 export class FileError extends Error {
   constructor(code, status = 400) { super(code); this.name = 'FileError'; this.code = code; this.status = status; }
 }
@@ -87,7 +88,7 @@ export class FileStore {
   }
   dto(row) { return { id: row.id, name: row.name, mime: row.mime, size: row.size, sha256: row.sha256,
     direction: row.direction, url: '/api/files/' + row.id, ...(row.caption ? { caption: row.caption } : {}),
-    ...(row.voice ? { voice: { durationMs: row.duration_ms ?? 0, ...(row.transcript ? { transcript: row.transcript } : {}) } } : {}) }; }
+    ...(row.voice ? { voice: { durationMs: Math.min(CLIENT_VOICE_MS, Math.max(0, Math.round(row.duration_ms ?? 0))), ...(clientText(row.transcript, 20000, 80000) ? { transcript: clientText(row.transcript, 20000, 80000) } : {}) } } : {}) }; }
   get(companionId, id) {
     if (typeof companionId !== 'string' || typeof id !== 'string' || !FILE_ID.test(companionId) || !FILE_ID.test(id)) refuse('NOT_FOUND', 404);
     const row = this.db.prepare("SELECT * FROM conv_files WHERE id=? AND companion_id=? AND state='ready'").get(id, companionId);
@@ -243,7 +244,7 @@ export class FileStore {
     let job = this.transcribing.get(id);
     if (!job) {
       job = this.asr.transcribe(this.path(row)).then(result => {
-        this.db.prepare('UPDATE conv_files SET transcript=?, transcript_language=? WHERE id=?').run(result.text, result.language, id);
+        this.db.prepare('UPDATE conv_files SET transcript=?, transcript_language=? WHERE id=?').run(clientText(result.text, 20000, 80000), result.language, id);
         return result;
       }).finally(() => this.transcribing.delete(id));
       this.transcribing.set(id, job);

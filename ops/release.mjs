@@ -342,7 +342,7 @@ export function createReleaseTool({ repoDir = process.cwd(), rootDir, dataDir, r
     catch { result = { ok: false, failures: [{ check: 'smoke', reason: 'the smoke check could not run' }] }; }
     if (result?.ok === true) return;
     const failures = Array.isArray(result?.failures) && result.failures.length ? result.failures : [{ check: 'smoke', reason: 'no result' }];
-    refuse('SMOKE', failures.map(item => `${String(item?.check ?? 'smoke').slice(0, 20)}: ${String(item?.reason ?? 'failed').slice(0, 200)}`).join('; '));
+    refuse('SMOKE', failures.map(item => `${String(item?.check ?? 'smoke').slice(0, 20)}: ${String(item?.reason ?? 'failed').slice(0, 300)}`).join('; '));
   };
 
   const changeRelease = async (target, { verify = false } = {}) => {
@@ -465,6 +465,20 @@ export function createReleaseTool({ repoDir = process.cwd(), rootDir, dataDir, r
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
+  // #110: `smoke [release-dir]` runs the chat smoke check against the live data and changes nothing: no lock, link, service,
+  // backup or write. release-dir is a directory of source (default: the checkout holding this tool) or a name under <root>/releases.
+  if (command === 'smoke') {
+    if (args.length > 1) refuse('INVALID');
+    const dataDir = process.env.COMPANION_DATA_DIR ?? join(homedir(), 'personal-agent-data');
+    const rootDir = process.env.COMPANION_RELEASE_ROOT ?? join(homedir(), 'personal-agent');
+    const selected = args[0] === undefined ? process.env.COMPANION_RELEASE_REPO ?? dirname(dirname(fileURLToPath(import.meta.url)))
+      : isAbsolute(args[0]) ? args[0] : /^[A-Za-z0-9._-]{1,128}$/.test(args[0]) && !['.', '..'].includes(args[0]) ? join(rootDir, 'releases', args[0]) : refuse('INVALID');
+    const release = realpathSync(selected);
+    const result = await (await import('./release-smoke.mjs')).chatSmoke({ release, dataDir });
+    console.log(JSON.stringify({ ok: result.ok, failures: result.failures, notes: result.notes }));
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
   if (!['release', 'rollback', 'backup', 'restore'].includes(command) || args.length > (['release', 'restore'].includes(command) ? 1 : 0)
       || command === 'restore' && args.length !== 1) refuse('INVALID');
   const rootDir = process.env.COMPANION_RELEASE_ROOT ?? join(homedir(), 'personal-agent');

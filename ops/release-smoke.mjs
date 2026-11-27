@@ -41,35 +41,42 @@ function companions(db) {
 async function chatCheck(db, release, sleep) {
   const failures = [];
   const { Conversations } = await import(pathToFileURL(join(release, 'src', 'conversations.mjs')).href);
-  const { createConversationClient } = await import(pathToFileURL(join(release, 'public', 'conversation-client.mjs')).href);
+  const { createConversationClient, diagnoseResponse } = await import(pathToFileURL(join(release, 'public', 'conversation-client.mjs')).href);
   // Construction reads the schema, so it can meet the server's lock too.
   const conversations = await retryBusy(() => new Conversations({ store: readOnly(db) }), sleep);
   const ids = await retryBusy(() => companions(db), sleep);
   let opened = 0, pages = 0;
-  for (const companionId of ids) {
-    const seen = []; let rewound = false, served = null;
+  for (const [index, companionId] of ids.entries()) {
+    // #110: which validation rule the client applied when it rejected a response (field path, rule, counts; never content).
+    const seen = []; let rewound = false, served = null, rejected = null;
+    const who = `companion ${index + 1}/${ids.length}`;
     const transport = async (action, payload = {}) => {
       seen.push(action);
       // Only the two read actions exist here; the client could never reach a write from open() and poll().
       if (action !== 'snapshot' && action !== 'events') throw Object.assign(new Error(), { code: 'INVALID_REQUEST' });
       // Read an events page that holds real events: start a little before the snapshot's cursor (the client keeps
       // only what is newer than its own cursor, so its state is unchanged).
+      const asked = payload;
       if (action === 'events') { rewound = true; payload = { ...payload, cursor: String(Math.max(0, Number(payload.cursor) - REWIND)) }; }
-      try { return await retryBusy(() => conversations.handle(companionId, { action, ...payload }), sleep); }
+      let response;
+      try { response = await retryBusy(() => conversations.handle(companionId, { action, ...payload }), sleep); }
       catch (error) { served = codeOf(error); throw error; }
+      const found = diagnoseResponse(action, response, { threadId: asked.threadId, cursor: Number(asked.cursor) });
+      if (found) rejected = `${found.code}: ${found.rule}`;
+      return response;
     };
     const client = createConversationClient({ transport, requestId: () => { throw new Error('read-only'); } });
     try {
       let state = await client.open();
-      if (state.connection !== 'ready' || state.error) { failures.push({ check: 'chat', reason: `snapshot rejected by the chat client (${served ?? state.error ?? state.connection})` }); continue; }
+      if (state.connection !== 'ready' || state.error) { failures.push({ check: 'chat', reason: `${who}: snapshot rejected by the chat client (${served ?? rejected ?? state.error ?? state.connection})` }); continue; }
       opened++;
       if (state.threadId === null) continue; // no conversation yet: nothing to page
       state = await client.poll();
       if (state.connection !== 'ready' || state.error || seen.filter(action => action === 'snapshot').length !== 1 || !rewound) {
-        failures.push({ check: 'chat', reason: `events page rejected by the chat client (${served ?? state.error ?? state.connection})` }); continue;
+        failures.push({ check: 'chat', reason: `${who}: events page rejected by the chat client (${served ?? rejected ?? state.error ?? state.connection})` }); continue;
       }
       pages++;
-    } catch (error) { failures.push({ check: 'chat', reason: `chat read failed (${served ?? codeOf(error)})` }); }
+    } catch (error) { failures.push({ check: 'chat', reason: `${who}: chat read failed (${served ?? rejected ?? codeOf(error)})` }); }
     finally { try { client.disconnect(); } catch { /* nothing to release */ } }
   }
   return { failures, note: `${opened}/${ids.length} companion(s) opened, ${pages} events page(s) read` };
@@ -97,6 +104,19 @@ async function schedulerCheck(db, since, { waitMs, intervalMs, sleep, now }) {
     }
     await sleep(intervalMs);
   }
+}
+
+// #110: only the chat check, for a release directory, without releasing anything: opens the data read-only and changes no link,
+// service or file. `node ops/release.mjs smoke [release-dir]` runs it.
+export async function chatSmoke({ release, dataDir, sleep = sleepFor, busyMs = BUSY_MS } = {}) {
+  let db;
+  try { db = await retryBusy(() => { const handle = new DatabaseSync(join(dataDir, 'bootstrap.sqlite'), { readOnly: true }); handle.exec(`PRAGMA busy_timeout = ${busyMs}`); return handle; }, sleep); }
+  catch (error) { return { ok: false, failures: [{ check: 'chat', reason: `the private database could not be opened read-only (${codeOf(error)})` }], notes: [] }; }
+  try {
+    const result = await chatCheck(db, release, sleep);
+    return { ok: result.failures.length === 0, failures: result.failures, notes: [`chat: ${result.note}`] };
+  } catch (error) { return { ok: false, failures: [{ check: 'chat', reason: `the chat check could not run (${codeOf(error)})` }], notes: [] }; }
+  finally { try { db.close(); } catch { /* already closed */ } }
 }
 
 // release: the directory of the release just started; since: epoch ms taken before the service was started.

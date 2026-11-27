@@ -138,6 +138,17 @@ validation). A read that meets the running server's write lock waits (SQLite bus
 busy/locked only; any other error still fails the check. **The smoke check has never been run against a real service
 or real data**: it is covered only by tests on seeded data, so treat its first live release as the real trial.
 
+**Run the chat check alone, read-only (#110).** `node ops/release.mjs smoke [release-dir]` runs only the chat part of the
+smoke check (step 1 above) against the live `bootstrap.sqlite` and prints one JSON line `{ok, failures, notes}`; exit status 1
+when it fails. `release-dir` is a source directory (absolute path), or the name of a directory under `<COMPANION_RELEASE_ROOT>/releases`;
+without it, the checkout holding the tool. It takes no lock and touches no link, service, backup or file: the database is opened
+with SQLite's read-only flag, nothing is submitted or woken, and it needs only `COMPANION_DATA_DIR` (and `COMPANION_RELEASE_ROOT` for
+a release name). Run it before a release (against the new release's directory) or after a `SMOKE` failure. A rejected response is
+named by field path, rule and counts, never content or ids, for example
+`companion 1/2: snapshot rejected by the chat client (INVALID_RESPONSE: snapshot.messages[assistant] text has a control character)`
+or `...(INVALID_RESPONSE: snapshot.threads[] title bytes 90>80)`; `companion 1/2` is the position in the list, not an id. The
+same reason text is what a failed `release` prints as the `SMOKE` detail.
+
 On a release/start/health/smoke failure, it stops the attempted process, restores the original
 links, and starts/checks the original release. This recovery restores **code selection**,
 not a SQLite/workspace snapshot; retain the pre-change set and require compatible readers.

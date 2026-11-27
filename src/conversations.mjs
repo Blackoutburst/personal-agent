@@ -3,6 +3,7 @@ import { RunnerError } from './runner.mjs';
 import { splitFeeling, stripFeelingTags } from './wardrobe.mjs';
 import { READ_ONLY_BOARD_TOOLS, WEB_TOOLS } from './tool-policy.mjs';
 import { FileError } from './files.mjs';
+import { clientText } from './client-text.mjs';
 import { BoardInboxError } from './board-inbox.mjs';
 import { finishedBubbles } from '../public/bubbles.mjs';
 import { quietWindow, withoutSilence, maybeSilent, BURST_NOTE, FOLLOW_UP_NOTE } from './texting.mjs';
@@ -13,7 +14,7 @@ import { quietWindow, withoutSilence, maybeSilent, BURST_NOTE, FOLLOW_UP_NOTE } 
 
 // wakeChars/wakeBytes must stay at least the scheduler's event-wake limit (scheduler.mjs EVENT_TEXT): a wake the
 // scheduler stores but Conversations refuses was queued forever and blocked every wake after it (#105).
-export const LIMITS = Object.freeze({ userChars: 8000, userBytes: 32768, assistantChars: 100000, titleChars: 80,
+export const LIMITS = Object.freeze({ userChars: 8000, userBytes: 32768, assistantChars: 100000, assistantBytes: 400000, titleChars: 80,
   threads: 200, snapshotMessages: 60, eventsPage: 100, wakeChars: 8000, wakeBytes: 32000, noticeChars: 2000 });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REQUEST = /^[A-Za-z0-9._-]{1,80}$/;
@@ -101,6 +102,26 @@ const notFound = () => new ConversationError('NOT_FOUND', 404);
 function wellFormed(value, chars, bytes) {
   return typeof value === 'string' && value.isWellFormed() && value.trim().length > 0 && value.length <= chars &&
     Buffer.byteLength(value) <= bytes && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value);
+}
+// Thread titles: 80 characters, 320 bytes, never empty (the client rejects an empty title).
+const clientTitle = value => clientText(value, LIMITS.titleChars, LIMITS.titleChars * 4).trim() || DEFAULT_TITLE;
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,39}$/;
+function clientTurnError(error) {
+  const code = typeof error?.code === 'string' && ERROR_CODE.test(error.code) ? error.code : 'PROVIDER_ERROR';
+  const message = clientText(error?.message, 500, 2000).trim() || 'Your agent could not complete this reply.';
+  const resetsAt = typeof error?.resetsAt === 'string' && error.resetsAt.length <= 40 && !Number.isNaN(Date.parse(error.resetsAt)) ? error.resetsAt : null;
+  return { code, message, ...(resetsAt ? { resetsAt } : {}) };
+}
+// A peer card from stored JSON: only the five keys the client accepts; names are repaired like any other text (80 chars,
+// 320 bytes, no control characters, no edge whitespace, never empty). An unusable id or time falls back to a valid shape.
+const PEER_UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+function clientPeer(peer, at) {
+  const name = value => clientText(value, 80, 320).trim() || 'Companion';
+  const sent = typeof peer?.sentAtISO === 'string' && peer.sentAtISO.length === 24 && !Number.isNaN(Date.parse(peer.sentAtISO))
+    && new Date(peer.sentAtISO).toISOString() === peer.sentAtISO ? peer.sentAtISO : new Date(Number.isFinite(at) ? at : 0).toISOString();
+  return { direction: peer?.direction === 'sent' ? 'sent' : 'received',
+    companionId: typeof peer?.companionId === 'string' && PEER_UUID.test(peer.companionId) ? peer.companionId : '00000000-0000-4000-8000-000000000000',
+    name: name(peer?.name), ownerLabel: name(peer?.ownerLabel), sentAtISO: sent };
 }
 function only(payload, keys) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw invalid();
@@ -190,8 +211,9 @@ export function parseRequest(payload) {
 }
 
 function titleFrom(text) {
-  const line = text.trim().split('\n')[0].replace(/\s+/g, ' ');
-  return line.length <= 60 ? line : line.slice(0, 57).trimEnd() + '…';
+  const line = clientText(text, 100000, 400000).trim().split('\n')[0].replace(/\s+/g, ' ');
+  const title = line.length <= 60 ? line : line.slice(0, 57).trimEnd() + '…';
+  return clientTitle(title);
 }
 
 export class Conversations {
@@ -547,17 +569,18 @@ export class Conversations {
   }
 
   #message(row) {
-    if(row.role==='peer') return {id:row.id,threadId:row.thread_id,role:'peer',text:row.text,at:row.created_at,peer:JSON.parse(row.peer_json)};
+    if(row.role==='peer') return {id:row.id,threadId:row.thread_id,role:'peer',text:clientText(row.text,4000,16000),at:row.created_at,peer:clientPeer(JSON.parse(row.peer_json),row.created_at)};
     const attachments = this.#files?.list(row.id) ?? [];
     // #57: replies stored before stray tags were stripped are cleaned when shown.
-    const text = row.role === 'assistant' ? stripFeelingTags(row.text).text : row.text;
+    const text = row.role === 'assistant' ? clientText(stripFeelingTags(row.text).text, LIMITS.assistantChars, LIMITS.assistantBytes)
+      : clientText(row.text, LIMITS.userChars, LIMITS.userBytes);
     return { id: row.id, threadId: row.thread_id, role: row.role, text, at: row.created_at, ...(row.request_id ? { requestId: row.request_id } : {}),
       ...(row.feeling ? { feeling: row.feeling } : {}), ...(attachments.length ? { attachments } : {}) };
   }
 
   #snapshot(companionId, threadId, runtime) {
     const threads = this.#db.prepare('SELECT id, title FROM conv_threads WHERE companion_id=? AND archived_at IS NULL ORDER BY updated_at DESC, id LIMIT ?')
-      .all(companionId, LIMITS.threads).map(row => ({ id: row.id, title: row.title }));
+      .all(companionId, LIMITS.threads).map(row => ({ id: row.id, title: clientTitle(row.title) }));
     const mapped = threadId === undefined ? this.#db.prepare('SELECT thread_id FROM conv_ongoing WHERE companion_id=?').get(companionId) : null;
     const selected = threadId === undefined ? (mapped || threads[0] ? this.#thread(companionId, mapped?.thread_id ?? threads[0].id) : null) : this.#thread(companionId, threadId);
     let messages = [], cursor = 0, turn = null;
@@ -573,7 +596,7 @@ export class Conversations {
         const latest = open ? null : this.#db.prepare('SELECT request_id,state,error FROM conv_turns WHERE thread_id=? ORDER BY rowid DESC LIMIT 1').get(selected.id);
         const context = open ? { requestId: open.request_id, state: 'streaming' }
           : latest && ['error', 'cancelled'].includes(latest.state) ? { requestId: latest.request_id, state: latest.state,
-            ...(latest.state === 'error' && latest.error ? { error: JSON.parse(latest.error) } : {}) } : null;
+            ...(latest.state === 'error' && latest.error ? { error: clientTurnError(JSON.parse(latest.error)) } : {}) } : null;
         const { last_seq: seq } = this.#db.prepare('SELECT last_seq FROM conv_threads WHERE id=?').get(selected.id);
         // #61b: a Board sub-conversation's activity lines (silent Board wakes) sit between its messages, by time.
         const notes = this.#boardInbox?.notes(selected.id, LIMITS.snapshotMessages) ?? [];
@@ -588,7 +611,7 @@ export class Conversations {
     // A Board sub-conversation (#55) is open for replies although its row carries archived_at (kept for rollback).
     const board = Boolean(selected) && this.#isBoard(selected.id);
     const archived = selected && selected.archived_at !== null && !board;
-    if (archived || board) threads.unshift({ id: selected.id, title: selected.title });
+    if (archived || board) threads.unshift({ id: selected.id, title: clientTitle(selected.title) });
     return { version: 1, synthetic: false, threads, threadId: selected?.id ?? null, messages, cursor: String(cursor),
       runtime: { state: runtime.state, ...(runtime.provider ? { provider: runtime.provider } : {}) }, ...(turn ? { turn } : {}),
       ...(archived ? { archivedAt: selected.archived_at } : {}) };
@@ -603,6 +626,10 @@ export class Conversations {
     const lastFor = new Map();
     parsed.forEach((event, index) => { if (event.type === 'message') lastFor.set(event.messageId, index); });
     const events = parsed.map((event, index) => {
+      if (event.type === 'turn') {
+        const { error, ...rest } = event;
+        return { seq: event.seq, threadId, ...rest, ...(event.state === 'error' && error ? { error: clientTurnError(error) } : {}) };
+      }
       if (event.type !== 'message') return { seq: event.seq, threadId, ...event };
       if (lastFor.get(event.messageId) !== index) return { seq: event.seq, threadId, type: 'noop' };
       const row = this.#db.prepare('SELECT * FROM conv_messages WHERE id=?').get(event.messageId);
@@ -831,7 +858,7 @@ export class Conversations {
     } else {
       const messageId = randomUUID();
       this.#db.prepare('INSERT INTO conv_messages(id,thread_id,role,text,request_id,created_at,feeling) VALUES(?,?,?,?,?,?,?)')
-        .run(messageId, wake.thread_id, 'assistant', wake.result_text, wake.request_id, this.#now(), wake.result_feeling ?? null);
+        .run(messageId, wake.thread_id, 'assistant', clientText(wake.result_text, LIMITS.assistantChars, LIMITS.assistantBytes), wake.request_id, this.#now(), wake.result_feeling ?? null);
       if (wake.kind === 'release_watch') {
         const accepted = this.#releasePolicy('releaseDelivered', wake.companion_id, wake.id);
         if (accepted === false) throw invalid();
@@ -1095,7 +1122,7 @@ export class Conversations {
       let value = split.pending ? text : split.text;
       // Texting: only finished bubbles show while writing, and a reply that may be NO_REPLY shows nothing.
       if (this.#texting) value = withoutSilence(final ? value : maybeSilent(value) ? '' : finishedBubbles(value));
-      value = value.slice(0, LIMITS.assistantChars);
+      value = clientText(value, LIMITS.assistantChars, LIMITS.assistantBytes);
       const feeling = split.feeling;
       written = text;
       if (!assistantId && !value) return;
@@ -1209,7 +1236,7 @@ function isoTime(value) {
 function describe(error) {
   if (error instanceof RunnerError) {
     const resetsAt = isoTime(error.resetsAt);
-    return { code: error.code, message: error.message, ...(resetsAt ? { resetsAt } : {}) };
+    return clientTurnError({ code: error.code, message: error.message, resetsAt });
   }
   return { code: 'PROVIDER_ERROR', message: 'Your agent could not complete this reply.' };
 }

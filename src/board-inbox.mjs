@@ -6,6 +6,7 @@
 // Rollback: nothing here alters a legacy table. A Board sub-conversation row in conv_threads carries archived_at
 // from the moment it is made, so an older release (which knows nothing of these tables) shows it as a read-only
 // past chat and never as the ongoing chat or in its open chat list.
+import { clientText } from './client-text.mjs';
 import { randomUUID } from 'node:crypto';
 import { stripFeelingTags } from './wardrobe.mjs';
 import { previewText } from './web-push.mjs';
@@ -68,7 +69,7 @@ export function noteKind(tools = []) {
 }
 // The activity line itself: app text, never the companion's or the owner's words.
 export function noteText(kind, name) {
-  const who = cleanTitle(name)?.slice(0, 60) || 'Your companion';
+  const who = clientText(cleanTitle(name) ?? '', 60, 240).trim() || 'Your companion'; // #110: a plain slice could split a surrogate pair
   return kind === 'posted' ? `${who} answered on the Board.` : kind === 'resolved' ? `${who} answered the Board request.`
     : kind === 'updated' ? `${who} updated the Board.` : kind === 'read' ? `${who} checked this on the Board and had nothing to ask you.`
       : `${who} handled this on the Board.`;
@@ -96,8 +97,8 @@ const threadTitle = label => {
   return title.trim() || 'Board';
 };
 
-const noteMessage = row => ({ id: row.id, threadId: row.thread_id, role: 'app', text: row.text,
-  ...(row.url ? { url: row.url } : {}), ...(row.preview ? { preview: row.preview } : {}) });
+const noteMessage = row => ({ id: row.id, threadId: row.thread_id, role: 'app', text: clientText(row.text, 300, 1200) || 'Handled on the Board.',
+  ...(row.url ? { url: row.url } : {}), ...(clientText(row.preview, 200, 800).trim() ? { preview: clientText(row.preview, 200, 800) } : {}) });
 
 export class BoardInbox {
   #db; #now; #nameFor; #lookup;
