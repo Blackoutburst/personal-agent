@@ -132,3 +132,37 @@ test('`release.mjs smoke <dir>` runs the chat check read-only against live data,
   const missing = run(['no-such-release']); assert.equal(missing.status, 1);
   assert.equal(createHash('sha256').update(readFileSync(join(dataDir, 'bootstrap.sqlite'))).digest('hex'), before);
 });
+
+// Review round 2: turn events on the events page and peer names/labels from stored JSON.
+test('a stored turn event with a bad error is repaired on the events page', async t => {
+  const body = (state, error) => JSON.stringify({ type: 'turn', requestId: 'r-x', state, ...(error ? { error } : {}) });
+  const { events, problems } = await served(t, (db, ctx) => {
+    const add = (seq, text) => db.prepare('INSERT INTO conv_events VALUES (?,?,?)').run(THREAD, seq, text);
+    add(4, body('error', { code: 'bad code', message: 'x'.repeat(900) + '\u0000' }));
+    add(5, body('error', { code: 'E1', message: '' }));
+    add(6, body('error', { code: 'OK_CODE', message: 'fine', resetsAt: 'not a date' }));
+    add(7, body('error', 'garbage'));
+    db.prepare('UPDATE conv_threads SET last_seq=7 WHERE id=?').run(THREAD);
+  });
+  const errors = events.events.filter(e => e.seq >= 4).map(e => e.error);
+  assert.equal(errors[0].code, 'PROVIDER_ERROR'); assert.equal(errors[0].message.length, 500);
+  assert.ok(errors[1].message.length > 0); assert.equal(errors[2].code, 'OK_CODE'); assert.equal(errors[2].resetsAt, undefined);
+  assert.equal(errors[3].code, 'PROVIDER_ERROR');
+  assert.deepEqual(problems, [null, null]);
+});
+
+test('a stored peer card with an oversized, empty or padded name or label is repaired', async t => {
+  const card = peer => (db, ctx) => db.prepare("INSERT INTO conv_messages(id,thread_id,role,text,created_at,peer_json) VALUES (?,?,'peer',?,?,?)")
+    .run('p' + Math.random(), THREAD, 'hello', ctx.now + 3, JSON.stringify({ direction: 'sent', companionId: '3f2b8c1e-4a5d-4e6f-8a7b-9c0d1e2f3a4b', sentAtISO: '2025-11-27T10:00:00.000Z', ...peer }));
+  const { snapshot, events, problems } = await served(t, (db, ctx) => {
+    card({ name: 'N'.repeat(200), ownerLabel: '  padded \u0000 ' })(db, ctx);
+    card({ name: '', ownerLabel: '😀'.repeat(100) })(db, ctx);
+    card({ name: 'Ada', ownerLabel: 'Ada', sentAtISO: 'yesterday', companionId: 'nope' })(db, ctx);
+  });
+  const peers = snapshot.messages.filter(m => m.role === 'peer').map(m => m.peer);
+  assert.equal(peers.length, 3);
+  assert.equal(peers[0].name.length, 80); assert.equal(peers[0].ownerLabel, 'padded');
+  assert.ok(peers[1].name.length > 0 && Buffer.byteLength(peers[1].ownerLabel) <= 320);
+  assert.deepEqual(problems, [null, null]);
+  assert.ok(events.events.length > 0);
+});

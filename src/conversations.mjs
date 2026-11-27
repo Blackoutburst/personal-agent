@@ -112,6 +112,17 @@ function clientTurnError(error) {
   const resetsAt = typeof error?.resetsAt === 'string' && error.resetsAt.length <= 40 && !Number.isNaN(Date.parse(error.resetsAt)) ? error.resetsAt : null;
   return { code, message, ...(resetsAt ? { resetsAt } : {}) };
 }
+// A peer card from stored JSON: only the five keys the client accepts; names are repaired like any other text (80 chars,
+// 320 bytes, no control characters, no edge whitespace, never empty). An unusable id or time falls back to a valid shape.
+const PEER_UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+function clientPeer(peer, at) {
+  const name = value => clientText(value, 80, 320).trim() || 'Companion';
+  const sent = typeof peer?.sentAtISO === 'string' && peer.sentAtISO.length === 24 && !Number.isNaN(Date.parse(peer.sentAtISO))
+    && new Date(peer.sentAtISO).toISOString() === peer.sentAtISO ? peer.sentAtISO : new Date(Number.isFinite(at) ? at : 0).toISOString();
+  return { direction: peer?.direction === 'sent' ? 'sent' : 'received',
+    companionId: typeof peer?.companionId === 'string' && PEER_UUID.test(peer.companionId) ? peer.companionId : '00000000-0000-4000-8000-000000000000',
+    name: name(peer?.name), ownerLabel: name(peer?.ownerLabel), sentAtISO: sent };
+}
 function only(payload, keys) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw invalid();
   for (const key of Object.keys(payload)) if (!keys.includes(key)) throw invalid();
@@ -558,7 +569,7 @@ export class Conversations {
   }
 
   #message(row) {
-    if(row.role==='peer') return {id:row.id,threadId:row.thread_id,role:'peer',text:clientText(row.text,4000,16000),at:row.created_at,peer:JSON.parse(row.peer_json)};
+    if(row.role==='peer') return {id:row.id,threadId:row.thread_id,role:'peer',text:clientText(row.text,4000,16000),at:row.created_at,peer:clientPeer(JSON.parse(row.peer_json),row.created_at)};
     const attachments = this.#files?.list(row.id) ?? [];
     // #57: replies stored before stray tags were stripped are cleaned when shown.
     const text = row.role === 'assistant' ? clientText(stripFeelingTags(row.text).text, LIMITS.assistantChars, LIMITS.assistantBytes)
@@ -615,6 +626,10 @@ export class Conversations {
     const lastFor = new Map();
     parsed.forEach((event, index) => { if (event.type === 'message') lastFor.set(event.messageId, index); });
     const events = parsed.map((event, index) => {
+      if (event.type === 'turn') {
+        const { error, ...rest } = event;
+        return { seq: event.seq, threadId, ...rest, ...(event.state === 'error' && error ? { error: clientTurnError(error) } : {}) };
+      }
       if (event.type !== 'message') return { seq: event.seq, threadId, ...event };
       if (lastFor.get(event.messageId) !== index) return { seq: event.seq, threadId, type: 'noop' };
       const row = this.#db.prepare('SELECT * FROM conv_messages WHERE id=?').get(event.messageId);
