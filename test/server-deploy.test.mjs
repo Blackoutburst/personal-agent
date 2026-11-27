@@ -185,7 +185,7 @@ test('deploy: a chat the client cannot read after the restart rolls the release 
   const commit = w.push({ 'server.mjs': 'export const v = 7;\n' }, 'chat breaks');
   const result = await deployServer(w.options(commit));
   assert.equal(result.status, 'rolled_back', result.output); assert.equal(result.errorCode, 'SMOKE');
-  assert.match(result.output, /chat: snapshot rejected by the chat client \(INVALID_RESPONSE\)/);
+  assert.match(result.output, /chat: companion 1\/1: snapshot rejected by the chat client \(INVALID_RESPONSE: snapshot\.messages\[\?\] role value\)/);
   assert.doesNotMatch(result.output, /SECRET_/);
   assert.equal(releaseLink(w.root, 'current'), w.first);
 });

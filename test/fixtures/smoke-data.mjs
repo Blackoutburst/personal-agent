@@ -11,7 +11,7 @@ export const COMPANION = 'companion-smoke-1', THREAD = '4f6c2a1e-8d3b-4c5a-9e7f-
 
 // dataDir: an existing owner-only directory. tickAt: the scheduler's last completed tick (null: no tick row, scheduler
 // not enabled). bad: write a message row the chat client must reject.
-export function seedData(dataDir, { tickAt = null, bad = false } = {}) {
+export function seedData(dataDir, { tickAt = null, bad = false, extra = null } = {}) {
   const store = new BootstrapStore(dataDir, ROOT);
   store.getOrInsert('companion-identity-v1', 'owner-smoke', { companionId: COMPANION });
   new Conversations({ store });
@@ -27,6 +27,7 @@ export function seedData(dataDir, { tickAt = null, bad = false } = {}) {
   event.run(THREAD, 3, JSON.stringify({ type: 'turn', requestId: 'r1', state: 'complete' }));
   db.exec('CREATE TABLE IF NOT EXISTS scheduler_ticks(companion_id TEXT PRIMARY KEY,ticked_at INTEGER NOT NULL)');
   if (tickAt !== null) db.prepare('INSERT INTO scheduler_ticks VALUES (?,?)').run(COMPANION, tickAt);
+  extra?.(db, { THREAD, COMPANION, now });
   db.close();
 }
 

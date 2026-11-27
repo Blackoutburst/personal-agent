@@ -13,52 +13,66 @@ const MESSAGES = {
   NETWORK_ERROR: 'The request could not be confirmed. Retry the same pending request.', INVALID_RESPONSE: 'The conversation response could not be verified.',
   RESYNC_REQUIRED: 'The conversation needed a fresh snapshot.', CONFLICT: 'The request conflicts with retained state.'
 };
+// #110: `rule` names the validation rule that failed, for diagnosis only (e.g. "messages[assistant].text length 100001>100000"). It is built
+// from fixed field names, enum values and counts, never from response content, so it is safe to log.
 export class ConversationError extends Error {
-  constructor(code, status = null) {
+  constructor(code, status = null, rule = null) {
     if (!Object.hasOwn(MESSAGES, code)) code = 'INVALID_RESPONSE';
     super(MESSAGES[code]); this.name = 'ConversationError'; this.code = code; this.status = status;
+    this.rule = typeof rule === 'string' && /^[A-Za-z0-9_.\[\]<>=!,:()? -]{1,160}$/.test(rule) ? rule : null;
   }
 }
+// Where in the response the parser is (a fixed label such as "snapshot" or "messages[user]"), so an unnamed check still says which part failed.
+let trail = '';
+function within(name, work) { const before = trail; trail = before ? `${before}.${name}` : name; try { return work(); } finally { trail = before; } }
 function safeError(error) {
   try { if (error instanceof ConversationError && Object.hasOwn(MESSAGES, error.code)) return new ConversationError(error.code,
     Number.isInteger(error.status) && error.status >= 400 && error.status <= 599 ? error.status : null); } catch { /* Fixed fallback. */ }
   return new ConversationError('NETWORK_ERROR');
 }
-function check(condition, code = 'INVALID_RESPONSE') { if (!condition) throw new ConversationError(code); }
+function check(condition, code = 'INVALID_RESPONSE', rule = 'check failed') { if (!condition) throw new ConversationError(code, null, `${trail}${trail ? ' ' : ''}${rule}`); }
 function plain(value, required, optional = [], code = 'INVALID_RESPONSE') {
   try {
-    check(value !== null && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value)), code);
+    check(value !== null && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value)), code, 'is not a plain object');
     const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
-    check(keys.every(key => typeof key === 'string' && [...required, ...optional].includes(key) && descriptors[key].enumerable &&
-      Object.hasOwn(descriptors[key], 'value')) && required.every(key => Object.hasOwn(descriptors, key)), code);
+    const named = key => typeof key === 'string' && /^[A-Za-z]{1,30}$/.test(key) ? key : '?';
+    const unknown = keys.find(key => typeof key !== 'string' || ![...required, ...optional].includes(key) || !descriptors[key].enumerable || !Object.hasOwn(descriptors[key], 'value'));
+    check(unknown === undefined, code, `has an unexpected or unreadable key (${named(unknown)})`);
+    const missing = required.find(key => !Object.hasOwn(descriptors, key));
+    check(missing === undefined, code, `is missing required key ${missing}`);
     return Object.fromEntries(keys.map(key => [key, descriptors[key].value]));
-  } catch { throw new ConversationError(code); }
+  } catch (error) { throw error instanceof ConversationError ? error : new ConversationError(code); }
 }
-function identifier(value, request = false, code = 'INVALID_RESPONSE') {
-  check(typeof value === 'string' && (request ? REQUEST_ID : ID).test(value), code); return value;
+function identifier(value, request = false, code = 'INVALID_RESPONSE', rule = 'identifier format') {
+  check(typeof value === 'string' && (request ? REQUEST_ID : ID).test(value), code, rule); return value;
 }
-function array(value, maximum) {
+function array(value, maximum, label = 'array') {
   try {
-    check(Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype && value.length <= maximum);
+    check(Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype, 'INVALID_RESPONSE', `${label} is not an array`);
+    check(value.length <= maximum, 'INVALID_RESPONSE', `${label} count ${value.length}>${maximum}`);
     const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
-    check(keys.length === value.length + 1);
+    check(keys.length === value.length + 1, 'INVALID_RESPONSE', `${label} has extra properties`);
     return Array.from({ length: value.length }, (_, index) => { const item = descriptors[index];
-      check(item?.enumerable && Object.hasOwn(item, 'value')); return item.value; });
-  } catch { throw new ConversationError('INVALID_RESPONSE'); }
+      check(item?.enumerable && Object.hasOwn(item, 'value'), 'INVALID_RESPONSE', `${label} item is unreadable`); return item.value; });
+  } catch (error) { throw error instanceof ConversationError ? error : new ConversationError('INVALID_RESPONSE'); }
 }
-function text(value, maximum, bytes, empty = false, code = 'INVALID_RESPONSE') {
-  check(typeof value === 'string' && value.length <= maximum && (empty || value.trim().length > 0), code);
+function text(value, maximum, bytes, empty = false, code = 'INVALID_RESPONSE', label = 'text') {
+  check(typeof value === 'string', code, `${label} is not a string`);
+  check(value.length <= maximum, code, `${label} length ${value.length}>${maximum}`);
+  check(empty || value.trim().length > 0, code, `${label} is empty`);
   // Reject malformed UTF-16 without relying on a browser-specific String extension.
   for (let i = 0; i < value.length; i++) {
     const unit = value.charCodeAt(i);
-    if (unit >= 0xd800 && unit <= 0xdbff) { const next = value.charCodeAt(++i); check(next >= 0xdc00 && next <= 0xdfff, code); }
-    else check(unit < 0xdc00 || unit > 0xdfff, code);
+    if (unit >= 0xd800 && unit <= 0xdbff) { const next = value.charCodeAt(++i); check(next >= 0xdc00 && next <= 0xdfff, code, `${label} has a lone surrogate`); }
+    else check(unit < 0xdc00 || unit > 0xdfff, code, `${label} has a lone surrogate`);
   }
-  check(!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value) && new TextEncoder().encode(value).length <= bytes, code);
+  check(!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value), code, `${label} has a control character`);
+  const size = new TextEncoder().encode(value).length;
+  check(size <= bytes, code, `${label} bytes ${size}>${bytes}`);
   return value;
 }
 function cursor(value, code = 'INVALID_RESPONSE') {
-  check(typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) && Number.isSafeInteger(Number(value)), code); return Number(value);
+  check(typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) && Number.isSafeInteger(Number(value)), code, 'cursor format'); return Number(value);
 }
 function attachmentIds(value, code = 'INVALID_REQUEST') {
   try {
@@ -68,21 +82,23 @@ function attachmentIds(value, code = 'INVALID_REQUEST') {
   } catch { throw new ConversationError(code); }
 }
 // The URL is derived from the authenticated file ID, never accepted as a remote media source.
-export function parseAttachment(value) {
+export function parseAttachment(value) { return within('attachments[]', () => attachment(value)); }
+function attachment(value) {
   const file = plain(value, ['id', 'name', 'mime', 'size', 'sha256', 'direction', 'url'], ['caption', 'voice']);
   if (Object.hasOwn(file, 'voice')) {
     // A voice message: its length and, once made, the transcript the companion read.
     const voice = plain(file.voice, ['durationMs'], ['transcript']);
-    check(Number.isSafeInteger(voice.durationMs) && voice.durationMs >= 0 && voice.durationMs <= 3_600_000);
-    if (Object.hasOwn(voice, 'transcript')) text(voice.transcript, 20000, 80000, true);
+    check(Number.isSafeInteger(voice.durationMs) && voice.durationMs >= 0 && voice.durationMs <= 3_600_000, 'INVALID_RESPONSE', 'voice.durationMs out of range');
+    if (Object.hasOwn(voice, 'transcript')) text(voice.transcript, 20000, 80000, true, 'INVALID_RESPONSE', 'voice.transcript');
     file.voice = { ...voice };
   }
-  check(typeof file.id === 'string' && FILE_ID.test(file.id) && file.url === `/api/files/${file.id}`);
-  text(file.name, 200, 800); check(!/[\\/\u0000-\u001f\u007f]/.test(file.name));
-  check(typeof file.mime === 'string' && /^[a-z0-9][a-z0-9!#$&^_.+-]{0,99}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,99}$/.test(file.mime));
-  check(Number.isSafeInteger(file.size) && file.size >= 0 && file.size <= 100 * 1024 * 1024 &&
-    typeof file.sha256 === 'string' && /^[0-9a-f]{64}$/.test(file.sha256) && ['user', 'companion'].includes(file.direction));
-  if (Object.hasOwn(file, 'caption')) text(file.caption, 1000, 4000, true);
+  check(typeof file.id === 'string' && FILE_ID.test(file.id), 'INVALID_RESPONSE', 'id format'); check(file.url === `/api/files/${file.id}`, 'INVALID_RESPONSE', 'url does not match id');
+  text(file.name, 200, 800, false, 'INVALID_RESPONSE', 'name'); check(!/[\\/\u0000-\u001f\u007f]/.test(file.name), 'INVALID_RESPONSE', 'name has a path or control character');
+  check(typeof file.mime === 'string' && /^[a-z0-9][a-z0-9!#$&^_.+-]{0,99}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,99}$/.test(file.mime), 'INVALID_RESPONSE', 'mime format');
+  check(Number.isSafeInteger(file.size) && file.size >= 0 && file.size <= 100 * 1024 * 1024, 'INVALID_RESPONSE', 'size out of range');
+  check(typeof file.sha256 === 'string' && /^[0-9a-f]{64}$/.test(file.sha256), 'INVALID_RESPONSE', 'sha256 format');
+  check(['user', 'companion'].includes(file.direction), 'INVALID_RESPONSE', 'direction value');
+  if (Object.hasOwn(file, 'caption')) text(file.caption, 1000, 4000, true, 'INVALID_RESPONSE', 'caption');
   return { ...file };
 }
 function request(action, payload) {
@@ -98,7 +114,7 @@ function request(action, payload) {
   if (Object.hasOwn(selected, 'archived')) check(typeof selected.archived === 'boolean', 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'threadId')) identifier(selected.threadId, false, 'INVALID_REQUEST');
   if (Object.hasOwn(selected, 'requestId')) identifier(selected.requestId, true, 'INVALID_REQUEST');
-  if (action === 'createThread') text(selected.title, 80, 80, false, 'INVALID_REQUEST');
+  if (action === 'createThread') text(selected.title, TITLE_CHARS, TITLE_BYTES, false, 'INVALID_REQUEST');
   if (action === 'submit') {
     const ids = Object.hasOwn(selected, 'attachments') ? attachmentIds(selected.attachments) : [];
     text(selected.text, USER_CHARS, USER_BYTES, ids.length > 0, 'INVALID_REQUEST');
@@ -229,11 +245,16 @@ export function createFileTransport({ xhrFactory = () => new XMLHttpRequest(), f
 }
 function envelope(value, required, optional = []) {
   const selected = plain(value, ['version', 'synthetic', ...required], optional);
-  check(selected.version === 1 && typeof selected.synthetic === 'boolean'); return selected;
+  check(selected.version === 1 && typeof selected.synthetic === 'boolean', 'INVALID_RESPONSE', 'version or synthetic value'); return selected;
 }
+// Titles: 80 characters; the byte limit mirrors the server's (4 bytes a character). It was 80 bytes, which rejected any title with
+// non-ASCII characters (a 30-character Japanese title is 90 bytes) and with it the whole snapshot (#110).
+export const TITLE_CHARS = 80, TITLE_BYTES = 320;
 function thread(value) {
-  const selected = plain(value, ['id', 'title']);
-  return { id: identifier(selected.id), title: text(selected.title, 80, 80) };
+  return within('threads[]', () => {
+    const selected = plain(value, ['id', 'title']);
+    return { id: identifier(selected.id), title: text(selected.title, TITLE_CHARS, TITLE_BYTES, false, 'INVALID_RESPONSE', 'title') };
+  });
 }
 // A Board link from the server: absolute http(s), no credentials, else null.
 export function boardLink(value) {
@@ -241,93 +262,102 @@ export function boardLink(value) {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && url.hostname && !url.username && !url.password ? url.href : null; }
   catch { return null; }
 }
-function feeling(value, role) { check(role === 'assistant' && typeof value === 'string' && /^[a-z-]{1,20}$/.test(value)); return value; }
+function feeling(value, role) { check(role === 'assistant', 'INVALID_RESPONSE', 'feeling on a non-assistant message'); check(typeof value === 'string' && /^[a-z-]{1,20}$/.test(value), 'INVALID_RESPONSE', 'feeling format'); return value; }
 function message(value, threadId) {
+  let role = '?';
+  try { const found = Object.getOwnPropertyDescriptor(value, 'role')?.value; if (['user', 'assistant', 'peer', 'app'].includes(found)) role = found; } catch { /* unnamed */ }
+  return within(`${trail.startsWith('eventsPage') ? 'events[].message' : 'messages'}[${role}]`, () => messageParts(value, threadId));
+}
+function messageParts(value, threadId) {
   const selected = plain(value, ['id', 'threadId', 'role', 'text'], ['requestId', 'feeling', 'attachments', 'peer', 'url', 'preview', 'at']);
   // #99: send time (epoch ms), optional so older servers still validate.
-  if (Object.hasOwn(selected, 'at')) check(Number.isSafeInteger(selected.at) && selected.at > 0);
+  if (Object.hasOwn(selected, 'at')) check(Number.isSafeInteger(selected.at) && selected.at > 0, 'INVALID_RESPONSE', 'at is not a positive integer');
   const when = Object.hasOwn(selected, 'at') ? { at: selected.at } : {};
-  check(selected.threadId === threadId, 'RESYNC_REQUIRED');
+  check(selected.threadId === threadId, 'RESYNC_REQUIRED', 'threadId differs from the thread');
   // #61b: an app activity line in a Board conversation (a silent Board wake). App text, an optional Board link and an
   // optional quote of the companion's Board post (untrusted Board text: shown as text only).
   if (selected.role === 'app') {
-    check(!['requestId', 'feeling', 'attachments', 'peer'].some(key => Object.hasOwn(selected, key)));
-    if (Object.hasOwn(selected, 'url')) check(boardLink(selected.url) !== null);
-    if (Object.hasOwn(selected, 'preview')) text(selected.preview, 200, 800);
-    return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: 'app', text: text(selected.text, 300, 1200),
+    check(!['requestId', 'feeling', 'attachments', 'peer'].some(key => Object.hasOwn(selected, key)), 'INVALID_RESPONSE', 'has a key an app line cannot have');
+    if (Object.hasOwn(selected, 'url')) check(boardLink(selected.url) !== null, 'INVALID_RESPONSE', 'url is not a safe link');
+    if (Object.hasOwn(selected, 'preview')) text(selected.preview, 200, 800, false, 'INVALID_RESPONSE', 'preview');
+    return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: 'app', text: text(selected.text, 300, 1200, false, 'INVALID_RESPONSE', 'text'),
       ...(Object.hasOwn(selected, 'url') ? { url: selected.url } : {}), ...(Object.hasOwn(selected, 'preview') ? { preview: selected.preview } : {}) };
   }
-  check(!Object.hasOwn(selected, 'url') && !Object.hasOwn(selected, 'preview'));
+  check(!Object.hasOwn(selected, 'url') && !Object.hasOwn(selected, 'preview'), 'INVALID_RESPONSE', 'has url or preview outside an app line');
   if (selected.role === 'peer') {
-    check(Object.hasOwn(selected, 'peer') && !['requestId', 'feeling', 'attachments'].some(key => Object.hasOwn(selected, key)));
+    check(Object.hasOwn(selected, 'peer') && !['requestId', 'feeling', 'attachments'].some(key => Object.hasOwn(selected, key)), 'INVALID_RESPONSE', 'peer shape');
     const peer = plain(selected.peer, ['direction', 'companionId', 'name', 'ownerLabel', 'sentAtISO']);
-    check(['sent', 'received'].includes(peer.direction) && typeof peer.companionId === 'string' && peer.companionId.length === 36 && PEER_ID.test(peer.companionId));
-    for (const key of ['name', 'ownerLabel']) { text(peer[key], 80, 320); check(peer[key] === peer[key].trim() && !/[\x00-\x1f\x7f]/.test(peer[key])); }
-    check(typeof peer.sentAtISO === 'string' && peer.sentAtISO.length === 24 && Number.isFinite(Date.parse(peer.sentAtISO)) && new Date(peer.sentAtISO).toISOString() === peer.sentAtISO);
-    return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: 'peer', text: text(selected.text, 4000, 16000), ...when, peer };
+    check(['sent', 'received'].includes(peer.direction), 'INVALID_RESPONSE', 'peer.direction value'); check(typeof peer.companionId === 'string' && peer.companionId.length === 36 && PEER_ID.test(peer.companionId), 'INVALID_RESPONSE', 'peer.companionId format');
+    for (const key of ['name', 'ownerLabel']) { text(peer[key], 80, 320, false, 'INVALID_RESPONSE', `peer.${key}`); check(peer[key] === peer[key].trim() && !/[\x00-\x1f\x7f]/.test(peer[key]), 'INVALID_RESPONSE', `peer.${key} has edge whitespace`); }
+    check(typeof peer.sentAtISO === 'string' && peer.sentAtISO.length === 24 && Number.isFinite(Date.parse(peer.sentAtISO)) && new Date(peer.sentAtISO).toISOString() === peer.sentAtISO, 'INVALID_RESPONSE', 'peer.sentAtISO format');
+    return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: 'peer', text: text(selected.text, 4000, 16000, false, 'INVALID_RESPONSE', 'text'), ...when, peer };
   }
-  check(!Object.hasOwn(selected, 'peer'));
-  check(selected.role === 'user' || selected.role === 'assistant');
-  const files = Object.hasOwn(selected, 'attachments') ? array(selected.attachments, 8).map(parseAttachment) : [];
-  check(new Set(files.map(file => file.id)).size === files.length && files.every(file => file.direction === (selected.role === 'user' ? 'user' : 'companion')));
-  return { id: identifier(selected.id), threadId: identifier(selected.threadId), role: selected.role, ...when,
-    text: text(selected.text, selected.role === 'user' ? USER_CHARS : ASSISTANT_CHARS, selected.role === 'user' ? USER_BYTES : ASSISTANT_BYTES, selected.role === 'assistant' || files.length > 0),
-    ...(Object.hasOwn(selected, 'requestId') ? { requestId: identifier(selected.requestId, true) } : {}),
+  check(!Object.hasOwn(selected, 'peer'), 'INVALID_RESPONSE', 'has peer outside a peer message');
+  check(selected.role === 'user' || selected.role === 'assistant', 'INVALID_RESPONSE', 'role value');
+  const files = Object.hasOwn(selected, 'attachments') ? array(selected.attachments, 8, 'attachments').map(parseAttachment) : [];
+  check(new Set(files.map(file => file.id)).size === files.length, 'INVALID_RESPONSE', 'attachments repeat an id');
+  check(files.every(file => file.direction === (selected.role === 'user' ? 'user' : 'companion')), 'INVALID_RESPONSE', 'attachments direction does not match the role');
+  return { id: identifier(selected.id, false, 'INVALID_RESPONSE', 'id format'), threadId: identifier(selected.threadId), role: selected.role, ...when,
+    text: text(selected.text, selected.role === 'user' ? USER_CHARS : ASSISTANT_CHARS, selected.role === 'user' ? USER_BYTES : ASSISTANT_BYTES, selected.role === 'assistant' || files.length > 0, 'INVALID_RESPONSE', 'text'),
+    ...(Object.hasOwn(selected, 'requestId') ? { requestId: identifier(selected.requestId, true, 'INVALID_RESPONSE', 'requestId format') } : {}),
     ...(Object.hasOwn(selected, 'attachments') ? { attachments: files } : {}),
     ...(Object.hasOwn(selected, 'feeling') ? { feeling: feeling(selected.feeling, selected.role) } : {}) };
 }
-function turnContext(value) {
+function turnContext(value) { return within(trail.startsWith('eventsPage') ? 'events[].turn' : 'turn', () => turnParts(value)); }
+function turnParts(value) {
   const selected = plain(value, ['requestId', 'state'], ['error']);
-  identifier(selected.requestId, true); check(TURN_STATES.includes(selected.state));
+  identifier(selected.requestId, true, 'INVALID_RESPONSE', 'requestId format'); check(TURN_STATES.includes(selected.state), 'INVALID_RESPONSE', 'state value');
   if (!Object.hasOwn(selected, 'error')) return selected;
-  check(selected.state === 'error');
+  check(selected.state === 'error', 'INVALID_RESPONSE', 'error on a turn that is not in the error state');
   const error = plain(selected.error, ['code', 'message'], ['resetsAt']);
-  check(typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)); text(error.message, 500, 2000);
-  check(!Object.hasOwn(error, 'resetsAt') || (typeof error.resetsAt === 'string' && error.resetsAt.length <= 40 && !Number.isNaN(Date.parse(error.resetsAt))));
+  check(typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code), 'INVALID_RESPONSE', 'error.code format'); text(error.message, 500, 2000, false, 'INVALID_RESPONSE', 'error.message');
+  check(!Object.hasOwn(error, 'resetsAt') || (typeof error.resetsAt === 'string' && error.resetsAt.length <= 40 && !Number.isNaN(Date.parse(error.resetsAt))), 'INVALID_RESPONSE', 'error.resetsAt format');
   return { ...selected, error };
 }
-function snapshot(value, requested) {
+function snapshot(value, requested) { return within('snapshot', () => snapshotParts(value, requested)); }
+function snapshotParts(value, requested) {
   const selected = envelope(value, ['threads', 'threadId', 'messages', 'cursor', 'runtime'], ['turn', 'archivedAt']);
   const archivedAt = Object.hasOwn(selected, 'archivedAt') ? selected.archivedAt : null;
-  check(archivedAt === null || Number.isSafeInteger(archivedAt) && archivedAt > 0 && selected.threadId !== null);
-  const threads = array(selected.threads, 200).map(thread); check(new Set(threads.map(item => item.id)).size === threads.length);
-  const sourceMessages = array(selected.messages, 500);
+  check(archivedAt === null || Number.isSafeInteger(archivedAt) && archivedAt > 0 && selected.threadId !== null, 'INVALID_RESPONSE', 'archivedAt value');
+  const threads = array(selected.threads, 200, 'threads').map(thread); check(new Set(threads.map(item => item.id)).size === threads.length, 'INVALID_RESPONSE', 'threads repeat an id');
+  const sourceMessages = array(selected.messages, 500, 'messages');
   const runtime = plain(selected.runtime, ['state'], ['provider']);
-  if (selected.synthetic) check(runtime.state === 'development-double' && !Object.hasOwn(runtime, 'provider'));
-  else check(RUNTIME_STATES.includes(runtime.state) && (!Object.hasOwn(runtime, 'provider') || PROVIDERS.includes(runtime.provider)));
+  if (selected.synthetic) check(runtime.state === 'development-double' && !Object.hasOwn(runtime, 'provider'), 'INVALID_RESPONSE', 'runtime value');
+  else check(RUNTIME_STATES.includes(runtime.state) && (!Object.hasOwn(runtime, 'provider') || PROVIDERS.includes(runtime.provider)), 'INVALID_RESPONSE', 'runtime value');
   let turn = null;
   if (Object.hasOwn(selected, 'turn')) {
-    check(!selected.synthetic && selected.threadId !== null);
+    check(!selected.synthetic && selected.threadId !== null, 'INVALID_RESPONSE', 'turn without a thread');
     turn = turnContext(selected.turn);
   }
   const head = cursor(selected.cursor);
-  if (selected.threadId === null) check(threads.length === 0 && selected.messages.length === 0 && head === 0 && requested === undefined);
-  else { identifier(selected.threadId); check(threads.some(item => item.id === selected.threadId)); }
-  check(requested === undefined || requested === selected.threadId);
+  if (selected.threadId === null) check(threads.length === 0 && selected.messages.length === 0 && head === 0 && requested === undefined, 'INVALID_RESPONSE', 'no thread but threads, messages or a cursor');
+  else { identifier(selected.threadId, false, 'INVALID_RESPONSE', 'threadId format'); check(threads.some(item => item.id === selected.threadId), 'INVALID_RESPONSE', 'threadId is not among threads'); }
+  check(requested === undefined || requested === selected.threadId, 'INVALID_RESPONSE', 'threadId differs from the one requested');
   const messages = sourceMessages.map(item => message(item, selected.threadId));
-  check(new Set(messages.map(item => item.id)).size === messages.length);
+  check(new Set(messages.map(item => item.id)).size === messages.length, 'INVALID_RESPONSE', 'messages repeat an id');
   return { synthetic: selected.synthetic, threads, threadId: selected.threadId, archivedAt, messages, cursor: selected.cursor, lastSeq: head,
     runtime: { state: runtime.state, ...(runtime.provider ? { provider: runtime.provider } : {}) }, turn };
 }
-function eventPage(value, threadId, from) {
+function eventPage(value, threadId, from) { return within('eventsPage', () => eventPageParts(value, threadId, from)); }
+function eventPageParts(value, threadId, from) {
   const selected = envelope(value, ['threadId', 'events', 'cursor', 'lastSeq', 'hasMore']);
-  check(selected.threadId === threadId, 'RESYNC_REQUIRED');
-  check(Number.isSafeInteger(selected.lastSeq) && selected.lastSeq >= 0 && typeof selected.hasMore === 'boolean');
-  const events = array(selected.events, 100).map(item => {
+  check(selected.threadId === threadId, 'RESYNC_REQUIRED', 'threadId differs from the thread');
+  check(Number.isSafeInteger(selected.lastSeq) && selected.lastSeq >= 0 && typeof selected.hasMore === 'boolean', 'INVALID_RESPONSE', 'lastSeq or hasMore value');
+  const events = array(selected.events, 100, 'events').map(item => {
     const head = plain(item, ['seq', 'threadId', 'type'], ['message', 'requestId', 'state', 'error']);
-    check(Number.isSafeInteger(head.seq) && head.seq >= 1 && head.threadId === threadId, 'RESYNC_REQUIRED');
+    check(Number.isSafeInteger(head.seq) && head.seq >= 1 && head.threadId === threadId, 'RESYNC_REQUIRED', 'event seq or threadId');
     if (head.type === 'message') { const exact = plain(item, ['seq', 'threadId', 'type', 'message']); return { ...exact, message: message(exact.message, threadId) }; }
     if (head.type === 'noop') return plain(item, ['seq', 'threadId', 'type']);
-    check(head.type === 'turn'); const exact = plain(item, ['seq', 'threadId', 'type', 'requestId', 'state'], ['error']);
+    check(head.type === 'turn', 'INVALID_RESPONSE', 'event type value'); const exact = plain(item, ['seq', 'threadId', 'type', 'requestId', 'state'], ['error']);
     const { requestId, state, error } = exact;
     return { ...exact, ...turnContext({ requestId, state, ...(Object.hasOwn(exact, 'error') ? { error } : {}) }) };
   });
-  check(events.every((item, index) => index === 0 || item.seq === events[index - 1].seq + 1), 'RESYNC_REQUIRED');
+  check(events.every((item, index) => index === 0 || item.seq === events[index - 1].seq + 1), 'RESYNC_REQUIRED', 'event seq gap');
   const end = cursor(selected.cursor);
   check(end === (events.at(-1)?.seq ?? from) && selected.lastSeq >= end && selected.hasMore === (end < selected.lastSeq) &&
-    (events.length > 0 || !selected.hasMore), 'RESYNC_REQUIRED');
+    (events.length > 0 || !selected.hasMore), 'RESYNC_REQUIRED', 'cursor, lastSeq or hasMore disagree');
   const fresh = events.filter(item => item.seq > from);
-  check(!fresh.length || fresh[0].seq === from + 1, 'RESYNC_REQUIRED');
+  check(!fresh.length || fresh[0].seq === from + 1, 'RESYNC_REQUIRED', 'first event is not the next seq');
   return { events: fresh, end: Math.max(from, end), lastSeq: selected.lastSeq };
 }
 // The Board tab (#55): one sub-conversation per Board thread or ticket, with unread counts. Display data only.
@@ -352,6 +382,12 @@ export function parseBoardChange(value, threadId) {
   const selected = envelope(value, ['threadId', 'unread'], ['archived']);
   check(selected.threadId === threadId && (!Object.hasOwn(selected, 'archived') || typeof selected.archived === 'boolean'));
   return { threadId, unread: boardCount(selected.unread), ...(Object.hasOwn(selected, 'archived') ? { archived: selected.archived } : {}) };
+}
+// #110: what the client's validation says about one server response, for the release smoke check. Returns null when the response is
+// accepted, else { code, rule }. The rule is a fixed field path and rule name with counts, never any of the response's content.
+export function diagnoseResponse(action, value, { threadId, cursor: from = 0 } = {}) {
+  try { if (action === 'snapshot') snapshot(value, threadId); else if (action === 'events') eventPage(value, threadId, from); else return { code: 'INVALID_REQUEST', rule: 'unknown action' }; return null; }
+  catch (error) { return { code: error instanceof ConversationError ? error.code : 'INVALID_RESPONSE', rule: error instanceof ConversationError && error.rule ? error.rule : 'unnamed check' }; }
 }
 function upsert(messages, next) {
   const index = messages.findIndex(item => item.id === next.id);
@@ -465,7 +501,7 @@ export function createConversationClient({ transport = createConversationTranspo
     }
   }
   async function create(title) {
-    text(title, 80, 80, false, 'INVALID_REQUEST'); check(!state.pending, 'BUSY'); check(state.opened && state.connection === 'ready', 'NOT_READY');
+    text(title, TITLE_CHARS, TITLE_BYTES, false, 'INVALID_REQUEST'); check(!state.pending, 'BUSY'); check(state.opened && state.connection === 'ready', 'NOT_READY');
     const pending = { action: 'createThread', requestId: nextId(), title, status: 'submitting' }, version = begin(); files.clear();
     state = { ...initial(), connection: 'loading', pending }; emit(); await submitPending(pending, version); return copy();
   }
@@ -499,7 +535,7 @@ export function createConversationClient({ transport = createConversationTranspo
     const body = envelope(await transport('archivedThreads', {}), ['threads']);
     return array(body.threads, 200).map(item => {
       const row = plain(item, ['id', 'title', 'startedAt', 'archivedAt', 'messages']);
-      identifier(row.id); text(row.title, 80, 80);
+      identifier(row.id); text(row.title, TITLE_CHARS, TITLE_BYTES);
       check([row.startedAt, row.archivedAt, row.messages].every(value => Number.isSafeInteger(value) && value >= 0));
       return row;
     });
