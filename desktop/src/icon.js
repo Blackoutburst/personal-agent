@@ -41,8 +41,8 @@ function makeAppIcon({ nativeImage, iconPath, log = console.error }) {
     return cache.get(key);
   };
 }
-// Where the icon lives: build/ is only the electron-builder resources dir, so build/icon.png is in the package only if
-// package.json "files" lists it. __dirname is inside app.asar when packaged; Electron reads asar paths transparently.
+// Where the icon lives: build/ is the electron-builder resources dir; by the config and code it is NOT part of the app
+// files unless package.json "files" lists build/icon.png (inferred, never confirmed by listing a real app.asar). __dirname is inside app.asar when packaged; Electron reads asar paths transparently.
 const path = require('node:path');
 const iconPath = (appDir) => path.join(appDir, 'build', 'icon.png');
 module.exports = { dottedBitmap, makeAppIcon, iconPath };
