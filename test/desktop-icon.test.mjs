@@ -67,7 +67,7 @@ function strictNativeImage(scale) {
   const made = [];
   return {
     made,
-    createFromPath: () => ({ resize: ({ width }) => ({ plain: true, size: width, ...scaledImg(width, scale) }) }),
+    createFromPath: () => ({ isEmpty: () => false, resize: ({ width }) => ({ plain: true, size: width, ...scaledImg(width, scale) }) }),
     createFromBitmap(buffer, { width, height }) {
       if (buffer.length !== width * height * 4) throw new Error('invalid buffer size');
       const img = { bitmap: true, width, height, length: buffer.length };
@@ -107,11 +107,11 @@ test('real makeAppIcon: window 256 and tray 32 specifically, plain icon when rea
 
 test('real makeAppIcon: a bad bitmap is caught and logged, and the plain icon is kept (never throws)', () => {
   const ni = strictNativeImage(1), logs = [];
-  ni.createFromPath = () => ({ resize: () => ({ plain: true, toBitmap: () => Buffer.alloc(32 * 32 * 4 + 4) }) });
+  ni.createFromPath = () => ({ isEmpty: () => false, resize: () => ({ plain: true, toBitmap: () => Buffer.alloc(32 * 32 * 4 + 4) }) });
   const icon = makeAppIcon({ nativeImage: ni, iconPath: 'x', log: (...a) => logs.push(a) })(true, 32);
   assert.equal(icon.plain, true); assert.equal(logs.length, 1); assert.match(String(logs[0][1]), /not a square/);
   ni.createFromBitmap = () => { throw new Error('invalid buffer size'); }; // even if createFromBitmap itself throws
-  ni.createFromPath = () => ({ resize: () => ({ plain: true, toBitmap: () => Buffer.alloc(32 * 32 * 4) }) });
+  ni.createFromPath = () => ({ isEmpty: () => false, resize: () => ({ plain: true, toBitmap: () => Buffer.alloc(32 * 32 * 4) }) });
   assert.equal(makeAppIcon({ nativeImage: ni, iconPath: 'x', log: () => {} })(true, 32).plain, true);
 });
 
