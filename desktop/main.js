@@ -9,7 +9,7 @@ const updater = require('./src/updater');
 const settingsStore = require('./src/settings');
 const { parseArrival, createUnread, toastFor, tooltip } = require('./src/unread');
 const { badgeBitmap } = require('./src/badge');
-const { makeAppIcon } = require('./src/icon');
+const { makeAppIcon, iconPath } = require('./src/icon');
 
 app.setName('Companion');
 // Persistent default session: cookies from the platform login survive restarts.
@@ -35,7 +35,7 @@ function openChat(hash) {
 }
 function looking() { return !!win && win.isVisible() && !win.isMinimized() && win.isFocused(); }
 // The companion icon, plain or with the web favicon's unread dot (src/dot.js); built once per size.
-const appIcon = makeAppIcon({ nativeImage, iconPath: path.join(__dirname, 'build', 'icon.png') });
+const appIcon = makeAppIcon({ nativeImage, iconPath: iconPath(__dirname) });
 function renderUnread(n) {
   try {
     if (tray) { tray.setToolTip(tooltip(n)); tray.setImage(appIcon(n > 0, 32)); }
@@ -82,7 +82,7 @@ function onArrival(raw) {
   const r = unread.arrive(a, { looking: looking() });
   if (!r.toast || !Notification.isSupported()) return;
   const t = toastFor(a, win && !win.isDestroyed() ? win.getTitle() : '');
-  const n = new Notification({ title: t.title, body: t.body, icon: path.join(__dirname, 'build', 'icon.png') });
+  const n = new Notification({ title: t.title, body: t.body, icon: iconPath(__dirname) });
   toasts.add(n);
   n.on('click', () => { toasts.delete(n); openChat(t.hash); });
   n.on('close', () => toasts.delete(n));
@@ -100,7 +100,7 @@ function createWindow() {
     minWidth: windowState.MIN.width, minHeight: windowState.MIN.height,
     backgroundColor: '#fff1e8',
     title: 'Companion',
-    icon: path.join(__dirname, 'build', 'icon.png'),
+    icon: iconPath(__dirname),
     autoHideMenuBar: true,
     show: !startHidden,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: true, contextIsolation: true, nodeIntegration: false },
